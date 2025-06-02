@@ -25,6 +25,7 @@ import { AuthModule } from './auth/auth.module';
     }),
     UserModule,
     AuthModule,
+
   ],
 })
 export class AppModule {}

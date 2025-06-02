@@ -1,16 +1,24 @@
 import {
   Controller,
   Post,
+  Get,
+  Put,
+  Patch,
+  Req,
   Body,
   HttpCode,
   HttpStatus,
+  UseGuards,
 } from '@nestjs/common';
 import { UserService } from './user.service';
 import { RegisterDto } from './dto/register.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { LoginDto } from './dto/login.dto';
 import { ResendOtpDto } from './dto/resend-otp.dto';
-import { ApiTags, ApiOperation, ApiResponse, ApiBody } from '@nestjs/swagger';
+import { ForgetPasswordDto } from './dto/forget-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
+import { ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiBody, ApiSecurity } from '@nestjs/swagger';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 @ApiTags('User Authentication')
 @Controller('user')
@@ -55,6 +63,48 @@ export class UserController {
   @ApiResponse({ status: 400, description: 'User not found or already verified' })
   @ApiBody({ type: ResendOtpDto })
   async resendOtp(@Body() resendOtpDto: ResendOtpDto) {
-    return this.userService.resendOtp(resendOtpDto.email);
+    return this.userService.resendOtp(resendOtpDto);
   }
+
+  @Post('forgot-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Send OTP for password reset' })
+  @ApiResponse({ status: 200, description: 'OTP sent to email or mobile' })
+  @ApiResponse({ status: 400, description: 'User not found' })
+  @ApiBody({ type: ForgetPasswordDto })
+  async forgetPassword(@Body() forgetPasswordDto: ForgetPasswordDto) {
+    return this.userService.forgetPassword(forgetPasswordDto);
+  }
+
+  @Post('reset-password')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Reset user password using OTP/token' })
+  @ApiResponse({ status: 200, description: 'Password reset successful' })
+  @ApiResponse({ status: 400, description: 'Invalid token or OTP' })
+  @ApiBody({ type: ResetPasswordDto })
+  async resetPassword(@Body() resetPasswordDto: ResetPasswordDto) {
+    return this.userService.resetPassword(resetPasswordDto);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get()
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Get user profile' })
+  @ApiResponse({ status: 200, description: 'User profile data' })
+  @ApiBearerAuth() 
+  @ApiSecurity('application-token')
+  async getProfile(@Req() req) {
+    console.log("test")
+    //return this.profileService.getProfile(req.user.userId);
+  }
+
+  // @Put()
+  // @HttpCode(HttpStatus.OK)
+  // @ApiOperation({ summary: 'Update user profile' })
+  // @ApiResponse({ status: 200, description: 'User profile updated successfully' })
+  // @ApiResponse({ status: 400, description: 'Validation failed' })
+  // async updateProfile(@Req() req, @Body() dto: UpdateProfileDto) {
+  //   return this.profileService.updateProfile(req.user.userId, dto);
+  // }
+
 }

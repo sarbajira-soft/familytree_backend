@@ -1,19 +1,23 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
 import { User} from './model/user.model';
-import { MailService } from '../services/mail.service';
+import { UserProfile } from './model/user-profile.model';
+import { MailService } from '../utils/mail.service';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ForgetPasswordDto } from './dto/forget-password.dto';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 
 @Injectable()
 export class UserService {
   constructor(
     @InjectModel(User)
     private userModel: typeof User,
+    @InjectModel(UserProfile)
+    private userProfileModel: typeof UserProfile,
     private mailService: MailService,
   ) {}
 
@@ -75,7 +79,7 @@ export class UserService {
         role: registerDto.role || 1, // Default to member
       });
     }
-
+    
     await this.mailService.sendVerificationOtp(registerDto.email, otp);
     return { message: 'OTP sent to email', email: registerDto.email };
   }
@@ -111,13 +115,17 @@ export class UserService {
     const accessToken = this.generateAccessToken(user);
 
     await user.update({
-      status: 1, // active
+      status: 1,
       otp: null,
       otpExpiresAt: null,
       verifiedAt: new Date(),
       accessToken,
     });
 
+    await this.userProfileModel.create({
+      userId: user.id,
+    });
+    
     return {
       message: 'Account verified successfully',
       accessToken,
@@ -326,5 +334,31 @@ export class UserService {
       message: 'Password reset successfully',
     };
   }
+
+  async getUserProfile(id: number) {
+    const user = await this.userProfileModel.findOne({
+      where: { userId: id},
+    });
+    if (!user) {
+      throw new NotFoundException('User profile not found');
+    }
+    return user;
+  }
+
+  async updateProfile(userId: number, dto: UpdateProfileDto) {
+    const user = await this.userProfileModel.findOne({
+      where: { userId: userId},
+    });
+    if (!user) throw new BadRequestException('User not found');
+
+    user.set(dto as any);
+    await user.save();
+
+    return {
+      message: 'Profile updated successfully',
+      data: user,
+    };
+  }
+
 
 }

@@ -19,7 +19,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
   async validate(payload: any) {
     const user = await this.userModel.findByPk(payload.id);
-    console.log(user);
+    //console.log(user);
     
     if (!user) {
       throw new UnauthorizedException('Invalid access token or user not found');
@@ -27,6 +27,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     return {
       userId: user.id,
+      role: payload.role,
       mobile: user.mobile ,
       email: user.email,
     };

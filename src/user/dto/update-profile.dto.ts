@@ -1,25 +1,135 @@
-// dto/update-profile.dto.ts
-import { IsOptional, IsString, IsEmail } from 'class-validator';
+import {
+  IsOptional,
+  IsString,
+  IsDateString,
+  IsInt,
+  IsJSON,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class UpdateProfileDto {
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({
+    description: 'Profile image file (only filename stored)',
+    type: 'string',
+    format: 'binary'
+  })
   @IsOptional()
   @IsString()
-  name?: string;
+  profile?: string;
 
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsEmail()
-  email?: string;
-
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'Gender of the user', example: 'Male' })
   @IsOptional()
   @IsString()
-  mobile?: string;
+  gender?: string;
 
-  @ApiPropertyOptional()
+  @ApiPropertyOptional({ description: 'Date of Birth in ISO format', example: '1990-01-01' })
+  @IsOptional()
+  @IsDateString()
+  dob?: Date;
+
+  @ApiPropertyOptional({ description: 'Age', example: 34 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  age?: number;
+
+  @ApiPropertyOptional({ description: 'Marital Status', example: 'Married' })
+  @IsOptional()
+  @IsString()
+  maritalStatus?: string;
+
+  @ApiPropertyOptional({ description: 'Name of the spouse', example: 'Wife/Husband' })
+  @IsOptional()
+  @IsString()
+  spouseName?: string;
+
+  @ApiPropertyOptional({ description: 'Names of children as JSON array string', example: '["Son", "Daugther"]' })
+  @IsOptional()
+  @IsJSON()
+  childrenNames?: string;
+
+  @ApiPropertyOptional({ description: 'Father’s Name', example: 'Father' })
+  @IsOptional()
+  @IsString()
+  fatherName?: string;
+
+  @ApiPropertyOptional({ description: 'Mother’s Name', example: 'Mother' })
+  @IsOptional()
+  @IsString()
+  motherName?: string;
+
+  @ApiPropertyOptional({ description: 'Religion ID (refer to Religion table)', example: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  religionId?: number;
+
+  @ApiPropertyOptional({ description: 'Language ID (refer to Language table)', example: 3 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  languageId?: number;
+
+  @ApiPropertyOptional({ description: 'Caste', example: 'Hindu' })
+  @IsOptional()
+  @IsString()
+  caste?: string;
+
+  @ApiPropertyOptional({ description: 'Gothram ID (refer to Gothram table)', example: 2 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  gothramId?: number;
+
+  @ApiPropertyOptional({ description: 'Family deity / Kuladevata', example: 'Murugan' })
+  @IsOptional()
+  @IsString()
+  kuladevata?: string;
+
+  @ApiPropertyOptional({ description: 'Region (Nadu)', example: 'South Tamil Nadu' })
+  @IsOptional()
+  @IsString()
+  region?: string;
+
+  @ApiPropertyOptional({ description: 'User hobbies', example: 'Reading, Traveling, Music, Playing Cricket' })
+  @IsOptional()
+  @IsString()
+  hobbies?: string;
+
+  @ApiPropertyOptional({ description: 'Likes and Dislikes', example: 'Likes: Nature, Dislikes: Noise' })
+  @IsOptional()
+  @IsString()
+  likesDislikes?: string;
+
+  @ApiPropertyOptional({ description: 'Favorite foods', example: 'Dosa, Briyani' })
+  @IsOptional()
+  @IsString()
+  favoriteFoods?: string;
+
+  @ApiPropertyOptional({ description: 'Contact number', example: '+91-9876543210' })
+  @IsOptional()
+  @IsString()
+  contactNumber?: string;
+
+  @ApiPropertyOptional({ description: 'Country ID (refer to Country table)', example: 101 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  countryId?: number;
+
+  @ApiPropertyOptional({ description: 'Full address of the user', example: '123, Gandhi Street, Chennai' })
   @IsOptional()
   @IsString()
   address?: string;
+
+  @ApiPropertyOptional({ description: 'User bio or short life story', example: 'Software engineer from Chennai with a passion for culture and travel.' })
+  @IsOptional()
+  @IsString()
+  bio?: string;
+
+  @ApiPropertyOptional({ description: 'System generated Family Code or Root ID', example: 'FAM000123' })
+  @IsOptional()
+  @IsString()
+  familyCode?: string;
 }

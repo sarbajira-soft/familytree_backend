@@ -108,16 +108,21 @@ export class UserController {
   @ApiBearerAuth()
   @ApiSecurity('application-token')
   async getProfile(@Req() req, @Param('id', ParseIntPipe) id: number) {
-    const user = req.user;
-    if (user.role === 1 && user.id !== id) {
-      throw new ForbiddenException('Members can only access their own profile');
+    const loggedInUser = req.user;
+
+    // Convert param to number just in case
+    const targetUserId = Number(id);
+
+    // Role 1 can only update their own profile
+    if (loggedInUser.role === 1 && loggedInUser.id !== targetUserId) {
+      throw new BadRequestException('Access denied: Members can only update their own profile');
     }
     // Admins and Super Admins can access any profile
     const userdata = await this.userService.getUserProfile(id);
     return {
       message: 'Profile fetched successfully',
       data: userdata,
-      currentUser: user,
+      currentUser: loggedInUser,
     };
   }
 
@@ -148,7 +153,7 @@ export class UserController {
     @Param('id') id: number,
     @UploadedFile() file: Express.Multer.File,
     @Req() req,
-    @Body() dto: UpdateProfileDto,
+    @Body() body: any,
   ) {
     const loggedInUser = req.user;
 
@@ -160,12 +165,18 @@ export class UserController {
       throw new BadRequestException('Access denied: Members can only update their own profile');
     }
 
+    Object.keys(body).forEach((key) => {
+      if (body[key] === '') {
+        body[key] = undefined;
+      }
+    });
+
     // Store only filename in DB
     if (file) {
-      dto.profile = file.filename;
+      body.profile = file.filename;
     }
 
-    return this.userService.updateProfile(targetUserId, dto);
+    return this.userService.updateProfile(targetUserId, body);
   }
 
 

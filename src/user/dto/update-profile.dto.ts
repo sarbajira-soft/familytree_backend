@@ -46,7 +46,7 @@ export class UpdateProfileDto {
 
   @ApiPropertyOptional({ description: 'Names of children as JSON array string', example: '["Son", "Daugther"]' })
   @IsOptional()
-  @IsJSON()
+  @IsString()
   childrenNames?: string;
 
   @ApiPropertyOptional({ description: 'Father’s Name', example: 'Father' })

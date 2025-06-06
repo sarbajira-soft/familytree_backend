@@ -6,6 +6,8 @@ import { UserProfile } from './model/user-profile.model';
 import { MailService } from '../utils/mail.service';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
+import * as fs from 'fs';
+import * as path from 'path';
 
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ForgetPasswordDto } from './dto/forget-password.dto';
@@ -336,12 +338,13 @@ export class UserService {
   }
 
   async getUserProfile(id: number) {
-    const user = await this.userProfileModel.findOne({
-      where: { userId: id},
+    const user = await this.userModel.findOne({
+      where: { id },
+      include: [{ model: UserProfile, as: 'userProfile' }],
     });
-    if (!user) {
-      throw new NotFoundException('User profile not found');
-    }
+
+    if (!user) throw new NotFoundException('User profile not found');
+
     return user;
   }
 
@@ -350,6 +353,23 @@ export class UserService {
       where: { userId: userId},
     });
     if (!user) throw new BadRequestException('User not found');
+
+    if(dto.profile){
+      const newFile = path.basename(dto.profile);
+      if (newFile && user.profile && user.profile !== newFile) {
+        const uploadPath = process.env.UPLOAD_FOLDER_PATH || './uploads/profile';
+        const oldImagePath = path.join(uploadPath, user.profile);
+
+        try {
+          if (fs.existsSync(oldImagePath)) {
+            fs.unlinkSync(oldImagePath);
+            console.log('Old profile image deleted:', oldImagePath);
+          }
+        } catch (err) {
+          console.warn(`Failed to remove old profile image: ${err.message}`);
+        }
+      }
+    }
 
     user.set(dto as any);
     await user.save();

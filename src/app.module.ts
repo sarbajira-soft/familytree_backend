@@ -7,6 +7,7 @@ import { CountryModule } from './country/country.module';
 import { ReligionModule } from './religion/religion.module';
 import { LanguageModule } from './language/language.module';
 import { GothramModule } from './gothram/gothram.module';
+import { setupAssociations } from './associations/sequelize.associations';
 
 @Module({
   imports: [
@@ -35,4 +36,8 @@ import { GothramModule } from './gothram/gothram.module';
     GothramModule
   ],
 })
-export class AppModule {}
+export class AppModule {
+  constructor() {
+    setupAssociations();
+  }
+}

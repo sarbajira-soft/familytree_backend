@@ -337,7 +337,10 @@ export class UserService {
     };
   }
 
-  async getUserProfile(id: number) {
+  async getUserProfile(id: number | string) {
+    console.log('services');
+    console.log(id);
+    
     const user = await this.userModel.findOne({
       where: { id },
       include: [{ model: UserProfile, as: 'userProfile' }],

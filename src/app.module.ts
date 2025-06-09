@@ -7,6 +7,7 @@ import { CountryModule } from './country/country.module';
 import { ReligionModule } from './religion/religion.module';
 import { LanguageModule } from './language/language.module';
 import { GothramModule } from './gothram/gothram.module';
+import { FamilyModule } from './family/family.module';
 import { setupAssociations } from './associations/sequelize.associations';
 
 @Module({
@@ -33,7 +34,8 @@ import { setupAssociations } from './associations/sequelize.associations';
     CountryModule,
     ReligionModule,
     LanguageModule,
-    GothramModule
+    GothramModule,
+    FamilyModule
   ],
 })
 export class AppModule {

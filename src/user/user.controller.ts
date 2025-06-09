@@ -34,7 +34,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { generateFileName, imageFileFilter } from '../utils/upload.utils';
 
 
-@ApiTags('User Authentication')
+@ApiTags('User Module')
 @Controller('user')
 export class UserController {
   constructor(private readonly userService: UserService) {}
@@ -101,6 +101,25 @@ export class UserController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Get('myProfile')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Get user profile' })
+  @ApiResponse({ status: 200, description: 'User profile data' })
+  @ApiBearerAuth()
+  @ApiSecurity('application-token')
+  async getMyProfile(@Req() req) {
+    const loggedInUser = req.user;
+    console.log(loggedInUser);
+    
+    const userdata = await this.userService.getUserProfile(Number(loggedInUser.userId));
+    return {
+      message: 'Profile fetched successfully',
+      data: userdata,
+      currentUser: loggedInUser,
+    };
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get(':id')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Get user profile' })
@@ -114,7 +133,7 @@ export class UserController {
     const targetUserId = Number(id);
 
     // Role 1 can only update their own profile
-    if (loggedInUser.role === 1 && loggedInUser.id !== targetUserId) {
+    if (loggedInUser.role === 1 && loggedInUser.userId !== targetUserId) {
       throw new BadRequestException('Access denied: Members can only update their own profile');
     }
     // Admins and Super Admins can access any profile
@@ -153,7 +172,7 @@ export class UserController {
     @Param('id') id: number,
     @UploadedFile() file: Express.Multer.File,
     @Req() req,
-    @Body() body: any,
+    @Body() body: UpdateProfileDto,
   ) {
     const loggedInUser = req.user;
 
@@ -161,7 +180,7 @@ export class UserController {
     const targetUserId = Number(id);
 
     // Role 1 can only update their own profile
-    if (loggedInUser.role === 1 && loggedInUser.id !== targetUserId) {
+    if (loggedInUser.role === 1 && loggedInUser.userId !== targetUserId) {
       throw new BadRequestException('Access denied: Members can only update their own profile');
     }
 

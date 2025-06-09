@@ -39,4 +39,8 @@ export class User extends Model<User> {
 
   @Column(DataType.DATE)
   verifiedAt: Date;
+
+  @Default(0)
+  @Column(DataType.INTEGER)
+  createdBy: number;
 }

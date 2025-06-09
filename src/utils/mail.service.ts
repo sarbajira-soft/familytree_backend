@@ -65,4 +65,29 @@ export class MailService {
     await this.transporter.sendMail(mailOptions);
   }
 
+  async sendWelcomeEmail(email: string, name: string, username: string, password: string): Promise<void> {
+    const mailOptions = {
+      from: `"${process.env.APP_NAME}" <${process.env.NODEMAILER_FROM}>`,
+      to: email,
+      subject: 'Welcome to Our Family Platform!',
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #333;">Hi ${name}, welcome aboard!</h2>
+          <p>We're excited to have you as a part of our family system.</p>
+          <p><strong>Your login credentials:</strong></p>
+          <ul style="background: #f9f9f9; padding: 15px; list-style: none;">
+            <li><strong>Username:</strong> ${username}</li>
+            <li><strong>Password:</strong> ${password}</li>
+          </ul>
+          <p>Please log in and complete your profile if necessary.</p>
+          <p>If you didn’t register, please ignore this email.</p>
+          <br />
+          <p>— ${process.env.APP_NAME} Team</p>
+        </div>
+      `,
+    };
+
+    await this.transporter.sendMail(mailOptions);
+  }
+
 }

@@ -12,6 +12,7 @@ import * as path from 'path';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ForgetPasswordDto } from './dto/forget-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { Family } from 'src/family/model/family.model';
 
 @Injectable()
 export class UserService {
@@ -20,6 +21,8 @@ export class UserService {
     private userModel: typeof User,
     @InjectModel(UserProfile)
     private userProfileModel: typeof UserProfile,
+    @InjectModel(Family)
+    private familyModel: typeof Family,
     private mailService: MailService,
   ) {}
 
@@ -352,12 +355,19 @@ export class UserService {
   }
 
   async updateProfile(userId: number, dto: UpdateProfileDto) {
-    const user = await this.userProfileModel.findOne({
-      where: { userId: userId},
-    });
+    const user = await this.userProfileModel.findOne({ where: { userId } });
     if (!user) throw new BadRequestException('User not found');
 
-    if(dto.profile){
+    //  Check if familyCode is present and valid
+    if (dto.familyCode) {
+      const existingFamily = await this.familyModel.findOne({ where: { familyCode: dto.familyCode } });
+      if (!existingFamily) {
+        throw new BadRequestException('Invalid family code. Please enter a valid family code.');
+      }
+    }
+
+    // Handle profile image update and old file removal
+    if (dto.profile) {
       const newFile = path.basename(dto.profile);
       if (newFile && user.profile && user.profile !== newFile) {
         const uploadPath = process.env.UPLOAD_FOLDER_PATH || './uploads/profile';
@@ -382,6 +392,5 @@ export class UserService {
       data: user,
     };
   }
-
 
 }

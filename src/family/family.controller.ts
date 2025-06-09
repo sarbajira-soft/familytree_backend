@@ -9,6 +9,7 @@ import {
   UploadedFile,
   ForbiddenException,
   Body,
+  Delete,
   HttpCode,
   HttpStatus,
   ParseIntPipe,
@@ -82,7 +83,7 @@ export class FamilyController {
   @UseInterceptors(FileInterceptor('familyPhoto', {
     storage: diskStorage({
       destination: (req, file, cb) => {
-        cb(null, process.env.UPLOAD_FOLDER_PATH || './uploads/family');
+        cb(null, process.env.FAMILY_PHOTO_UPLOAD_PATH || './uploads/family');
       },
       filename: (req, file, cb) => {
         const filename = generateFileName(file.originalname);
@@ -109,5 +110,59 @@ export class FamilyController {
     return this.familyService.createFamily(body, loggedInUser.userId);
   }
 
+  @Get()
+  @ApiOperation({ summary: 'Get all families' })
+  @ApiResponse({ status: 200, description: 'List of families' })
+  getAll() {
+    return this.familyService.getAll();
+  }
+
+  @Get('code/:familyCode')
+  @ApiOperation({ summary: 'Get family by code' })
+  @ApiResponse({ status: 200, description: 'Family found' })
+  getByCode(@Param('familyCode') familyCode: string) {
+    return this.familyService.getByCode(familyCode);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Put(':id')
+  @UseInterceptors(FileInterceptor('familyPhoto', {
+    storage: diskStorage({
+      destination: (req, file, cb) => {
+        const uploadPath = process.env.FAMILY_PHOTO_UPLOAD_PATH || './uploads/family';
+        if (!fs.existsSync(uploadPath)) {
+          fs.mkdirSync(uploadPath, { recursive: true });
+        }
+        cb(null, uploadPath);
+      },
+      filename: (req, file, cb) => {
+        cb(null, generateFileName(file.originalname));
+      }
+    }),
+    fileFilter: imageFileFilter,
+  }))
+  @ApiConsumes('multipart/form-data')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update family by ID' })
+  async update(
+    @Req() req,
+    @Param('id') id: number,
+    @UploadedFile() file: Express.Multer.File,
+    @Body() body: CreateFamilyDto
+  ) {
+    const loggedInUser = req.user;
+    if (file) {
+      body.familyPhoto = file.filename;
+    }
+    return this.familyService.update(id, body, file?.filename, loggedInUser.userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete(':id')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Delete family by ID' })
+  delete(@Param('id') id: number) {
+    return this.familyService.delete(id);
+  }
 
 }

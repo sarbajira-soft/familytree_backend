@@ -80,5 +80,53 @@ export class FamilyService {
     };
   }
 
+   async getAll() {
+    return await this.familyModel.findAll();
+  }
+
+  async getByCode(code: string) {
+    const family = await this.familyModel.findOne({ where: { familyCode: code } });
+    if (!family) throw new NotFoundException('Family not found');
+    return family;
+  }
+
+  async update(id: number, dto: any, newFileName?: string, loggedId?: number) {
+    const family = await this.familyModel.findByPk(id);
+    if (!family) throw new NotFoundException('Family not found');
+
+    // Delete old file if new file is uploaded
+    if (newFileName && family.familyPhoto) {
+      const oldFile = family.familyPhoto;
+      const uploadDir = process.env.FAMILY_PHOTO_UPLOAD_PATH || './uploads/family';
+
+      if (oldFile && oldFile !== newFileName) {
+        const uploadDir = process.env.FAMILY_PHOTO_UPLOAD_PATH || './uploads/family';
+        const oldFilePath = path.join(uploadDir, oldFile);
+
+        try {
+          if (fs.existsSync(oldFilePath)) {
+            fs.unlinkSync(oldFilePath);
+            console.log('Old file deleted:', oldFilePath);
+          } else {
+            console.warn('Old file does not exist:', oldFilePath);
+          }
+        } catch (err) {
+          console.warn('Failed to delete old file:', err.message);
+        }
+      }
+    }
+    dto.createdBy = loggedId;
+    await family.update(dto);
+    return { message: 'Family updated successfully', data: family };
+
+  }
+
+  async delete(id: number) {
+    const family = await this.familyModel.findByPk(id);
+    if (!family) throw new NotFoundException('Family not found');
+
+    await family.destroy();
+    return { message: 'Family deleted successfully' };
+  }
 
 }

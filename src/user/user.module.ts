@@ -5,6 +5,7 @@ import { UserService } from './user.service';
 
 import { User } from './model/user.model';
 import { UserProfile } from './model/user-profile.model';
+import { Family } from '../family/model/family.model';
 import { MailService } from '../utils/mail.service';
 
 @Module({
@@ -12,6 +13,7 @@ import { MailService } from '../utils/mail.service';
     SequelizeModule.forFeature([
       User,
       UserProfile,
+      Family,
     ]),
   ],
   controllers: [UserController],

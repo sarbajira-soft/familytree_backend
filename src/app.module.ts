@@ -10,6 +10,7 @@ import { GothramModule } from './gothram/gothram.module';
 import { FamilyModule } from './family/family.module';
 import { GalleryModule } from './gallery/gallery.module';
 import { setupAssociations } from './associations/sequelize.associations';
+import { PostModule } from './post/post.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { setupAssociations } from './associations/sequelize.associations';
     GothramModule,
     FamilyModule,
     GalleryModule,
+    PostModule
   ],
 })
 export class AppModule {

@@ -8,9 +8,14 @@ import { ReligionModule } from './religion/religion.module';
 import { LanguageModule } from './language/language.module';
 import { GothramModule } from './gothram/gothram.module';
 import { FamilyModule } from './family/family.module';
+import { RelationshipsModule } from './relationships/relationships.module';
+import { RelationshipSeeder } from './relationships/seed/seed-relationships';
 import { GalleryModule } from './gallery/gallery.module';
 import { setupAssociations } from './associations/sequelize.associations';
 import { PostModule } from './post/post.module';
+import { NotificationModule } from './notification/notification.module';
+import { ProductModule } from './product/product.module';
+import { EventModule } from './event/event.module';
 
 @Module({
   imports: [
@@ -39,11 +44,20 @@ import { PostModule } from './post/post.module';
     GothramModule,
     FamilyModule,
     GalleryModule,
-    PostModule
+    PostModule,
+    NotificationModule,
+    RelationshipsModule,
+    ProductModule,
+    EventModule,
   ],
+  providers: [RelationshipSeeder],
 })
 export class AppModule {
-  constructor() {
+  constructor(private readonly seeder: RelationshipSeeder) {
     setupAssociations();
+  }
+
+  async onApplicationBootstrap() {
+    await this.seeder.seed();
   }
 }

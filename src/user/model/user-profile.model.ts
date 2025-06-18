@@ -18,6 +18,12 @@ export class UserProfile extends Model<UserProfile> {
   user: User;
 
   @Column(DataType.STRING)
+  firstName: string; 
+
+  @Column(DataType.STRING)
+  lastName: string; 
+  
+  @Column(DataType.STRING)
   profile: string; // profile photo URL or path
 
   @Column(DataType.STRING)

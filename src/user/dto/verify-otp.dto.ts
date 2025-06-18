@@ -3,25 +3,12 @@ import { ApiProperty } from '@nestjs/swagger';
 
 export class VerifyOtpDto {
   @ApiProperty({
-    example: 'user@example.com',
-    description: 'User email address (required if mobile is not provided)',
+    example: 'user@example.com or +919876543210',
+    description: 'User email address mobile is required',
     required: false,
   })
-  @ValidateIf(o => !o.mobile)
-  @IsEmail()
-  email?: string;
-
-  @ApiProperty({
-    example: '+919876543210',
-    description: 'User mobile number with country code (required if email is not provided)',
-    required: false,
-  })
-  @ValidateIf(o => !o.email)
   @IsString()
-  @Matches(/^\+\d{1,4}\d{6,14}$/, {
-    message: 'Mobile must start with country code (e.g. +91xxxxxxxxxx)'
-  })
-  mobile?: string;
+  userName?: string;
 
   @ApiProperty({
     example: '123456',

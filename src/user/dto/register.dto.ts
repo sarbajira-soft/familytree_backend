@@ -1,4 +1,4 @@
-import { IsEmail, IsString, MinLength, IsOptional, IsIn, Matches, IsNotEmpty } from 'class-validator';
+import { IsEmail, IsString, MinLength, IsOptional, IsIn, Matches, IsNotEmpty, Length } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class RegisterDto {
@@ -22,20 +22,29 @@ export class RegisterDto {
   lastName: string;
 
   @ApiProperty({
-    example: '+919876543210',
-    description: 'User mobile number with country code (e.g. +91 for India)',
+    example: '+91',
+    description: 'Country code including + sign (e.g. +91 for India)',
   })
   @IsString()
-  @Matches(/^\+\d{1,4}\d{6,14}$/, {
-    message: 'Mobile must start with country code (e.g. +91xxxxxxxxxx)'
+  @Matches(/^\+\d{1,4}$/, {
+    message: 'Country code must start with + and contain 1 to 4 digits',
   })
+  countryCode: string;
+
+  @ApiProperty({
+    example: '9876543210',
+    description: 'User mobile number without country code',
+  })
+  @IsString()
+  @Length(6, 14, { message: 'Mobile number must be between 6 and 14 digits' })
+  @Matches(/^\d+$/, { message: 'Mobile number must contain digits only' })
   mobile: string;
 
   @ApiProperty({
     example: 1,
     description: 'User role (1=member, 2=admin, 3=superadmin)',
     required: false,
-    default: 1
+    default: 1,
   })
   @IsIn([1, 2, 3])
   @IsOptional()

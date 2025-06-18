@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Param,
+  Query,
   Get,
   Put,
   Patch,
@@ -23,60 +24,18 @@ import { diskStorage } from 'multer';
 import { extname } from 'path';
 import * as fs from 'fs';
 import { FamilyService } from './family.service';
-import { CreateFamilyMemberDto } from './dto/create-family-member.dto';
 import { CreateFamilyDto } from './dto/create-family.dto';
+import { CreateRelationshipTranslationDto } from './dto/create-relationship-translation.dto';
 
 import { ApiConsumes, ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiBody, ApiSecurity } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { generateFileName, imageFileFilter } from '../utils/upload.utils';
 
 
-@ApiTags('Family Module')
+@ApiTags('Family')
 @Controller('family')
 export class FamilyController {
   constructor(private readonly familyService: FamilyService) {}
-
-  @UseGuards(JwtAuthGuard)
-  @Post('member/create')
-  @UseInterceptors(FileInterceptor('profile', {
-    storage: diskStorage({
-      destination: (req, file, cb) => {
-        cb(null, process.env.UPLOAD_FOLDER_PATH || './uploads/profile');
-      },
-      filename: (req, file, cb) => {
-        const filename = generateFileName(file.originalname);
-        cb(null, filename);
-      },
-    }),
-    fileFilter: imageFileFilter,
-  }))
-  @HttpCode(HttpStatus.CREATED)
-  @ApiOperation({ summary: 'Create family member' })
-  @ApiConsumes('multipart/form-data')
-  @ApiResponse({ status: 201, description: 'Family member created and welcome email sent' })
-  @ApiBearerAuth()
-  @ApiSecurity('application-token')
-  async createFamilyMember(
-    @Req() req,
-    @UploadedFile() file: Express.Multer.File,
-    @Body() body: CreateFamilyMemberDto,
-  ) {
-    if (file) {
-      body.profile = file.filename;
-    }
-    const loggedInUser = req.user;
-    
-    // Only allow role 2 (admin) and role 3 (superadmin)
-    if (![2, 3].includes(loggedInUser.role)) {
-      throw new BadRequestException('Access denied: Only admins or superadmins can create family members');
-    }
-    const created = await this.familyService.createFamilyMember(body, loggedInUser.userId);
-
-    return {
-      message: 'Family member created successfully and welcome email sent',
-      data: created,
-    };
-  }
 
   @UseGuards(JwtAuthGuard)
   @Post('create')
@@ -164,5 +123,46 @@ export class FamilyController {
   delete(@Param('id') id: number) {
     return this.familyService.delete(id);
   }
+
+  // @Get(':familyId/relationship-map')
+  // async getRelationshipMap(
+  //   @Param('familyId') familyId: number,
+  //   @Query('language') language = 'en',
+  //   @Req() req
+  // ) {
+  //   const viewerId = req.user.id; // from auth middleware
+  //   return this.familyService.getFamilyRelationshipMap(viewerId, familyId, language);
+  // }
+
+  // @Post('relationship-translation')
+  // @UseGuards(JwtAuthGuard)
+  // @ApiBearerAuth()
+  // addRelationshipTranslation(@Body() dto: CreateRelationshipTranslationDto) {
+  //   return this.familyService.addRelationshipTranslation(dto);
+  // }
+
+  // @Put('relationship-translation/:id')
+  // @UseGuards(JwtAuthGuard)
+  // @ApiBearerAuth()
+  // updateRelationshipTranslation(
+  //   @Param('id', ParseIntPipe) id: number,
+  //   @Body() dto: CreateRelationshipTranslationDto
+  // ) {
+  //   return this.familyService.updateRelationshipTranslation(id, dto);
+  // }
+
+  // @Delete('relationship-translation/:id')
+  // @UseGuards(JwtAuthGuard)
+  // @ApiBearerAuth()
+  // deleteRelationshipTranslation(@Param('id', ParseIntPipe) id: number) {
+  //   return this.familyService.deleteRelationshipTranslation(id);
+  // }
+
+  // @Get('relationship-translation')
+  // @UseGuards(JwtAuthGuard)
+  // @ApiBearerAuth()
+  // listRelationshipTranslations(@Query('languageCode') languageCode?: string) {
+  //   return this.familyService.listRelationshipTranslations(languageCode);
+  // }
 
 }

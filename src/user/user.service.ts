@@ -13,6 +13,7 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ForgetPasswordDto } from './dto/forget-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { Family } from 'src/family/model/family.model';
+import { RegisterDto } from './dto/register.dto';
 
 @Injectable()
 export class UserService {
@@ -38,79 +39,88 @@ export class UserService {
     );
   }
 
-  async register(registerDto: {
-    email: string;
-    password: string;
-    firstName: string;
-    lastName: string;
-    mobile?: string;
-    role?: number;
-  }) {
-    // Check for existing verified users
-    const existingVerifiedUser = await this.userModel.findOne({
-      where: { email: registerDto.email, status: 1 },
-    });
-
-    if (existingVerifiedUser) {
-      throw new BadRequestException('Email already registered');
-    }
-
-    // Check for existing unverified users
-    const existingUnverifiedUser = await this.userModel.findOne({
-      where: { email: registerDto.email, status: 0 },
-    });
-
-    const otp = this.generateOtp();
-    const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
-    const hashedPassword = await bcrypt.hash(registerDto.password, 10);
-
-    if (existingUnverifiedUser) {
-      // Update existing unverified user
-      await existingUnverifiedUser.update({
-        ...registerDto,
-        password: hashedPassword,
-        otp,
-        otpExpiresAt,
-        role: registerDto.role || 1, // Default to member if not specified
+  async register(registerDto: RegisterDto){
+    try{
+      // Check for existing verified users
+      const existingVerifiedUser = await this.userModel.findOne({
+        where: {
+          status: 1,
+          [Op.or]: [
+            { email: registerDto.email },
+            {
+              countryCode: registerDto.countryCode,
+              mobile: registerDto.mobile,
+            },
+          ],
+        },
       });
-    } else {
-      // Create new user
-      await this.userModel.create({
-        ...registerDto,
-        password: hashedPassword,
-        otp,
-        otpExpiresAt,
-        status: 0, // unverified
-        role: registerDto.role || 1, // Default to member
+
+      if (existingVerifiedUser) {
+        throw new BadRequestException('User with this email or mobile already exists');
+      }
+
+      // Check for existing unverified users
+      const existingUnverifiedUser = await this.userModel.findOne({
+        where: { email: registerDto.email, status: 0 },
       });
+
+      const otp = this.generateOtp();
+      const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+      const hashedPassword = await bcrypt.hash(registerDto.password, 10);
+
+      if (existingUnverifiedUser) {
+        // Update existing unverified user
+        await existingUnverifiedUser.update({
+          ...registerDto,
+          password: hashedPassword,
+          otp,
+          otpExpiresAt,
+          role: registerDto.role || 1, // Default to member if not specified
+        });
+      } else {
+        // Create new user
+        await this.userModel.create({
+          ...registerDto,
+          password: hashedPassword,
+          otp,
+          otpExpiresAt,
+          status: 0, // unverified
+          role: registerDto.role || 1, // Default to member
+        });
+      }
+      
+      await this.mailService.sendVerificationOtp(registerDto.email, otp);
+      return { message: 'OTP sent to email', email: registerDto.email };
+    }catch(error){
+      return { message: error, data: [] };
     }
-    
-    await this.mailService.sendVerificationOtp(registerDto.email, otp);
-    return { message: 'OTP sent to email', email: registerDto.email };
   }
 
-  async verifyOtp(verifyOtpDto: { email?: string; mobile?: string; otp: string }) {
-    // Validate that either email or mobile is provided
-    if (!verifyOtpDto.email && !verifyOtpDto.mobile) {
-      throw new BadRequestException('Either email or mobile must be provided');
+  async verifyOtp(verifyOtpDto: { userName?: string; otp: string }) {
+    const { userName, otp } = verifyOtpDto;
+
+    if (!userName) {
+      throw new BadRequestException('Email or mobile must be provided');
     }
 
-    // Build the where clause
+    // Determine if the userName is an email or mobile
+    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userName);
     const whereClause: any = {};
-    if (verifyOtpDto.email) {
-      whereClause.email = verifyOtpDto.email;
+
+    if (isEmail) {
+      whereClause.email = userName;
     } else {
-      whereClause.mobile = verifyOtpDto.mobile;
+      // Optional: You could split countryCode from mobile if you're storing them separately
+      // For now, assuming full mobile number with country code is stored in `mobile` field
+      whereClause.mobile = userName;
     }
 
-    const user = await this.userModel.findOne({ 
-      where: whereClause 
-    });
+    const user = await this.userModel.findOne({ where: whereClause });
 
     if (!user) {
-      throw new BadRequestException(verifyOtpDto.email 
-        ? 'User with this email not found' 
-        : 'User with this mobile number not found');
+      throw new BadRequestException(
+        isEmail ? 'User with this email not found' : 'User with this mobile number not found'
+      );
     }
 
     if (user.status === 1) throw new BadRequestException('Account already verified');

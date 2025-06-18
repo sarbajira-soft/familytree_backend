@@ -43,7 +43,7 @@ export class UserController {
   @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Register a new user' })
   @ApiResponse({ status: 201, description: 'User registered successfully. OTP sent to email.' })
-  @ApiResponse({ status: 400, description: 'Bad request. Email already registered.' })
+  @ApiResponse({ status: 400, description: 'Bad request. Email or mobile number already registered.' })
   @ApiBody({ type: RegisterDto })
   async register(@Body() registerDto: RegisterDto) {
     return this.userService.register(registerDto);
@@ -151,7 +151,7 @@ export class UserController {
     FileInterceptor('profile', {
       storage: diskStorage({
         destination: (req, file, cb) => {
-          cb(null, process.env.UPLOAD_FOLDER_PATH || './uploads/profile');
+          cb(null, process.env.PROFILE_UPLOAD_PATH || './uploads/profile');
         },
         filename: (req, file, cb) => {
           const filename = generateFileName(file.originalname);

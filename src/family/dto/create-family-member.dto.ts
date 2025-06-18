@@ -1,59 +1,50 @@
 import {
-  IsEmail,
   IsString,
-  MinLength,
+  IsEmail,
   IsOptional,
-  IsIn,
-  Matches,
-  IsNotEmpty,
   IsDateString,
-  IsInt,
+  IsNumber,
+  MinLength,
+  MaxLength,
+  Matches,
+  IsIn,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { Type } from 'class-transformer';
 
 export class CreateFamilyMemberDto {
-  @ApiProperty({ example: 'user@example.com', description: 'User email address' })
+  // --- User table fields ---
+  @ApiProperty({ example: 'john.doe@example.com' })
   @IsEmail()
-  @IsOptional()
   email: string;
 
   @ApiProperty({
-    example: '+919876543210',
-    description: 'User mobile number with country code (e.g. +91 for India)',
+    example: '+91',
+    description: 'Country code including + sign (e.g. +91 for India)',
   })
   @IsString()
-  @IsOptional()
-  @Matches(/^\+\d{1,4}\d{6,14}$/, {
-    message: 'Mobile must start with country code (e.g. +91xxxxxxxxxx)'
+  @Matches(/^\+\d{1,4}$/, {
+    message: 'Country code must start with + and contain 1 to 4 digits',
   })
-  mobile: string;
+  countryCode: string;
 
-  @ApiProperty({ example: 'John', description: 'User first name' })
-  @IsString()
-  @IsNotEmpty()
-  firstName: string;
-
-  @ApiProperty({ example: 'Password123!', description: 'User password (min 8 characters)' })
-  @IsString()
+  @ApiProperty({ example: '9876543210' })
   @IsOptional()
-  @MinLength(8)
+  @IsString()
+  mobile?: string;
+
+  @ApiProperty({ example: 'password123' })
+  @MinLength(6)
+  @MaxLength(32)
   password: string;
 
-  @ApiPropertyOptional({ example: 'Doe', description: 'User last name' })
-  @IsOptional()
+  // --- UserProfile table fields ---
+  @ApiProperty({ example: 'John' })
   @IsString()
-  lastName?: string;
+  firstName: string;
 
-  @ApiPropertyOptional({
-    example: 1,
-    description: 'User role (1=member, 2=admin, 3=superadmin)',
-    default: 1
-  })
-  @IsIn([1, 2, 3])
-  @IsOptional()
-  @Type(() => Number)
-  role?: number;
+  @ApiProperty({ example: 'Doe' })
+  @IsString()
+  lastName: string;
 
   @ApiPropertyOptional({
     description: 'Profile image file (only filename stored)',
@@ -64,117 +55,106 @@ export class CreateFamilyMemberDto {
   @IsString()
   profile?: string;
 
-  @ApiPropertyOptional({ description: 'Gender', example: 'Male' })
-  @IsOptional()
-  @IsString()
-  gender?: string;
+  @ApiProperty({ example: 'male', enum: ['male', 'female'] })
+  @IsIn(['male', 'female'])
+  gender: string;
 
-  @ApiPropertyOptional({ description: 'Date of Birth', example: '1990-01-01' })
+  @ApiProperty({ example: '1990-05-15' })
   @IsOptional()
   @IsDateString()
-  dob?: Date;
+  dob?: string;
 
-  @ApiPropertyOptional({ description: 'Age', example: 34 })
-  @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  age?: number;
-
-  @ApiPropertyOptional({ description: 'Marital Status', example: 'Married' })
+  @ApiProperty({ example: 'single', enum: ['single', 'married', 'divorced', 'widowed'] })
   @IsOptional()
   @IsString()
   maritalStatus?: string;
 
-  @ApiPropertyOptional({ description: 'Spouse Name', example: 'Wife/Husband' })
+  @ApiProperty({ example: 'Jane Doe' })
   @IsOptional()
   @IsString()
   spouseName?: string;
 
-  @ApiPropertyOptional({ description: 'Children Names (JSON array)', example: '["Son", "Daughter"]' })
+  @ApiProperty({ example: 'Tom, Jerry' })
   @IsOptional()
   @IsString()
   childrenNames?: string;
 
-  @ApiPropertyOptional({ description: 'Father Name', example: 'Father' })
+  @ApiProperty({ example: 'Michael Doe' })
   @IsOptional()
   @IsString()
   fatherName?: string;
 
-  @ApiPropertyOptional({ description: 'Mother Name', example: 'Mother' })
+  @ApiProperty({ example: 'Mary Doe' })
   @IsOptional()
   @IsString()
   motherName?: string;
 
-  @ApiPropertyOptional({ description: 'Religion ID', example: 1 })
+  @ApiProperty({ example: 1 })
   @IsOptional()
-  @Type(() => Number)
-  @IsInt()
+  @IsNumber()
   religionId?: number;
 
-  @ApiPropertyOptional({ description: 'Language ID', example: 3 })
+  @ApiProperty({ example: 1 })
   @IsOptional()
-  @Type(() => Number)
-  @IsInt()
+  @IsNumber()
   languageId?: number;
 
-  @ApiPropertyOptional({ description: 'Caste', example: 'Hindu' })
+  @ApiProperty({ example: 'Brahmin' })
   @IsOptional()
   @IsString()
   caste?: string;
 
-  @ApiPropertyOptional({ description: 'Gothram ID', example: 2 })
+  @ApiProperty({ example: 2 })
   @IsOptional()
-  @Type(() => Number)
-  @IsInt()
+  @IsNumber()
   gothramId?: number;
 
-  @ApiPropertyOptional({ description: 'Kuladevata', example: 'Murugan' })
+  @ApiProperty({ example: 'Lord Vishnu' })
   @IsOptional()
   @IsString()
   kuladevata?: string;
 
-  @ApiPropertyOptional({ description: 'Region', example: 'South Tamil Nadu' })
+  @ApiProperty({ example: 'South Tamil Nadu' })
   @IsOptional()
   @IsString()
   region?: string;
 
-  @ApiPropertyOptional({ description: 'Hobbies', example: 'Reading, Traveling' })
+  @ApiProperty({ example: 'Reading, Gardening' })
   @IsOptional()
   @IsString()
   hobbies?: string;
 
-  @ApiPropertyOptional({ description: 'Likes/Dislikes', example: 'Likes: Nature, Dislikes: Noise' })
+  @ApiProperty({ example: 'Likes dogs, hates noise' })
   @IsOptional()
   @IsString()
   likesDislikes?: string;
 
-  @ApiPropertyOptional({ description: 'Favorite Foods', example: 'Dosa, Biryani' })
+  @ApiProperty({ example: 'Dosa, Biryani' })
   @IsOptional()
   @IsString()
   favoriteFoods?: string;
 
-  @ApiPropertyOptional({ description: 'Contact Number', example: '+91-9876543210' })
+  @ApiProperty({ example: '9123456789' })
   @IsOptional()
   @IsString()
   contactNumber?: string;
 
-  @ApiPropertyOptional({ description: 'Country ID', example: 101 })
+  @ApiProperty({ example: 91 })
   @IsOptional()
-  @Type(() => Number)
-  @IsInt()
+  @IsNumber()
   countryId?: number;
 
-  @ApiPropertyOptional({ description: 'Address', example: '123, Gandhi Street, Chennai' })
+  @ApiProperty({ example: '123 Street, City, State' })
   @IsOptional()
   @IsString()
   address?: string;
 
-  @ApiPropertyOptional({ description: 'Bio', example: 'Software engineer from Chennai.' })
+  @ApiProperty({ example: 'Short family intro or background' })
   @IsOptional()
   @IsString()
   bio?: string;
 
-  @ApiPropertyOptional({ description: 'Family Code', example: 'FAM000123' })
+  @ApiProperty({ example: 'FAM12345' })
   @IsOptional()
   @IsString()
   familyCode?: string;

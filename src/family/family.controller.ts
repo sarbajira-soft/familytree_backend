@@ -25,7 +25,6 @@ import { extname } from 'path';
 import * as fs from 'fs';
 import { FamilyService } from './family.service';
 import { CreateFamilyDto } from './dto/create-family.dto';
-import { CreateRelationshipTranslationDto } from './dto/create-relationship-translation.dto';
 
 import { ApiConsumes, ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiBody, ApiSecurity } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -124,45 +123,12 @@ export class FamilyController {
     return this.familyService.delete(id);
   }
 
-  // @Get(':familyId/relationship-map')
-  // async getRelationshipMap(
-  //   @Param('familyId') familyId: number,
-  //   @Query('language') language = 'en',
-  //   @Req() req
-  // ) {
-  //   const viewerId = req.user.id; // from auth middleware
-  //   return this.familyService.getFamilyRelationshipMap(viewerId, familyId, language);
-  // }
-
-  // @Post('relationship-translation')
-  // @UseGuards(JwtAuthGuard)
-  // @ApiBearerAuth()
-  // addRelationshipTranslation(@Body() dto: CreateRelationshipTranslationDto) {
-  //   return this.familyService.addRelationshipTranslation(dto);
-  // }
-
-  // @Put('relationship-translation/:id')
-  // @UseGuards(JwtAuthGuard)
-  // @ApiBearerAuth()
-  // updateRelationshipTranslation(
-  //   @Param('id', ParseIntPipe) id: number,
-  //   @Body() dto: CreateRelationshipTranslationDto
-  // ) {
-  //   return this.familyService.updateRelationshipTranslation(id, dto);
-  // }
-
-  // @Delete('relationship-translation/:id')
-  // @UseGuards(JwtAuthGuard)
-  // @ApiBearerAuth()
-  // deleteRelationshipTranslation(@Param('id', ParseIntPipe) id: number) {
-  //   return this.familyService.deleteRelationshipTranslation(id);
-  // }
-
-  // @Get('relationship-translation')
-  // @UseGuards(JwtAuthGuard)
-  // @ApiBearerAuth()
-  // listRelationshipTranslations(@Query('languageCode') languageCode?: string) {
-  //   return this.familyService.listRelationshipTranslations(languageCode);
-  // }
-
+  @Get('search')
+  @ApiOperation({ summary: 'Search families by code or name (autocomplete)' })
+  async searchFamilies(@Query('query') query: string) {
+    if (!query || query.length < 4) {
+      return [];
+    }
+    return this.familyService.searchFamilies(query);
+  }
 }

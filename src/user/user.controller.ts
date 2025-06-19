@@ -191,7 +191,7 @@ export class UserController {
     if (file) {
       body.profile = file.filename;
     }
-    console.log(body)
+
     return this.userService.updateProfile(targetUserId, body);
   }
 

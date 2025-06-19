@@ -4,8 +4,7 @@ import { Op } from 'sequelize';
 import { User} from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { Family } from './model/family.model';
-import { FtFamilyPosition } from './model/family-position.model';
-import { FtRelationshipTranslation } from './model/relationship-translations.model';
+import { FamilyMember } from './model/family-member.model';
 import { MailService } from '../utils/mail.service';
 import { extractUserProfileFields } from '../utils/profile-mapper.util';
 import { getLevelDepth, isSpousePosition } from '../utils/level-position.util';
@@ -15,7 +14,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { CreateFamilyMemberDto } from './dto/create-family-member.dto';
-import { CreateRelationshipTranslationDto } from './dto/create-relationship-translation.dto';
 
 @Injectable()
 export class FamilyMemberService {
@@ -26,10 +24,8 @@ export class FamilyMemberService {
     private userProfileModel: typeof UserProfile,
     @InjectModel(Family)
     private familyModel: typeof Family,
-    @InjectModel(FtFamilyPosition)
-    private positionModel: typeof FtFamilyPosition,
-    @InjectModel(FtRelationshipTranslation)
-    private relationshipTranslationModel: typeof FtRelationshipTranslation,
+    @InjectModel(FamilyMember)
+    private familyMemberModel: typeof FamilyMember,
     private mailService: MailService,
   ) {}
 
@@ -74,6 +70,13 @@ export class FamilyMemberService {
       const userProfile = await this.userProfileModel.create({
         userId: user.id,
         ...profileFields,
+      });
+
+      await this.familyMemberModel.create({
+        memberId: user.id,       
+        familyCode: dto.familyCode,
+        creatorId: createdBy,
+        approveStatus: 'approved'
       });
 
       return {
@@ -169,86 +172,5 @@ export class FamilyMemberService {
       data: members,
     };
   }
-
-async getFamilyTreeByFamilyCode(
-  familyCode: string,
-  loggedInUserId: number,
-  languageCode: string = 'ta'
-) {
-  // Step 1: Fetch all positions for this family
-  const positions = await this.positionModel.findAll({
-    where: { familyCode },
-    order: [['position', 'ASC']],
-    raw: true,
-  });
-
-  // Step 2: Fetch all user profiles
-  const userIds = positions.map((p) => p.userId);
-  const profiles = await this.userProfileModel.findAll({
-    where: { userId: userIds },
-    attributes: ['userId', 'firstName', 'lastName'],
-    raw: true,
-  });
-
-  // Step 3: Fetch translations
-  const relationTranslations = await this.relationshipTranslationModel.findAll({
-    where: { languageCode },
-    raw: true,
-  });
-
-  // Step 4: Find logged-in user
-  const loggedInPosition = positions.find((p) => p.userId === loggedInUserId);
-  if (!loggedInPosition) {
-    throw new Error('Logged-in user not found in family');
-  }
-
-  const fromLevel = await getLevelDepth(loggedInPosition.position);
-  const fromGender = loggedInPosition.gender.toLowerCase();
-
-  const results = [];
-
-  for (const member of positions) {
-    if (member.userId === loggedInUserId) continue;
-
-    const toLevel = await getLevelDepth(member.position);
-    const toGender = member.gender.toLowerCase();
-
-    let generationDiff = toLevel - fromLevel;
-
-    if (await isSpousePosition(member.position)) {
-      generationDiff -= 1;
-    }
-
-    const matchedRelation = relationTranslations.find((rel) =>
-      rel.fromLevel === fromLevel &&
-      rel.toLevel === generationDiff &&
-      rel.fromGender.toLowerCase() === fromGender &&
-      rel.toGender.toLowerCase() === toGender
-    );
-
-    if (!matchedRelation) {
-      console.warn(`No match found for:
-        fromLevel: ${fromLevel},
-        toLevel: ${generationDiff},
-        fromGender: ${fromGender},
-        toGender: ${toGender}`);
-    }
-
-    const profile = profiles.find((p) => p.userId === member.userId);
-
-    results.push({
-      userId: member.userId,
-      fullName: `${profile?.firstName || ''} ${profile?.lastName || ''}`.trim(),
-      position: member.position,
-      gender: member.gender,
-      relation: matchedRelation?.relationName || 'தெரியவில்லை',
-      notes: matchedRelation?.notes || '',
-    });
-  }
-
-  return results;
-}
-
-
 
 }

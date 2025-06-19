@@ -69,12 +69,17 @@ export class CreateFamilyMemberDto {
   @IsString()
   maritalStatus?: string;
 
+  @ApiProperty({ example: '1990-05-15' })
+  @IsOptional()
+  @IsDateString()
+  marriageDate?: string;
+
   @ApiProperty({ example: 'Jane Doe' })
   @IsOptional()
   @IsString()
   spouseName?: string;
 
-  @ApiProperty({ example: 'Tom, Jerry' })
+  @ApiProperty({ example: "['Tom', 'Jerry']" })
   @IsOptional()
   @IsString()
   childrenNames?: string;
@@ -124,10 +129,15 @@ export class CreateFamilyMemberDto {
   @IsString()
   hobbies?: string;
 
-  @ApiProperty({ example: 'Likes dogs, hates noise' })
+  @ApiProperty({ example: 'Likes dogs,' })
   @IsOptional()
   @IsString()
-  likesDislikes?: string;
+  likes?: string;
+
+  @ApiProperty({ example: 'hates noise' })
+  @IsOptional()
+  @IsString()
+  dislikes?: string;
 
   @ApiProperty({ example: 'Dosa, Biryani' })
   @IsOptional()
@@ -158,4 +168,5 @@ export class CreateFamilyMemberDto {
   @IsOptional()
   @IsString()
   familyCode?: string;
+
 }

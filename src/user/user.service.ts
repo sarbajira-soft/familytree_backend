@@ -1,8 +1,10 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
-import { User} from './model/user.model';
+import { User } from './model/user.model';
+import { FamilyMember } from '../family/model/family-member.model';
 import { UserProfile } from './model/user-profile.model';
+import { Invite } from './model/invite.model';
 import { MailService } from '../utils/mail.service';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
@@ -12,7 +14,7 @@ import * as path from 'path';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ForgetPasswordDto } from './dto/forget-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
-import { Family } from 'src/family/model/family.model';
+import { Family } from '../family/model/family.model';
 import { RegisterDto } from './dto/register.dto';
 
 @Injectable()
@@ -24,6 +26,10 @@ export class UserService {
     private userProfileModel: typeof UserProfile,
     @InjectModel(Family)
     private familyModel: typeof Family,
+    @InjectModel(FamilyMember)
+    private familyMemberModel: typeof FamilyMember,
+    @InjectModel(Invite)
+    private inviteModel: typeof Invite,
     private mailService: MailService,
   ) {}
 
@@ -368,11 +374,12 @@ export class UserService {
     if (!user) throw new NotFoundException('User profile not found');
     const baseUrl = process.env.BASE_URL || '';
     const basePath = process.env.UPLOAD_BASE_PATH || '/uploads';
+    const folderPath = process.env.PROFILE_FOLDER || '/profile';
     const profile = user.userProfile?.profile;
 
     // If profile image exists, prepend base URL
     if (profile) {
-      user.userProfile.profile = `${baseUrl}/${basePath}/${profile}`;
+      user.userProfile.profile = `${baseUrl}/${basePath}/${folderPath}/${profile}`;
     }
 
     return user;
@@ -407,6 +414,27 @@ export class UserService {
         }
       }
     }
+
+    const existingFamilyMember = await this.familyMemberModel.findOne({ where: { memberId: userId } });
+    const currentFamilyCode = existingFamilyMember?.familyCode || null;
+    if (dto.familyCode && dto.familyCode !== currentFamilyCode) {
+      const remarks = `Requested to join family using code ${dto.familyCode}`;
+      await this.inviteModel.create({
+        userId: userId,
+        familyCode: dto.familyCode,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        remarks: remarks,
+        inviteType: 'FAMILY_JOIN'
+      });
+      await this.familyMemberModel.create({
+        memberId: userId,       
+        familyCode: dto.familyCode,
+        creatorId: null,
+        approveStatus: 'pending'
+      });
+    }
+
 
     user.set(dto as any);
     await user.save();

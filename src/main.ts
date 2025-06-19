@@ -38,7 +38,7 @@ async function bootstrap() {
   //   force: false, // set to true if you want to DROP and re-create tables
   //   alter: true   // use this to auto-update schema (add new columns)
   // });
-  // console.log('✅ Database synchronization successful.');
+  // console.log('Database synchronization successful.');
 
   // Swagger
   setupSwagger(app);

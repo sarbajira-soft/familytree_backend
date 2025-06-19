@@ -84,7 +84,7 @@ export class NotificationService {
 
       // Get all users with their birth dates
       const users = await UserProfile.findAll({
-        attributes: ['id', 'dob', 'familyCode', 'userId', 'fatherName'],
+        attributes: ['id', 'dob', 'familyCode', 'userId', 'fatherName', 'firstName', 'lastName'],
         include: [
           {
             model: UserProfile.sequelize?.models.User,
@@ -105,8 +105,8 @@ export class NotificationService {
         if (!user) continue;
 
         // Create display name with user name and father name
-        const firstName = user.firstName || '';
-        const lastName = user.lastName || '';
+        const firstName = userProfile.firstName || '';
+        const lastName = userProfile.lastName || '';
         let userName = `${firstName} ${lastName}`.trim();
 
         if (!userName) {
@@ -192,7 +192,7 @@ export class NotificationService {
 
       // Get all users with their birth dates
       const users = await UserProfile.findAll({
-        attributes: ['id', 'dob', 'familyCode', 'userId', 'fatherName'],
+        attributes: ['id', 'dob', 'familyCode', 'userId', 'fatherName', 'firstName', 'lastName'],
         include: [
           {
             model: UserProfile.sequelize?.models.User,
@@ -213,8 +213,8 @@ export class NotificationService {
         const user = userProfile.user;
         if (!user) continue;
 
-        const firstName = user.firstName || '';
-        const lastName = user.lastName || '';
+        const firstName = userProfile.firstName || '';
+        const lastName = userProfile.lastName || '';
         let userName = `${firstName} ${lastName}`.trim();
 
         if (!userName) {

@@ -18,12 +18,6 @@ export class User extends Model<User> {
   password: string;
 
   @Column(DataType.STRING)
-  firstName: string;
-
-  @Column(DataType.STRING)
-  lastName: string;
-
-  @Column(DataType.STRING)
   otp: string;
 
   @Column(DataType.DATE)

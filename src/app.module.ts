@@ -9,7 +9,7 @@ import { LanguageModule } from './language/language.module';
 import { GothramModule } from './gothram/gothram.module';
 import { FamilyModule } from './family/family.module';
 import { RelationshipsModule } from './relationships/relationships.module';
-import { RelationshipSeeder } from './relationships/seed/seed-relationships';
+// import { RelationshipSeeder } from './relationships/seed/seed-relationships';
 import { GalleryModule } from './gallery/gallery.module';
 import { setupAssociations } from './associations/sequelize.associations';
 import { PostModule } from './post/post.module';
@@ -50,14 +50,14 @@ import { EventModule } from './event/event.module';
     ProductModule,
     EventModule,
   ],
-  providers: [RelationshipSeeder],
+  // providers: [RelationshipSeeder],
 })
 export class AppModule {
-  constructor(private readonly seeder: RelationshipSeeder) {
+  constructor() {
     setupAssociations();
   }
 
-  async onApplicationBootstrap() {
-    await this.seeder.seed();
-  }
+  // async onApplicationBootstrap() {
+  //   await this.seeder.seed();
+  // }
 }

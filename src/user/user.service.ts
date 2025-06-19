@@ -40,7 +40,7 @@ export class UserService {
   }
 
   async register(registerDto: RegisterDto){
-    try{
+      
       // Check for existing verified users
       const existingVerifiedUser = await this.userModel.findOne({
         where: {
@@ -56,7 +56,9 @@ export class UserService {
       });
 
       if (existingVerifiedUser) {
-        throw new BadRequestException('User with this email or mobile already exists');
+        throw new BadRequestException({
+          message: 'User with this email or mobile already exists',
+        });
       }
 
       // Check for existing unverified users
@@ -65,7 +67,7 @@ export class UserService {
       });
 
       const otp = this.generateOtp();
-      const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+      const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
       const hashedPassword = await bcrypt.hash(registerDto.password, 10);
 
       if (existingUnverifiedUser) {
@@ -79,7 +81,7 @@ export class UserService {
         });
       } else {
         // Create new user
-        await this.userModel.create({
+        const user = await this.userModel.create({
           ...registerDto,
           password: hashedPassword,
           otp,
@@ -87,20 +89,25 @@ export class UserService {
           status: 0, // unverified
           role: registerDto.role || 1, // Default to member
         });
+        await this.userProfileModel.create({
+          userId: user.id,
+          firstName: registerDto.firstName,
+          lastName: registerDto.lastName
+        });
       }
       
       await this.mailService.sendVerificationOtp(registerDto.email, otp);
-      return { message: 'OTP sent to email', email: registerDto.email };
-    }catch(error){
-      return { message: error, data: [] };
-    }
+      return { message: 'OTP sent to email', email: registerDto.email, mobile: registerDto.countryCode+registerDto.mobile };
+    
   }
 
   async verifyOtp(verifyOtpDto: { userName?: string; otp: string }) {
     const { userName, otp } = verifyOtpDto;
 
     if (!userName) {
-      throw new BadRequestException('Email or mobile must be provided');
+      throw new BadRequestException({
+        message:'Email or mobile must be provided'
+      });
     }
 
     // Determine if the userName is an email or mobile
@@ -118,14 +125,14 @@ export class UserService {
     const user = await this.userModel.findOne({ where: whereClause });
 
     if (!user) {
-      throw new BadRequestException(
-        isEmail ? 'User with this email not found' : 'User with this mobile number not found'
-      );
+      throw new BadRequestException({
+        message: isEmail ? 'User with this email not found' : 'User with this mobile number not found'
+      });
     }
 
-    if (user.status === 1) throw new BadRequestException('Account already verified');
-    if (user.otp !== verifyOtpDto.otp) throw new BadRequestException('Invalid OTP');
-    if (new Date(user.otpExpiresAt) < new Date()) throw new BadRequestException('OTP expired');
+    if (user.status === 1) throw new BadRequestException({message:'Account already verified'});
+    if (user.otp !== verifyOtpDto.otp) throw new BadRequestException({message:'Invalid OTP'});
+    if (new Date(user.otpExpiresAt) < new Date()) throw new BadRequestException({message:'OTP expired'});
 
     const accessToken = this.generateAccessToken(user);
 
@@ -137,9 +144,7 @@ export class UserService {
       accessToken,
     });
 
-    await this.userProfileModel.create({
-      userId: user.id,
-    });
+    const userProfile = await this.userProfileModel.findOne({ where: { userId: user.id } });
     
     return {
       message: 'Account verified successfully',
@@ -148,8 +153,8 @@ export class UserService {
         id: user.id,
         email: user.email,
         mobile: user.mobile,
-        firstName: user.firstName,
-        lastName: user.lastName,
+        firstName: userProfile.firstName,
+        lastName: userProfile.lastName,
         role: user.role,
         status: user.status,
       },
@@ -159,7 +164,7 @@ export class UserService {
   async login(loginDto: { username?: string; password: string }) {
     // Check if username is provided
     if (!loginDto.username) {
-      throw new BadRequestException('Please provide username (email or mobile number)');
+      throw new BadRequestException({message:'Please provide username (email or mobile number)'});
     }
 
     // Determine if username is email or mobile
@@ -167,7 +172,7 @@ export class UserService {
     const isMobile = /^\+?\d{10,15}$/.test(loginDto.username);
 
     if (!isEmail && !isMobile) {
-      throw new BadRequestException('Username must be a valid email or mobile number');
+      throw new BadRequestException({message:'Username must be a valid email or mobile number'});
     }
 
     // Build the where clause
@@ -180,12 +185,12 @@ export class UserService {
     });
 
     if (!user) {
-      throw new BadRequestException('Invalid credentials');
+      throw new BadRequestException({message:'Invalid credentials'});
     }
 
     // Check if account is verified
     if (user.status !== 1) {
-      throw new BadRequestException('Account not verified. Please verify your account first');
+      throw new BadRequestException({message:'Account not verified. Please verify your account first'});
     }
 
     // Check password
@@ -195,7 +200,7 @@ export class UserService {
     );
 
     if (!isPasswordValid) {
-      throw new BadRequestException('Invalid credentials');
+      throw new BadRequestException({message:'Invalid credentials'});
     }
 
     // Generate new access token
@@ -206,14 +211,14 @@ export class UserService {
       accessToken,
       lastLoginAt: new Date(),
     });
-
+    const userProfile = await this.userProfileModel.findOne({ where: { userId: user.id } });
     return {
       accessToken,
       user: {
         id: user.id,
         email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
+        firstName: userProfile.firstName,
+        lastName: userProfile .lastName,
         mobile: user.mobile,
         role: user.role,
         status: user.status,
@@ -223,7 +228,7 @@ export class UserService {
 
   async resendOtp(resendOtpDto: { email?: string; mobile?: string }) {
     if (!resendOtpDto.email && !resendOtpDto.mobile) {
-      throw new BadRequestException('Either email or mobile must be provided');
+      throw new BadRequestException({message:'Either email or mobile must be provided'});
     }
 
     const whereClause: any = {};
@@ -236,20 +241,21 @@ export class UserService {
     const user = await this.userModel.findOne({ where: whereClause });
 
     if (!user) {
-      throw new BadRequestException(
+      throw new BadRequestException({
+        message:
         resendOtpDto.email 
           ? 'User with this email not found' 
           : 'User with this mobile number not found'
-      );
+      });
     }
     // Check if OTP was sent less than 1 minute ago
     if (user.otpExpiresAt && new Date(user.otpExpiresAt.getTime() - 4 * 60 * 1000) > new Date()) {
-      throw new BadRequestException('Please wait before requesting a new OTP');
+      throw new BadRequestException({message:'Please wait before requesting a new OTP'});
     }
 
     // Generate new OTP
     const otp = this.generateOtp();
-    const otpExpiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes from now
+    const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
 
     // Update user with new OTP
     await user.update({
@@ -280,7 +286,7 @@ export class UserService {
     });
 
     if (!user) {
-      throw new BadRequestException('User not found');
+      throw new BadRequestException({message:'User not found'});
     }
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit OTP
@@ -308,12 +314,12 @@ export class UserService {
 
     // Validate required fields
     if (!username || !otp || !newPassword || !confirmPassword) {
-      throw new BadRequestException('All fields are required');
+      throw new BadRequestException({message:'All fields are required'});
     }
 
     // Check if passwords match
     if (newPassword !== confirmPassword) {
-      throw new BadRequestException('Passwords do not match');
+      throw new BadRequestException({message:'Passwords do not match'});
     }
 
     // Determine whether the username is email or mobile
@@ -327,12 +333,12 @@ export class UserService {
     const user = await this.userModel.findOne({ where: whereClause });
 
     if (!user) {
-      throw new BadRequestException('Invalid OTP or user not found');
+      throw new BadRequestException({message:'Invalid OTP or user not found'});
     }
 
     // Check OTP expiration
     if (!user.otpExpiresAt || new Date(user.otpExpiresAt) < new Date()) {
-      throw new BadRequestException('OTP has expired');
+      throw new BadRequestException({message:'OTP has expired'});
     }
 
     // Hash the new password
@@ -366,13 +372,13 @@ export class UserService {
 
   async updateProfile(userId: number, dto: UpdateProfileDto) {
     const user = await this.userProfileModel.findOne({ where: { userId } });
-    if (!user) throw new BadRequestException('User not found');
+    if (!user) throw new BadRequestException({message:'User not found'});
 
     //  Check if familyCode is present and valid
     if (dto.familyCode) {
       const existingFamily = await this.familyModel.findOne({ where: { familyCode: dto.familyCode } });
       if (!existingFamily) {
-        throw new BadRequestException('Invalid family code. Please enter a valid family code.');
+        throw new BadRequestException({message:'Invalid family code. Please enter a valid family code.'});
       }
     }
 

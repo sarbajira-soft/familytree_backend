@@ -18,6 +18,16 @@ export class UpdateProfileDto {
   @IsString()
   profile?: string;
 
+  @ApiPropertyOptional({ description: 'First Name', example: 'John' })
+  @IsOptional()
+  @IsString()
+  firstName?: string;
+
+  @ApiPropertyOptional({ description: 'Last Name', example: 'David' })
+  @IsOptional()
+  @IsString()
+  lastName?: string;
+
   @ApiPropertyOptional({ description: 'Gender of the user', example: 'Male' })
   @IsOptional()
   @IsString()
@@ -38,6 +48,11 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsString()
   maritalStatus?: string;
+
+  @ApiPropertyOptional({ description: 'Date of Marriage in ISO format', example: '2024-01-01' })
+  @IsOptional()
+  @IsDateString()
+  marriageDate?: Date;
 
   @ApiPropertyOptional({ description: 'Name of the spouse', example: 'Wife/Husband' })
   @IsOptional()
@@ -97,10 +112,15 @@ export class UpdateProfileDto {
   @IsString()
   hobbies?: string;
 
-  @ApiPropertyOptional({ description: 'Likes and Dislikes', example: 'Likes: Nature, Dislikes: Noise' })
+  @ApiPropertyOptional({ description: 'Likes', example: 'Likes: Nature' })
   @IsOptional()
   @IsString()
-  likesDislikes?: string;
+  likes?: string;
+
+  @ApiPropertyOptional({ description: 'Dislikes', example: 'Dislikes: Noise' })
+  @IsOptional()
+  @IsString()
+  dislikes?: string;
 
   @ApiPropertyOptional({ description: 'Favorite foods', example: 'Dosa, Briyani' })
   @IsOptional()

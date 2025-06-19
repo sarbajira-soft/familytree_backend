@@ -40,17 +40,15 @@ export class UserController {
   constructor(private readonly userService: UserService) {}
 
   @Post('register')
-  @HttpCode(HttpStatus.CREATED)
   @ApiOperation({ summary: 'Register a new user' })
   @ApiResponse({ status: 201, description: 'User registered successfully. OTP sent to email.' })
-  @ApiResponse({ status: 400, description: 'Bad request. Email or mobile number already registered.' })
+  @ApiResponse({ status: 400, description: 'Bad request... Email or mobile number already registered.' })
   @ApiBody({ type: RegisterDto })
   async register(@Body() registerDto: RegisterDto) {
     return this.userService.register(registerDto);
   }
 
   @Post('verify-otp')
-  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Verify OTP and activate account' })
   @ApiResponse({ status: 200, description: 'Account verified successfully' })
   @ApiResponse({ status: 400, description: 'Invalid or expired OTP' })
@@ -60,7 +58,6 @@ export class UserController {
   }
 
   @Post('login')
-  @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Login with email and password' })
   @ApiResponse({ status: 200, description: 'Login successful' })
   @ApiResponse({ status: 400, description: 'Invalid credentials' })
@@ -131,10 +128,10 @@ export class UserController {
 
     // Convert param to number just in case
     const targetUserId = Number(id);
-
+    
     // Role 1 can only update their own profile
     if (loggedInUser.role === 1 && loggedInUser.userId !== targetUserId) {
-      throw new BadRequestException('Access denied: Members can only update their own profile');
+      throw new BadRequestException({message:'Access denied: Members can only update their own profile'});
     }
     // Admins and Super Admins can access any profile
     const userdata = await this.userService.getUserProfile(id);
@@ -181,9 +178,9 @@ export class UserController {
 
     // Role 1 can only update their own profile
     if (loggedInUser.role === 1 && loggedInUser.userId !== targetUserId) {
-      throw new BadRequestException('Access denied: Members can only update their own profile');
+      throw new BadRequestException({message:'Access denied: Members can only update their own profile'});
     }
-
+    console.log(body)
     Object.keys(body).forEach((key) => {
       if (body[key] === '') {
         body[key] = undefined;
@@ -194,7 +191,7 @@ export class UserController {
     if (file) {
       body.profile = file.filename;
     }
-
+    console.log(body)
     return this.userService.updateProfile(targetUserId, body);
   }
 

@@ -38,6 +38,9 @@ export class UserProfile extends Model<UserProfile> {
   @Column(DataType.STRING)
   maritalStatus: string;
 
+  @Column(DataType.DATE)
+  marriageDate: Date;
+
   @Column(DataType.STRING)
   spouseName: string;
 
@@ -72,7 +75,10 @@ export class UserProfile extends Model<UserProfile> {
   hobbies: string;
 
   @Column(DataType.TEXT)
-  likesDislikes: string;
+  likes: string;
+
+  @Column(DataType.TEXT)
+  dislikes: string;
 
   @Column(DataType.TEXT)
   favoriteFoods: string;

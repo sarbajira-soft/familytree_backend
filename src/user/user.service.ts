@@ -366,6 +366,14 @@ export class UserService {
     });
 
     if (!user) throw new NotFoundException('User profile not found');
+    const baseUrl = process.env.BASE_URL || '';
+    const basePath = process.env.UPLOAD_BASE_PATH || '/uploads';
+    const profile = user.userProfile?.profile;
+
+    // If profile image exists, prepend base URL
+    if (profile) {
+      user.userProfile.profile = `${baseUrl}/${basePath}/${profile}`;
+    }
 
     return user;
   }

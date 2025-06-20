@@ -387,7 +387,6 @@ export class UserService {
     const basePath = process.env.UPLOAD_BASE_PATH || '/uploads';
     const folderPath = process.env.PROFILE_FOLDER || '/profile';
     const profile = user.userProfile?.profile;
-    console.log(user);
     
     if (profile) {
       user.userProfile.profile = `${baseUrl}/${basePath}/${folderPath}/${profile}`;

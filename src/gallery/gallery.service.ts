@@ -5,159 +5,307 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
+import { Op } from 'sequelize';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Gallery } from './model/gallery.model';
+import { GalleryAlbum } from './model/gallery-album.model';
+import { GalleryLike } from './model/gallery-like.model';
+import { GalleryComment } from './model/gallery-comment.model';
 import { UserProfile } from '../user/model/user-profile.model';
+
 import { CreateGalleryDto } from './dto/gallery.dto';
+import { CreateGalleryCommentDto } from './dto/gallery-comment.dto';
 
 @Injectable()
 export class GalleryService {
   constructor(
     @InjectModel(Gallery)
     private readonly galleryModel: typeof Gallery,
+    @InjectModel(GalleryAlbum)
+    private readonly galleryAlbumModel: typeof GalleryAlbum,
+    @InjectModel(GalleryLike)
+    private readonly galleryLikeModel: typeof GalleryLike,
+    @InjectModel(GalleryComment)
+    private readonly galleryCommentModel: typeof GalleryComment,
     @InjectModel(UserProfile)
     private readonly userProfileModel: typeof UserProfile,
   ) {}
 
-  async createGallery(dto: CreateGalleryDto, createdBy: number) {
-    // Validate family code against user's profile
-    await this.validateFamilyCode(dto.familyCode, createdBy);
+  async createGallery(
+    dto: CreateGalleryDto,
+    createdBy: number,
+    albumImages: Express.Multer.File[],
+  ) {
+    //await this.validateFamilyCode(dto.familyCode, createdBy);
 
-    // Ensure images array is not empty
-    if (!dto.images || dto.images.length === 0) {
-      throw new BadRequestException(
-        'At least one image is required for gallery creation',
-      );
+    if (!albumImages || albumImages.length === 0) {
+      throw new BadRequestException('At least one album image is required.');
     }
 
+    // Create gallery
     const gallery = await this.galleryModel.create({
-      ...dto,
-      images: JSON.stringify(dto.images), // Store as JSON string
+      galleryTitle: dto.galleryTitle,
+      galleryDescription: dto.galleryDescription,
+      familyCode: dto.familyCode,
       createdBy,
+      status: dto.status ?? 1,
+      coverPhoto: dto.coverPhoto as any || null,
+      privacy: dto.privacy ?? 'public',
     });
+
+    // Save album images
+    const albumData = albumImages.map((file) => ({
+      galleryId: gallery.id,
+      album: file.filename,
+    }));
+
+    await this.galleryAlbumModel.bulkCreate(albumData);
 
     return {
       message: 'Gallery created successfully',
       data: {
-        ...gallery.toJSON(),
-        images: JSON.parse(gallery.images), // Parse back to array for response
+        id: gallery.id,
+        galleryTitle: gallery.galleryTitle,
+        coverPhoto: gallery.coverPhoto,
+        album: albumImages.map((img) => img.filename),
       },
     };
   }
 
-  async getAll() {
-    const galleries = await this.galleryModel.findAll({
-      where: { status: 1 }, // Only active galleries
-    });
+  async getGalleryByOptions(
+    privacy: 'public' | 'private',
+    familyCode?: string,
+    createdBy?: number,
+    galleryId?: number,
+    galleryTitle?: string,
+  ) {
+    const whereClause: any = {};
 
-    return galleries.map((gallery) => ({
-      ...gallery.toJSON(),
-      images: JSON.parse(gallery.images || '[]'),
-    }));
-  }
-
-  async getByFamilyCode(familyCode: string) {
-    const galleries = await this.galleryModel.findAll({
-      where: {
-        familyCode,
-        status: 1,
-      },
-    });
-
-    return galleries.map((gallery) => ({
-      ...gallery.toJSON(),
-      images: JSON.parse(gallery.images || '[]'),
-    }));
-  }
-
-  async getById(id: number) {
-    const gallery = await this.galleryModel.findByPk(id);
-    if (!gallery) throw new NotFoundException('Gallery not found');
-
-    return {
-      ...gallery.toJSON(),
-      images: JSON.parse(gallery.images || '[]'),
-    };
-  }
-
-  async update(id: number, dto: CreateGalleryDto, loggedId: number) {
-    const gallery = await this.galleryModel.findByPk(id);
-    if (!gallery) throw new NotFoundException('Gallery not found');
-
-    // Validate family code
-    await this.validateFamilyCode(dto.familyCode, loggedId);
-
-    // Handle image replacement
-    if (dto.images && dto.images.length > 0) {
-      // Delete old images
-      const oldImages = JSON.parse(gallery.images || '[]');
-      await this.deleteImageFiles(oldImages);
+    if (galleryId) {
+      whereClause.id = galleryId;
     }
 
-    const updateData = {
-      ...dto,
-      images: dto.images ? JSON.stringify(dto.images) : gallery.images,
-      createdBy: loggedId,
-    };
+    if (galleryTitle) {
+      whereClause.galleryTitle = {
+        [Op.like]: `%${galleryTitle}%`,
+      };
+    }
 
-    await gallery.update(updateData);
+    if (privacy) {
+      if (privacy === 'private') {
+        if (!familyCode) {
+          throw new BadRequestException('familyCode is required for private or family privacy');
+        }
+        whereClause.privacy = privacy;
+        whereClause.familyCode = familyCode;
+      } else if (privacy === 'public') {
+        whereClause.privacy = 'public';
+      } else {
+        throw new BadRequestException('Invalid privacy value');
+      }
+    }
+
+    if (createdBy) {
+      whereClause.createdBy = createdBy;
+    }
+    
+    const galleries = await this.galleryModel.findAll({
+      where: whereClause,
+      include: [
+        {
+          model: this.galleryAlbumModel,
+          as: 'galleryAlbums',
+        },
+      ],
+      order: [['createdAt', 'DESC']],
+    });
+
+    const baseUrl = process.env.BASE_URL || '';
+    const uploadPath = process.env.GALLERY_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/gallery';
+
+    const formatted = galleries.map((gallery) => {
+      const galleryJson = gallery.toJSON();
+
+      const albumImages = (galleryJson.galleryAlbums || []).map((album) => ({
+        ...album,
+        album: album.album
+          ? `${baseUrl}/${uploadPath}/${album.album}`
+          : null,
+      }));
+
+      let coverImageUrl: string | null = null;
+      if (galleryJson.coverPhoto) {
+        coverImageUrl = `${baseUrl}/${uploadPath}/${galleryJson.coverPhoto}`;
+      } else if (albumImages.length > 0) {
+        coverImageUrl = albumImages[0].album;
+      }
+
+      return {
+        ...galleryJson,
+        coverPhoto: coverImageUrl,
+        galleryAlbums: albumImages,
+      };
+    });
+
+    return formatted;
+  }
+
+  async updateGallery(
+    id: number,
+    dto: CreateGalleryDto,
+    updatedBy: number,
+    coverPhotoFile?: Express.Multer.File,
+    albumFiles?: Express.Multer.File[],
+  ) {
+    const gallery = await this.galleryModel.findByPk(id, {
+      include: [{ model: this.galleryAlbumModel, as: 'galleryAlbums' }],
+    });
+
+    if (!gallery) throw new NotFoundException('Gallery not found');
+
+    const uploadPath = process.env.GALLERY_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/gallery';
+
+    // Delete old cover photo if new one uploaded
+    if (coverPhotoFile && gallery.coverPhoto) {
+      const oldCover = `${uploadPath}/${gallery.coverPhoto}`;
+      if (fs.existsSync(oldCover)) fs.unlinkSync(oldCover);
+      dto.coverPhoto = coverPhotoFile.filename as any;
+    }
+
+    // Delete old album images if new images uploaded
+    if (albumFiles && albumFiles.length > 0 && gallery.galleryAlbums?.length > 0) {
+      for (const album of gallery.galleryAlbums) {
+        const imgPath = `${uploadPath}/${album.album}`;
+        if (fs.existsSync(imgPath)) fs.unlinkSync(imgPath);
+        await album.destroy();
+      }
+
+      // Insert new album images
+      await Promise.all(
+        albumFiles.map((file) =>
+          this.galleryAlbumModel.create({ galleryId: id, album: file.filename }),
+        ),
+      );
+    }
+
+    // Update fields
+    await gallery.update({ ...dto as any });
+
+    // Return updated gallery with full URLs
+    const baseUrl = process.env.BASE_URL || '';
+    const newGallery = await this.galleryModel.findByPk(id, {
+      include: [{ model: this.galleryAlbumModel, as: 'galleryAlbums' }],
+    });
+
+    const galleryJson = newGallery.toJSON();
+    const albumImages = galleryJson.galleryAlbums.map((album) => ({
+      ...album,
+      album: `${baseUrl}/${uploadPath}/${album.album}`,
+    }));
+
+    let coverImageUrl = galleryJson.coverPhoto
+      ? `${baseUrl}/${uploadPath}/${galleryJson.coverPhoto}`
+      : albumImages[0]?.album || null;
 
     return {
       message: 'Gallery updated successfully',
       data: {
-        ...gallery.toJSON(),
-        images: JSON.parse(gallery.images || '[]'),
+        ...galleryJson,
+        coverPhoto: coverImageUrl,
+        galleryAlbums: albumImages,
       },
     };
   }
 
-  async delete(id: number, loggedId: number) {
-    const gallery = await this.galleryModel.findByPk(id);
-    if (!gallery) throw new NotFoundException('Gallery not found');
-
-    // Optional: Check if user has permission to delete (same family)
-    await this.validateFamilyCode(gallery.familyCode, loggedId);
-
-    // Delete associated images
-    const images = JSON.parse(gallery.images || '[]');
-    await this.deleteImageFiles(images);
-
-    await gallery.destroy();
-    return { message: 'Gallery deleted successfully' };
-  }
-
-  private async validateFamilyCode(familyCode: string, userId: number) {
-    const userProfile = await this.userProfileModel.findOne({
-      where: { userId },
+  async deleteGallery(id: number) {
+    const gallery = await this.galleryModel.findByPk(id, {
+      include: [{ model: this.galleryAlbumModel, as: 'galleryAlbums' }],
     });
 
-    if (!userProfile) {
-      throw new NotFoundException('User profile not found');
+    if (!gallery) {
+      throw new NotFoundException('Gallery not found');
     }
 
-    if (userProfile.familyCode !== familyCode) {
-      throw new ForbiddenException(
-        'You can only create/access galleries for your family',
-      );
+    const uploadPath =
+      process.env.GALLERY_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/gallery';
+
+    // 🧹 Delete album images (DB + files)
+    for (const album of gallery.galleryAlbums || []) {
+      const filePath = `${uploadPath}/${album.album}`;
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+      await album.destroy();
+    }
+
+    // Delete cover photo file
+    if (gallery.coverPhoto) {
+      const coverPath = `${uploadPath}/${gallery.coverPhoto}`;
+      if (fs.existsSync(coverPath)) fs.unlinkSync(coverPath);
+    }
+
+    // Delete gallery record
+    await gallery.destroy();
+
+    return {
+      message: 'Gallery and all related images deleted successfully',
+    };
+  }
+
+  async toggleLike(galleryId: number, userId: number) {
+    const existingLike = await this.galleryLikeModel.findOne({
+      where: { galleryId, userId },
+    });
+
+    if (existingLike) {
+      await existingLike.destroy();
+      return { message: 'Gallery unliked' };
+    } else {
+      await this.galleryLikeModel.create({ galleryId, userId });
+      return { message: 'Gallery liked' };
     }
   }
 
-  private async deleteImageFiles(imageFiles: string[]) {
-    const uploadDir =
-      process.env.GALLERY_PHOTO_UPLOAD_PATH || './uploads/gallery';
-
-    for (const imageFile of imageFiles) {
-      const imagePath = path.join(uploadDir, imageFile);
-
-      if (fs.existsSync(imagePath)) {
-        try {
-          fs.unlinkSync(imagePath);
-          console.log('Gallery image deleted:', imagePath);
-        } catch (err) {
-          console.warn('Failed to delete gallery image:', err.message);
-        }
-      }
-    }
+  async getGalleryLikeCount(galleryId: number) {
+    const count = await this.galleryLikeModel.count({
+      where: { galleryId },
+    });
+    return { galleryId, likes: count };
   }
+
+  async addGalleryComment(dto: CreateGalleryCommentDto, userId: number) {
+    const comment = await this.galleryCommentModel.create({
+      galleryId: dto.galleryId,
+      userId,
+      comments: dto.comments,
+    });
+
+    return {
+      message: 'Comment added successfully',
+      data: comment,
+    };
+  }
+
+  async getGalleryComments(galleryId: number) {
+    const comments = await this.galleryCommentModel.findAll({
+      where: { galleryId },
+      order: [['createdAt', 'DESC']],
+    });
+
+    return {
+      galleryId,
+      comments,
+    };
+  }
+
+  async getGalleryCommentCount(galleryId: number) {
+    const count = await this.galleryCommentModel.count({
+      where: { galleryId },
+    });
+
+    return {
+      galleryId,
+      commentCount: count,
+    };
+  }
+
 }

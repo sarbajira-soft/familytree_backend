@@ -11,13 +11,7 @@ export class Post extends Model<Post> {
     type: DataType.STRING,
     allowNull: false,
   })
-  postName: string;
-
-  @Column({
-    type: DataType.TEXT,
-    allowNull: true,
-  })
-  postDescription: string;
+  caption: string;
 
   @Column({
     type: DataType.STRING,
@@ -28,7 +22,12 @@ export class Post extends Model<Post> {
   @Column({
     type: DataType.STRING,
     allowNull: false,
-    unique: true,
+  })
+  privacy: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: false,
   })
   familyCode: string;
 

@@ -5,83 +5,93 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
+import { Op } from 'sequelize';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Post } from './model/post.model';
+import { PostLike } from './model/post-like.model';
+import { PostComment } from './model/post-comment.model';
 import { UserProfile } from '../user/model/user-profile.model';
-import { CreatePostDto } from './dto/post.dto';
+import { CreatePostDto } from './dto/createpost.dto';
 
 @Injectable()
 export class PostService {
   constructor(
-    @InjectModel(Post)
-    private readonly postModel: typeof Post,
-    // TODO: Uncomment when implementing family code validation
-    // @InjectModel(UserProfile)
-    // private readonly userProfileModel: typeof UserProfile,
+      @InjectModel(Post)
+      private readonly postModel: typeof Post,
+      @InjectModel(PostLike)
+      private readonly postLikeModel: typeof PostLike,
+      @InjectModel(PostComment)
+      private readonly postCommentModel: typeof PostComment,
+      @InjectModel(UserProfile)
+      private readonly userProfileModel: typeof UserProfile,
   ) {}
 
-  async createPost(dto: CreatePostDto, createdBy: number) {
-    // TODO: Validate family code against user's profile
+  async createPost(
+    dto: CreatePostDto,
+    createdBy: number,
+  ) {
+    // Optional: Validate familyCode if needed
     // await this.validateFamilyCode(dto.familyCode, createdBy);
 
+    // Create post
     const post = await this.postModel.create({
-      ...dto,
+      caption: dto.caption,
+      familyCode: dto.familyCode,
       createdBy,
+      status: dto.status ?? 1,
+      postImage: dto.postImage as any || null,
+      privacy: dto.privacy ?? 'public',
     });
 
     return {
       message: 'Post created successfully',
-      data: post,
+      data: {
+        id: post.id,
+        caption: post.caption,
+        postImage: post.postImage,
+        privacy: post.privacy,
+        familyCode: post.familyCode,
+        status: post.status,
+      },
     };
   }
 
-  async getAll() {
-    return await this.postModel.findAll();
-  }
+  async updatePost(
+    postId: number,
+    userId: number,
+    dto: CreatePostDto,
+    newImage?: Express.Multer.File,
+  ) {
+    const post = await this.postModel.findOne({ where: { id: postId, createdBy: userId } });
 
-  async getByFamilyCode(familyCode: string) {
-    const posts = await this.postModel.findAll({
-      where: { 
-        familyCode,
-        status: 1 
-      },
-    });
+    if (!post) {
+      throw new NotFoundException('Post not found or access denied.');
+    }
 
-    return posts;
-  }
+    const oldImage = post.postImage;
 
-  async getById(id: number) {
-    const post = await this.postModel.findByPk(id);
-    if (!post) throw new NotFoundException('Post not found');
-    return post;
-  }
+    // If new image uploaded, set it
+    if (newImage) {
+      dto.postImage = newImage.filename as any;
 
-  async update(id: number, dto: any, newFileName?: string, loggedId?: number) {
-    const post = await this.postModel.findByPk(id);
-    if (!post) throw new NotFoundException('Post not found');
-
-    // TODO: Validate family code
-    // await this.validateFamilyCode(dto.familyCode, loggedId);
-
-    // Delete old image file if new one is uploaded
-    if (newFileName && post.postImage) {
-      const oldFile = post.postImage;
-      const uploadDir = process.env.POST_IMAGE_UPLOAD_PATH || './uploads/posts';
-      const oldFilePath = path.join(uploadDir, oldFile);
-
-      if (fs.existsSync(oldFilePath)) {
-        try {
-          fs.unlinkSync(oldFilePath);
-          console.log('Old post image deleted:', oldFilePath);
-        } catch (err) {
-          console.warn('Failed to delete old image:', err.message);
+      // Delete old image file
+      if (oldImage) {
+        const uploadPath = process.env.POST_PHOTO_UPLOAD_PATH || './uploads/posts';
+        const fullPath = `${uploadPath}/${oldImage}`;
+        if (fs.existsSync(fullPath)) {
+          fs.unlinkSync(fullPath);
         }
       }
     }
 
-    dto.createdBy = loggedId;
-    await post.update(dto);
+    await post.update({
+      caption: dto.caption ?? post.caption,
+      privacy: dto.privacy ?? post.privacy,
+      familyCode: dto.familyCode ?? post.familyCode,
+      status: dto.status ?? post.status,
+      postImage: dto.postImage ?? post.postImage as any,
+    });
 
     return {
       message: 'Post updated successfully',
@@ -89,57 +99,112 @@ export class PostService {
     };
   }
 
-  async delete(id: number, loggedId?: number) {
-    const post = await this.postModel.findByPk(id);
-    if (!post) throw new NotFoundException('Post not found');
+  async getPostByOptions(
+    privacy?: 'public' | 'private' | 'family',
+    familyCode?: string,
+    createdBy?: number,
+    postId?: number,
+    caption?: string,
+  ) {
+    const whereClause: any = {};
 
-    // TODO: Check if user has permission to delete (same family)
-    // await this.validateUserFamilyAccess(post.familyCode, loggedId);
+    if (postId) {
+      whereClause.id = postId;
+    }
 
-    // Optional: delete associated image
-    if (post.postImage) {
-      const uploadDir = process.env.POST_IMAGE_UPLOAD_PATH || './uploads/posts';
-      const imagePath = path.join(uploadDir, post.postImage);
-
-      if (fs.existsSync(imagePath)) {
-        try {
-          fs.unlinkSync(imagePath);
-        } catch (err) {
-          console.warn('Failed to delete post image:', err.message);
+    if (privacy) {
+      if (privacy === 'private' || privacy === 'family') {
+        if (!familyCode) {
+          throw new BadRequestException('familyCode is required for private/family privacy');
         }
+        whereClause.privacy = privacy;
+        whereClause.familyCode = familyCode;
+      } else if (privacy === 'public') {
+        whereClause.privacy = 'public';
+      } else {
+        throw new BadRequestException('Invalid privacy value');
       }
     }
 
-    await post.destroy();
-    return { message: 'Post deleted successfully' };
+    if (createdBy) {
+      whereClause.createdBy = createdBy;
+    }
+
+    if (caption) {
+      whereClause.caption = { [Op.iLike]: `%${caption}%` };
+    }
+
+    const posts = await this.postModel.findAll({
+      where: whereClause,
+      order: [['createdAt', 'DESC']],
+    });
+
+    const baseUrl = process.env.BASE_URL || '';
+    const uploadPath =
+      process.env.POST_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/posts';
+
+    // Attach full URL for postImage if present
+    const formatted = posts.map((post) => {
+      const postJson = post.toJSON();
+
+      let postImageUrl: string | null = null;
+      if (postJson.postImage) {
+        postImageUrl = `${baseUrl}/${uploadPath}/${postJson.postImage}`;
+      }
+
+      return {
+        ...postJson,
+        postImage: postImageUrl,
+      };
+    });
+
+    return formatted;
   }
 
-  // TODO: Uncomment and implement family code validation later
-  // private async validateFamilyCode(familyCode: string, userId: number) {
-  //   const userProfile = await this.userProfileModel.findOne({
-  //     where: { userId }
-  //   });
+  async toggleLikePost(postId: number, userId: number) {
+    const existingLike = await this.postLikeModel.findOne({ where: { postId, userId } });
 
-  //   if (!userProfile) {
-  //     throw new NotFoundException('User profile not found');
-  //   }
+    if (existingLike) {
+      // User already liked it, so remove like
+      await existingLike.destroy();
+      return { liked: false, message: 'Like removed' };
+    } else {
+      // User did not like yet, create like
+      await this.postLikeModel.create({ postId, userId });
+      return { liked: true, message: 'Post liked' };
+    }
+  }
 
-  //   if (userProfile.familyCode !== familyCode) {
-  //     throw new ForbiddenException('You can only create/access posts for your family');
-  //   }
-  // }
+  async addComment(postId: number, userId: number, comment: string) {
+    return this.postCommentModel.create({ postId, userId, comment });
+  }
 
-  // private async validateUserFamilyAccess(postFamilyCode: string, userId: number) {
-  //   const userProfile = await this.userProfileModel.findOne({
-  //     where: { userId }
-  //   });
+  async getComments(postId: number, page = 1, limit = 10) {
+    const offset = (page - 1) * limit;
 
-  //   if (!userProfile) {
-  //     throw new NotFoundException('User profile not found');
-  //   }
+    const { rows, count } = await this.postCommentModel.findAndCountAll({
+      where: { postId },
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset,
+    });
 
-  //   if (userProfile.familyCode !== postFamilyCode) {
-  //     throw new ForbiddenException('You can only access posts from your family');
-  //   }
-  // }
+    return {
+      total: count,
+      page,
+      limit,
+      comments: rows,
+    };
+  }
+
+  async getCommentCount(postId: number) {
+    const count = await this.postCommentModel.count({ where: { postId } });
+    return { postId, likes: count };
+  }
+
+  async getLikeCount(postId: number) {
+    const count = await this.postLikeModel.count({ where: { postId } });
+    return { postId, likes: count };
+  }
+
 }

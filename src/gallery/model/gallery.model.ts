@@ -6,7 +6,9 @@ import {
   Default,
   PrimaryKey,
   AutoIncrement,
+  HasMany,
 } from 'sequelize-typescript';
+import { GalleryAlbum } from './gallery-album.model'
 
 @Table({ tableName: 'ft_gallery' })
 export class Gallery extends Model<Gallery> {
@@ -16,10 +18,28 @@ export class Gallery extends Model<Gallery> {
   id: number;
 
   @Column({
-    type: DataType.JSON, // Store array of image filenames as JSON
+    type: DataType.STRING,
     allowNull: false,
   })
-  images: string; // Will store JSON string of image array
+  galleryTitle: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  galleryDescription: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  coverPhoto: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: false,
+  })
+  privacy: string;
 
   @Column({
     type: DataType.STRING,
@@ -44,4 +64,11 @@ export class Gallery extends Model<Gallery> {
   @Default(DataType.NOW)
   @Column(DataType.DATE)
   updatedAt: Date;
+
+  @HasMany(() => GalleryAlbum, {
+    foreignKey: 'galleryId',
+    as: 'galleryAlbums',
+  })
+  galleryAlbums: GalleryAlbum[];
+
 }

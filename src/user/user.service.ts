@@ -413,7 +413,6 @@ export class UserService {
       if (newFile && user.profile && user.profile !== newFile) {
         const uploadPath = process.env.UPLOAD_FOLDER_PATH || './uploads/profile';
         const oldImagePath = path.join(uploadPath, user.profile);
-
         try {
           if (fs.existsSync(oldImagePath)) {
             fs.unlinkSync(oldImagePath);

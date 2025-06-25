@@ -1,6 +1,7 @@
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { Post } from '../post/model/post.model';
+import { PostComment } from '../post/model/post-comment.model';
 import { FamilyMember } from '../family/model/family-member.model';
 
 export function setupAssociations() {
@@ -12,7 +13,6 @@ export function setupAssociations() {
   UserProfile.hasOne(FamilyMember, { foreignKey: 'memberId', sourceKey: 'userId', as: 'familyMember' });
   FamilyMember. belongsTo(UserProfile, { foreignKey: 'memberId', targetKey: 'userId', as: 'userProfile' });
 
-  // Post
-  Post.belongsTo(User, { as: 'author', foreignKey: 'authorId' });
-  Post.belongsTo(User, { as: 'editor', foreignKey: 'editorId' });
+  PostComment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
 }

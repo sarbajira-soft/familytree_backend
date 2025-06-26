@@ -92,14 +92,17 @@ export class GalleryController {
     return this.galleryService.createGallery(body, loggedInUser.userId, albumImages);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get('by-options')
-  async getGalleryByOptions(@Query() query: GetGalleryByOptionsDto) {
+  @ApiBearerAuth()
+  async getGalleryByOptions(@Query() query: GetGalleryByOptionsDto, @Req() req) {
     return this.galleryService.getGalleryByOptions(
       query.privacy as 'public' | 'private',
       query.familyCode,
       query.createdBy,
       query.galleryId,
       query.galleryTitle,
+      req.user.userId,
     );
   }
 
@@ -149,7 +152,7 @@ export class GalleryController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Like or Unlike a gallery' })
   async toggleLike(@Body() body: ToggleLikeDto, @Req() req) {
-    return this.galleryService.toggleLike(body.galleryId, req.user.userId);
+    return this.galleryService.toggleLikeGallery(body.galleryId, req.user.userId);
   }
 
   @Get(':id/likes')

@@ -79,12 +79,11 @@ export class GalleryService {
     createdBy?: number,
     galleryId?: number,
     galleryTitle?: string,
+    userId?: number, // optional to check if user liked
   ) {
     const whereClause: any = {};
 
-    if (galleryId) {
-      whereClause.id = galleryId;
-    }
+    if (galleryId) whereClause.id = galleryId;
 
     if (galleryTitle) {
       whereClause.galleryTitle = {
@@ -95,7 +94,7 @@ export class GalleryService {
     if (privacy) {
       if (privacy === 'private') {
         if (!familyCode) {
-          throw new BadRequestException('familyCode is required for private or family privacy');
+          throw new BadRequestException('familyCode is required for private privacy');
         }
         whereClause.privacy = privacy;
         whereClause.familyCode = familyCode;
@@ -106,10 +105,8 @@ export class GalleryService {
       }
     }
 
-    if (createdBy) {
-      whereClause.createdBy = createdBy;
-    }
-    
+    if (createdBy) whereClause.createdBy = createdBy;
+
     const galleries = await this.galleryModel.findAll({
       where: whereClause,
       include: [
@@ -124,29 +121,49 @@ export class GalleryService {
     const baseUrl = process.env.BASE_URL || '';
     const uploadPath = process.env.GALLERY_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/gallery';
 
-    const formatted = galleries.map((gallery) => {
-      const galleryJson = gallery.toJSON();
+    const formatted = await Promise.all(
+      galleries.map(async (gallery) => {
+        const galleryJson = gallery.toJSON();
 
-      const albumImages = (galleryJson.galleryAlbums || []).map((album) => ({
-        ...album,
-        album: album.album
-          ? `${baseUrl}/${uploadPath}/${album.album}`
-          : null,
-      }));
+        // Format album image URLs
+        const albumImages = (galleryJson.galleryAlbums || []).map((album) => ({
+          ...album,
+          album: album.album ? `${baseUrl}/${uploadPath}/${album.album}` : null,
+        }));
 
-      let coverImageUrl: string | null = null;
-      if (galleryJson.coverPhoto) {
-        coverImageUrl = `${baseUrl}/${uploadPath}/${galleryJson.coverPhoto}`;
-      } else if (albumImages.length > 0) {
-        coverImageUrl = albumImages[0].album;
-      }
+        // Set cover photo
+        let coverImageUrl: string | null = null;
+        if (galleryJson.coverPhoto) {
+          coverImageUrl = `${baseUrl}/${uploadPath}/${galleryJson.coverPhoto}`;
+        } else if (albumImages.length > 0) {
+          coverImageUrl = albumImages[0].album;
+        }
 
-      return {
-        ...galleryJson,
-        coverPhoto: coverImageUrl,
-        galleryAlbums: albumImages,
-      };
-    });
+        // Get like count and comment count
+        const [likeCount, commentCount] = await Promise.all([
+          this.galleryLikeModel.count({ where: { galleryId: gallery.id } }),
+          this.galleryCommentModel.count({ where: { galleryId: gallery.id } }),
+        ]);
+
+        // Check if current user liked this gallery
+        let isLiked = false;
+        if (userId) {
+          const liked = await this.galleryLikeModel.findOne({
+            where: { galleryId: gallery.id, userId },
+          });
+          isLiked = !!liked;
+        }
+
+        return {
+          ...galleryJson,
+          coverPhoto: coverImageUrl,
+          galleryAlbums: albumImages,
+          likeCount,
+          commentCount,
+          ...(userId !== undefined && { isLiked }),
+        };
+      })
+    );
 
     return formatted;
   }
@@ -251,18 +268,27 @@ export class GalleryService {
     };
   }
 
-  async toggleLike(galleryId: number, userId: number) {
+  async toggleLikeGallery(galleryId: number, userId: number) {
     const existingLike = await this.galleryLikeModel.findOne({
       where: { galleryId, userId },
     });
 
     if (existingLike) {
+      // User already liked it, so remove like
       await existingLike.destroy();
-      return { message: 'Gallery unliked' };
     } else {
+      // User did not like yet, create like
       await this.galleryLikeModel.create({ galleryId, userId });
-      return { message: 'Gallery liked' };
     }
+
+    // Get updated like count
+    const likeCount = await this.galleryLikeModel.count({ where: { galleryId } });
+
+    return {
+      liked: !existingLike,
+      message: existingLike ? 'Gallery unliked' : 'Gallery liked',
+      totalLikes: likeCount,
+    };
   }
 
   async getGalleryLikeCount(galleryId: number) {
@@ -285,15 +311,44 @@ export class GalleryService {
     };
   }
 
-  async getGalleryComments(galleryId: number) {
-    const comments = await this.galleryCommentModel.findAll({
+  async getGalleryComments(galleryId: number, page = 1, limit = 10) {
+    const offset = (page - 1) * limit;
+    const baseUrl = process.env.BASE_URL || '';
+    const profileUploadPath =
+      process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
+
+    const { rows, count } = await this.galleryCommentModel.findAndCountAll({
       where: { galleryId },
       order: [['createdAt', 'DESC']],
+      limit,
+      offset,
+      include: [
+        {
+          model: this.userProfileModel,
+          as: 'userProfile',
+          attributes: ['firstName', 'lastName', 'profile'],
+        },
+      ],
     });
 
     return {
-      galleryId,
-      comments,
+      total: count,
+      page,
+      limit,
+      comments: rows.map((comment: any) => ({
+        id: comment.id,
+        comment: comment.comments,
+        createdAt: comment.createdAt,
+        user: comment.userProfile
+          ? {
+              firstName: comment.userProfile.firstName,
+              lastName: comment.userProfile.lastName,
+              profile: comment.userProfile.profile
+                ? `${baseUrl}/${profileUploadPath}/${comment.userProfile.profile}`
+                : null,
+            }
+          : null,
+      })),
     };
   }
 

@@ -11,6 +11,7 @@ import * as path from 'path';
 import { Post } from './model/post.model';
 import { PostLike } from './model/post-like.model';
 import { PostComment } from './model/post-comment.model';
+import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { CreatePostDto } from './dto/createpost.dto';
 
@@ -25,6 +26,8 @@ export class PostService {
       private readonly postCommentModel: typeof PostComment,
       @InjectModel(UserProfile)
       private readonly userProfileModel: typeof UserProfile,
+      @InjectModel(User)
+      private readonly userModel: typeof User,
   ) {}
 
   async createPost(
@@ -105,12 +108,11 @@ export class PostService {
     createdBy?: number,
     postId?: number,
     caption?: string,
+    userId?: number
   ) {
     const whereClause: any = {};
 
-    if (postId) {
-      whereClause.id = postId;
-    }
+    if (postId) whereClause.id = postId;
 
     if (privacy) {
       if (privacy === 'private' || privacy === 'family') {
@@ -126,9 +128,7 @@ export class PostService {
       }
     }
 
-    if (createdBy) {
-      whereClause.createdBy = createdBy;
-    }
+    if (createdBy) whereClause.createdBy = createdBy;
 
     if (caption) {
       whereClause.caption = { [Op.iLike]: `%${caption}%` };
@@ -143,20 +143,43 @@ export class PostService {
     const uploadPath =
       process.env.POST_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/posts';
 
-    // Attach full URL for postImage if present
-    const formatted = posts.map((post) => {
-      const postJson = post.toJSON();
+    const formatted = await Promise.all(
+      posts.map(async (post) => {
+        const postJson = post.toJSON();
 
-      let postImageUrl: string | null = null;
-      if (postJson.postImage) {
-        postImageUrl = `${baseUrl}/${uploadPath}/${postJson.postImage}`;
-      }
+        // Post image URL
+        let postImageUrl: string | null = null;
+        if (postJson.postImage) {
+          postImageUrl = `${baseUrl}/${uploadPath}/${postJson.postImage}`;
+        }
 
-      return {
-        ...postJson,
-        postImage: postImageUrl,
-      };
-    });
+        // Get like count
+        const likeCount = await this.postLikeModel.count({ where: { postId: post.id } });
+
+        // Get comment count
+        const commentCount = await this.postCommentModel.count({ where: { postId: post.id } });
+
+        // Check if the user liked this post
+        let isLiked = false;
+        if (userId) {
+          const existingLike = await this.postLikeModel.findOne({
+            where: {
+              postId: post.id,
+              userId: userId, 
+            },
+          });
+          isLiked = !!existingLike;
+        }
+
+        return {
+          ...postJson,
+          postImage: postImageUrl,
+          likeCount,
+          commentCount,
+          isLiked, // ✅ Add this
+        };
+      })
+    );
 
     return formatted;
   }
@@ -167,12 +190,19 @@ export class PostService {
     if (existingLike) {
       // User already liked it, so remove like
       await existingLike.destroy();
-      return { liked: false, message: 'Like removed' };
     } else {
       // User did not like yet, create like
       await this.postLikeModel.create({ postId, userId });
-      return { liked: true, message: 'Post liked' };
     }
+
+    // Get the updated total like count
+    const likeCount = await this.postLikeModel.count({ where: { postId } });
+
+    return {
+      liked: !existingLike,
+      message: existingLike ? 'Like removed' : 'Post liked',
+      totalLikes: likeCount,
+    };
   }
 
   async addComment(postId: number, userId: number, comment: string) {
@@ -181,19 +211,40 @@ export class PostService {
 
   async getComments(postId: number, page = 1, limit = 10) {
     const offset = (page - 1) * limit;
+    const baseUrl = process.env.BASE_URL || '';
+    const profileUploadPath =
+      process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
 
     const { rows, count } = await this.postCommentModel.findAndCountAll({
       where: { postId },
       order: [['createdAt', 'DESC']],
       limit,
       offset,
+      include: [
+        {
+          model: this.userProfileModel,
+          as: 'userProfile',
+          attributes: ['firstName', 'lastName', 'profile'],
+        },
+      ],
     });
 
     return {
       total: count,
       page,
       limit,
-      comments: rows,
+      comments: rows.map((comment: any) => ({
+        id: comment.id,
+        content: comment.comment,
+        createdAt: comment.createdAt,
+        user: comment.userProfile ? {
+          firstName: comment.userProfile.firstName,
+          lastName: comment.userProfile.lastName,
+          profile: comment.userProfile.profile
+            ? `${baseUrl}/${profileUploadPath}/${comment.userProfile.profile}`
+            : null,
+        } : null,
+      })),
     };
   }
 

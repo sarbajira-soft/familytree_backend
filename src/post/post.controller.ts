@@ -115,14 +115,17 @@ export class PostController {
     return this.postService.updatePost(+id, userId, body, file);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get('by-options')
-  async getPostByOptions(@Query() query: GetPostByOptionsDto) {
+  @ApiBearerAuth()
+  async getPostByOptions(@Query() query: GetPostByOptionsDto, @Req() req,) {
     return this.postService.getPostByOptions(
       query.privacy,
       query.familyCode,
       query.createdBy,
       query.postId,
       query.caption,
+      req.user.userId,
     );
   } 
 

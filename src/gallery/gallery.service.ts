@@ -363,4 +363,72 @@ export class GalleryService {
     };
   }
 
+  async getGalleryById(
+    galleryId: number,
+    userId?: number, // optional, to check like status
+  ) {
+    if (!galleryId) {
+      throw new BadRequestException('galleryId is required');
+    }
+
+    const gallery = await this.galleryModel.findOne({
+      where: { id: galleryId },
+      include: [
+        {
+          model: this.galleryAlbumModel,
+          as: 'galleryAlbums',
+        },
+      ],
+    });
+
+    if (!gallery) {
+      throw new NotFoundException('Gallery not found');
+    }
+
+    const baseUrl = process.env.BASE_URL || '';
+    const uploadPath =
+      process.env.GALLERY_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') ||
+      'uploads/gallery';
+
+    const galleryJson = gallery.toJSON();
+
+    // Format album image URLs
+    const albumImages = (galleryJson.galleryAlbums || []).map((album) => ({
+      ...album,
+      album: album.album ? `${baseUrl}/${uploadPath}/${album.album}` : null,
+    }));
+
+    // Set cover photo
+    let coverImageUrl: string | null = null;
+    if (galleryJson.coverPhoto) {
+      coverImageUrl = `${baseUrl}/${uploadPath}/${galleryJson.coverPhoto}`;
+    } else if (albumImages.length > 0) {
+      coverImageUrl = albumImages[0].album;
+    }
+
+    // Get like and comment counts
+    const [likeCount, commentCount] = await Promise.all([
+      this.galleryLikeModel.count({ where: { galleryId } }),
+      this.galleryCommentModel.count({ where: { galleryId } }),
+    ]);
+
+    // Check if user liked this gallery
+    let isLiked = false;
+    if (userId) {
+      const liked = await this.galleryLikeModel.findOne({
+        where: { galleryId, userId },
+      });
+      isLiked = !!liked;
+    }
+
+    return {
+      ...galleryJson,
+      coverPhoto: coverImageUrl,
+      galleryAlbums: albumImages,
+      likeCount,
+      commentCount,
+      ...(userId !== undefined && { isLiked }),
+    };
+  }
+
 }

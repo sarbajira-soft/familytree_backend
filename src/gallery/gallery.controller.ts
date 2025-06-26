@@ -11,6 +11,7 @@ import {
   HttpCode,
   HttpStatus,
   Delete,
+  ParseIntPipe,
   Query,
   Put,
 } from '@nestjs/common';
@@ -182,6 +183,14 @@ export class GalleryController {
   @ApiOperation({ summary: 'Get total comment count for a gallery' })
   async getGalleryCommentCount(@Param('id') galleryId: number) {
     return this.galleryService.getGalleryCommentCount(galleryId);
+  }
+
+  @Get(':galleryId')
+  async getPublicGalleryById(
+    @Param('galleryId', ParseIntPipe) galleryId: number,
+    @Query('userId') userId?: number,
+  ) {
+    return this.galleryService.getGalleryById(galleryId, userId ? +userId : undefined);
   }
 
 }

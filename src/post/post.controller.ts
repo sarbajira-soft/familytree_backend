@@ -138,32 +138,49 @@ export class PostController {
 
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
-    @Post(':postId/comment')
-    async addComment(
-      @Param('postId') postId: number,
-      @Body() dto: AddPostCommentDto,
-      @Req() req,
-    ) {
-      return this.postService.addComment(postId, req.user.userId, dto.comment);
-    }
+  @Post(':postId/comment')
+  async addComment(
+    @Param('postId') postId: number,
+    @Body() dto: AddPostCommentDto,
+    @Req() req,
+  ) {
+    return this.postService.addComment(postId, req.user.userId, dto.comment);
+  }
 
-    @Get(':postId/comments')
-    async getComments(
-      @Param('postId') postId: number,
-      @Query('page') page = 1,
-      @Query('limit') limit = 10,
-    ) {
-      return this.postService.getComments(postId, page, limit);
-    }
+  @Get(':postId/comments')
+  async getComments(
+    @Param('postId') postId: number,
+    @Query('page') page = 1,
+    @Query('limit') limit = 10,
+  ) {
+    return this.postService.getComments(postId, page, limit);
+  }
 
-    @Get(':postId/comments/count')
-    async getCommentCount(@Param('postId') postId: number) {
-      return this.postService.getCommentCount(postId);
-    }
-    
-    @Get(':postId/like/count')
-    async getLikeCount(@Param('postId') postId: number) {
-      return this.postService.getLikeCount(postId);
-    }
+  @Get(':postId/comments/count')
+  async getCommentCount(@Param('postId') postId: number) {
+    return this.postService.getCommentCount(postId);
+  }
+  
+  @Get(':postId/like/count')
+  async getLikeCount(@Param('postId') postId: number) {
+    return this.postService.getLikeCount(postId);
+  }
+
+  @Get(':postId')
+  async getPost(
+    @Param('postId') postId: number,
+  ) {
+    return this.postService.getPost(postId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('delete/:id')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Delete post with image, comments, and likes' })
+  @ApiResponse({ status: 200, description: 'Post deleted successfully' })
+  async deletePost(@Param('id') id: number, @Req() req) {
+    const userId = req.user?.userId;
+    return this.postService.deletePost(+id, userId);
+  }
 
 }

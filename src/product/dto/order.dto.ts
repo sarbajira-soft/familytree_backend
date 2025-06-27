@@ -5,18 +5,20 @@ import {
   IsNumber,
   Min,
   IsOptional,
-  IsIn,
+  IsEnum,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { DeliveryStatus, PaymentStatus } from '../model/order.model';
 
 export class CreateOrderDto {
   @ApiProperty({
-    example: 'ORD-20250617-0001',
-    description: 'Unique order number',
+    example: 'ORD-20250626-0001',
+    description: 'Unique order number (auto-generated if not provided)',
+    required: false,
   })
   @IsString()
-  @IsNotEmpty({ message: 'Order number is required' })
-  orderNumber: string;
+  @IsOptional()
+  orderNumber?: string; // Made optional since it's auto-generated
 
   @ApiProperty({
     example: 101,
@@ -33,6 +35,14 @@ export class CreateOrderDto {
   @Type(() => Number)
   @IsNumber({}, { message: 'Receiver ID must be a number' })
   receiverId: number;
+
+  @ApiProperty({
+    example: 'John Doe',
+    description: 'Name of the receiver',
+  })
+  @IsString()
+  @IsNotEmpty({ message: 'Receiver name is required' })
+  receiverName: string; // Added receiver name field
 
   @ApiProperty({
     example: 'Chennai',
@@ -52,12 +62,14 @@ export class CreateOrderDto {
 
   @ApiProperty({
     example: 3,
-    description: 'Duration in days',
+    description: 'Duration in days (optional)',
+    required: false,
   })
   @Type(() => Number)
   @IsNumber({}, { message: 'Duration must be a number' })
   @Min(1, { message: 'Duration must be at least 1 day' })
-  duration: number;
+  @IsOptional() // Made optional as per your request
+  duration?: number;
 
   @ApiProperty({
     example: 101,
@@ -76,7 +88,7 @@ export class CreateOrderDto {
   productId: number;
 
   @ApiProperty({
-    example: 799.99,
+    example: 1500.00,
     description: 'Price of the product at time of order',
   })
   @Type(() => Number)
@@ -85,25 +97,188 @@ export class CreateOrderDto {
   price: number;
 
   @ApiProperty({
-    example: 'pending',
+    example: DeliveryStatus.PENDING,
     description: 'Status of the delivery',
-    enum: ['pending', 'shipped', 'delivered', 'cancelled'],
+    enum: DeliveryStatus,
+    default: DeliveryStatus.PENDING,
+    required: false,
   })
-  @IsString()
-  @IsIn(['pending', 'shipped', 'delivered', 'cancelled'], {
-    message:
-      'Delivery status must be one of: pending, shipped, delivered, cancelled',
+  @IsEnum(DeliveryStatus, {
+    message: `Delivery status must be one of: ${Object.values(DeliveryStatus).join(', ')}`,
   })
-  deliveryStatus: string;
+  @IsOptional() // Optional with default value
+  deliveryStatus?: DeliveryStatus;
 
   @ApiProperty({
-    example: 'unpaid',
+    example: PaymentStatus.UNPAID,
     description: 'Status of the payment',
-    enum: ['unpaid', 'paid', 'refunded'],
+    enum: PaymentStatus,
+    default: PaymentStatus.UNPAID,
+    required: false,
+  })
+  @IsEnum(PaymentStatus, {
+    message: `Payment status must be one of: ${Object.values(PaymentStatus).join(', ')}`,
+  })
+  @IsOptional() // Optional with default value
+  paymentStatus?: PaymentStatus;
+
+  // New fields added
+  @ApiProperty({
+    example: 1,
+    description: 'Quantity of the product being ordered',
+    default: 1,
+  })
+  @Type(() => Number)
+  @IsNumber({}, { message: 'Quantity must be a number' })
+  @Min(1, { message: 'Quantity must be at least 1' })
+  quantity: number;
+
+  @ApiProperty({
+    example: 'Please deliver to the back door',
+    description: 'Special delivery instructions (optional)',
+    required: false,
   })
   @IsString()
-  @IsIn(['unpaid', 'paid', 'refunded'], {
-    message: 'Payment status must be one of: unpaid, paid, refunded',
+  @IsOptional()
+  deliveryInstructions?: string;
+
+  @ApiProperty({
+    example: 'Happy Birthday! Hope you enjoy this gift',
+    description: 'Gift message to include with the order (optional)',
+    required: false,
   })
-  paymentStatus: string;
+  @IsString()
+  @IsOptional()
+  giftMessage?: string;
+}
+
+// Update Order DTO for partial updates
+export class UpdateOrderDto {
+  @ApiProperty({
+    example: 'John Smith',
+    description: 'Name of the receiver',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  receiverName?: string;
+
+  @ApiProperty({
+    example: 'Coimbatore',
+    description: 'Source location of the order',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  from?: string;
+
+  @ApiProperty({
+    example: 'Mumbai',
+    description: 'Destination location of the order',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  to?: string;
+
+  @ApiProperty({
+    example: 5,
+    description: 'Duration in days',
+    required: false,
+  })
+  @Type(() => Number)
+  @IsNumber({}, { message: 'Duration must be a number' })
+  @Min(1, { message: 'Duration must be at least 1 day' })
+  @IsOptional()
+  duration?: number;
+
+  @ApiProperty({
+    example: 1299.99,
+    description: 'Updated price of the product',
+    required: false,
+  })
+  @Type(() => Number)
+  @IsNumber({}, { message: 'Price must be a number' })
+  @Min(0, { message: 'Price cannot be negative' })
+  @IsOptional()
+  price?: number;
+
+  @ApiProperty({
+    example: DeliveryStatus.SHIPPED,
+    description: 'Updated delivery status',
+    enum: DeliveryStatus,
+    required: false,
+  })
+  @IsEnum(DeliveryStatus, {
+    message: `Delivery status must be one of: ${Object.values(DeliveryStatus).join(', ')}`,
+  })
+  @IsOptional()
+  deliveryStatus?: DeliveryStatus;
+
+  @ApiProperty({
+    example: PaymentStatus.PAID,
+    description: 'Updated payment status',
+    enum: PaymentStatus,
+    required: false,
+  })
+  @IsEnum(PaymentStatus, {
+    message: `Payment status must be one of: ${Object.values(PaymentStatus).join(', ')}`,
+  })
+  @IsOptional()
+  paymentStatus?: PaymentStatus;
+
+  // New fields added for update
+  @ApiProperty({
+    example: 2,
+    description: 'Updated quantity of the product',
+    required: false,
+  })
+  @Type(() => Number)
+  @IsNumber({}, { message: 'Quantity must be a number' })
+  @Min(1, { message: 'Quantity must be at least 1' })
+  @IsOptional()
+  quantity?: number;
+
+  @ApiProperty({
+    example: 'Please ring the doorbell twice',
+    description: 'Updated delivery instructions',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  deliveryInstructions?: string;
+
+  @ApiProperty({
+    example: 'With love from your family',
+    description: 'Updated gift message',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  giftMessage?: string;
+}
+
+export class UpdateDeliveryStatusDto {
+  @ApiProperty({
+    example: DeliveryStatus.SHIPPED,
+    description: 'New delivery status',
+    enum: DeliveryStatus,
+  })
+  @IsEnum(DeliveryStatus, {
+    message: `Delivery status must be one of: ${Object.values(DeliveryStatus).join(', ')}`,
+  })
+  deliveryStatus: DeliveryStatus;
+}
+
+// Create a specific DTO for payment status update
+export class UpdatePaymentStatusDto {
+  @ApiProperty({
+    example: PaymentStatus.PAID,
+    description: 'New payment status',
+    enum: PaymentStatus,
+  })
+  @IsEnum(PaymentStatus, {
+    message: `Payment status must be one of: ${Object.values(PaymentStatus).join(', ')}`,
+  })
+  paymentStatus: PaymentStatus;
 }

@@ -13,6 +13,17 @@ export class ProductService {
     private readonly productModel: typeof Product,
   ) {}
 
+  // Helper method to construct image URLs properly
+  private constructImageUrl(imageName: string): string {
+    if (!imageName) return null;
+    
+    const baseUrl = (process.env.BASE_URL || '').replace(/\/$/, ''); // Remove trailing slash
+    const uploadPath = (process.env.PRODUCT_IMAGE_UPLOAD_PATH?.replace(/^\.?\/?/, '') || 'uploads/products').replace(/\/$/, ''); // Remove trailing slash
+    
+    // Ensure proper URL construction without double slashes
+    return `${baseUrl}/${uploadPath}/${imageName}`;
+  }
+
   async createProduct(dto: CreateProductDto) {
     const product = await this.productModel.create(dto);
     return {
@@ -22,13 +33,26 @@ export class ProductService {
   }
 
   async getAll() {
-    return this.productModel.findAll();
+    const products = await this.productModel.findAll();
+    
+    return products.map((product) => {
+      const productJson = product.toJSON();
+      return {
+        ...productJson,
+        image: this.constructImageUrl(productJson.image),
+      };
+    });
   }
 
   async getById(id: number) {
     const product = await this.productModel.findByPk(id);
     if (!product) throw new NotFoundException('Product not found');
-    return product;
+    
+    const productJson = product.toJSON();
+    return {
+      ...productJson,
+      image: this.constructImageUrl(productJson.image),
+    };
   }
 
   async update(id: number, dto: UpdateProductDto) {
@@ -37,8 +61,7 @@ export class ProductService {
 
     // Handle image file deletion
     if (dto.image && product.image && dto.image !== product.image) {
-      const uploadDir =
-        process.env.PRODUCT_IMAGE_UPLOAD_PATH || './uploads/products';
+      const uploadDir = process.env.PRODUCT_IMAGE_UPLOAD_PATH || './uploads/products';
       const oldImagePath = path.join(uploadDir, product.image);
       if (fs.existsSync(oldImagePath)) {
         try {
@@ -63,8 +86,7 @@ export class ProductService {
     if (!product) throw new NotFoundException('Product not found');
 
     if (product.image) {
-      const uploadDir =
-        process.env.PRODUCT_IMAGE_UPLOAD_PATH || './uploads/products';
+      const uploadDir = process.env.PRODUCT_IMAGE_UPLOAD_PATH || './uploads/products';
       const imagePath = path.join(uploadDir, product.image);
       if (fs.existsSync(imagePath)) {
         try {

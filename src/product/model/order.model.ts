@@ -11,6 +11,27 @@ import {
 } from 'sequelize-typescript';
 import { Product } from '../../product/model/product.model';
 
+// Enums for better type safety and consistency
+export enum DeliveryStatus {
+  PENDING = 'pending',
+  CONFIRMED = 'confirmed',
+  SHIPPED = 'shipped',
+  IN_TRANSIT = 'in_transit',
+  OUT_FOR_DELIVERY = 'out_for_delivery',
+  DELIVERED = 'delivered',
+  CANCELLED = 'cancelled',
+  RETURNED = 'returned'
+}
+
+export enum PaymentStatus {
+  UNPAID = 'unpaid',
+  PENDING = 'pending',
+  PAID = 'paid',
+  FAILED = 'failed',
+  REFUNDED = 'refunded',
+  PARTIAL_REFUND = 'partial_refund'
+}
+
 @Table({ tableName: 'ft_order' })
 export class Order extends Model<Order> {
   @PrimaryKey
@@ -41,6 +62,12 @@ export class Order extends Model<Order> {
     type: DataType.STRING,
     allowNull: false,
   })
+  receiverName: string; // Added receiver name field
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: false,
+  })
   from: string;
 
   @Column({
@@ -51,15 +78,9 @@ export class Order extends Model<Order> {
 
   @Column({
     type: DataType.INTEGER,
-    allowNull: false,
+    allowNull: true, // Made optional
   })
-  duration: number; // Duration in days
-
-  @Column({
-    type: DataType.INTEGER,
-    allowNull: false,
-  })
-  createdBy: number;
+  duration?: number; // Duration in days - now optional
 
   @ForeignKey(() => Product)
   @Column({
@@ -72,16 +93,51 @@ export class Order extends Model<Order> {
   product: Product;
 
   @Column({
-    type: DataType.STRING,
+    type: DataType.DECIMAL(10, 2),
     allowNull: false,
-    defaultValue: 'pending',
   })
-  deliveryStatus: string; // e.g., 'pending', 'shipped', 'delivered', 'cancelled'
+  price: number;
 
   @Column({
-    type: DataType.STRING,
+    type: DataType.ENUM(...Object.values(DeliveryStatus)),
     allowNull: false,
-    defaultValue: 'unpaid',
+    defaultValue: DeliveryStatus.PENDING,
   })
-  paymentStatus: string; // e.g., 'unpaid', 'paid', 'refunded'
+  deliveryStatus: DeliveryStatus;
+
+  @Column({
+    type: DataType.ENUM(...Object.values(PaymentStatus)),
+    allowNull: false,
+    defaultValue: PaymentStatus.UNPAID,
+  })
+  paymentStatus: PaymentStatus;
+
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: false,
+  })
+  createdBy: number;
+
+  // New fields added
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: false,
+    defaultValue: 1,
+  })
+  quantity: number;
+
+  @Column({
+    type: DataType.TEXT,
+    allowNull: true,
+  })
+  deliveryInstructions?: string;
+
+  @Column({
+    type: DataType.TEXT,
+    allowNull: true,
+  })
+  giftMessage?: string;
+
+  totalRevenue: number;
+  averageOrderValue: number;
 }

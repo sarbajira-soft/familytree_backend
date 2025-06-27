@@ -1,6 +1,7 @@
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { Post } from '../post/model/post.model';
+import { Gallery } from '../gallery/model/gallery.model';
 import { PostComment } from '../post/model/post-comment.model';
 import { GalleryComment } from '../gallery/model/gallery-comment.model';
 import { FamilyMember } from '../family/model/family-member.model';
@@ -19,6 +20,8 @@ export function setupAssociations() {
   PostComment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
   PostComment.belongsTo(UserProfile, { foreignKey: 'userId', targetKey: 'userId',  as: 'userProfile' });
 
+  Gallery.belongsTo(User, { foreignKey: 'createdBy', as: 'user' });
+  Gallery.belongsTo(UserProfile, { foreignKey: 'createdBy', targetKey: 'userId',  as: 'userProfile' });
   GalleryComment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
   GalleryComment.belongsTo(UserProfile, { foreignKey: 'userId', targetKey: 'userId',  as: 'userProfile' });
 

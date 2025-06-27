@@ -79,7 +79,7 @@ export class GalleryService {
     createdBy?: number,
     galleryId?: number,
     galleryTitle?: string,
-    userId?: number, // optional to check if user liked
+    userId?: number,
   ) {
     const whereClause: any = {};
 
@@ -114,16 +114,22 @@ export class GalleryService {
           model: this.galleryAlbumModel,
           as: 'galleryAlbums',
         },
+        {
+          model: this.userProfileModel,
+          as: 'userProfile',
+          attributes: ['firstName', 'lastName', 'profile'],
+        },
       ],
       order: [['createdAt', 'DESC']],
     });
 
     const baseUrl = process.env.BASE_URL || '';
     const uploadPath = process.env.GALLERY_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/gallery';
+    const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
 
     const formatted = await Promise.all(
       galleries.map(async (gallery) => {
-        const galleryJson = gallery.toJSON();
+        const galleryJson = gallery.toJSON() as any;
 
         // Format album image URLs
         const albumImages = (galleryJson.galleryAlbums || []).map((album) => ({
@@ -154,6 +160,11 @@ export class GalleryService {
           isLiked = !!liked;
         }
 
+        // Format user info
+        const user = galleryJson.userProfile;
+        const fullName = user ? `${user.firstName} ${user.lastName}` : null;
+        const profileImage = user?.profile ? `${baseUrl}/${profilePath}/${user.profile}` : null;
+
         return {
           ...galleryJson,
           coverPhoto: coverImageUrl,
@@ -161,6 +172,10 @@ export class GalleryService {
           likeCount,
           commentCount,
           ...(userId !== undefined && { isLiked }),
+          user: {
+            name: fullName,
+            profile: profileImage,
+          },
         };
       })
     );

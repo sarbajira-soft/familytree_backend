@@ -136,47 +136,57 @@ export class PostService {
 
     const posts = await this.postModel.findAll({
       where: whereClause,
+      include: [
+        {
+          model: this.userProfileModel,
+          as: 'userProfile',
+          attributes: ['firstName', 'lastName', 'profile'],
+        },
+      ],
       order: [['createdAt', 'DESC']],
     });
 
     const baseUrl = process.env.BASE_URL || '';
-    const uploadPath =
-      process.env.POST_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/posts';
+    const postPath = process.env.POST_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/posts';
+    const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
 
     const formatted = await Promise.all(
       posts.map(async (post) => {
-        const postJson = post.toJSON();
+        const postJson = post.toJSON() as any;
 
         // Post image URL
-        let postImageUrl: string | null = null;
-        if (postJson.postImage) {
-          postImageUrl = `${baseUrl}/${uploadPath}/${postJson.postImage}`;
-        }
+        const postImageUrl = postJson.postImage ? `${baseUrl}/${postPath}/${postJson.postImage}` : null;
 
-        // Get like count
-        const likeCount = await this.postLikeModel.count({ where: { postId: post.id } });
-
-        // Get comment count
-        const commentCount = await this.postCommentModel.count({ where: { postId: post.id } });
+        // Get like count and comment count
+        const [likeCount, commentCount] = await Promise.all([
+          this.postLikeModel.count({ where: { postId: post.id } }),
+          this.postCommentModel.count({ where: { postId: post.id } }),
+        ]);
 
         // Check if the user liked this post
         let isLiked = false;
         if (userId) {
           const existingLike = await this.postLikeModel.findOne({
-            where: {
-              postId: post.id,
-              userId: userId, 
-            },
+            where: { postId: post.id, userId },
           });
           isLiked = !!existingLike;
         }
+
+        // Format user info
+        const user = postJson.userProfile;
+        const fullName = user ? `${user.firstName} ${user.lastName}` : null;
+        const profileImage = user?.profile ? `${baseUrl}/${profilePath}/${user.profile}` : null;
 
         return {
           ...postJson,
           postImage: postImageUrl,
           likeCount,
           commentCount,
-          isLiked, // ✅ Add this
+          isLiked,
+          user: {
+            name: fullName,
+            profile: profileImage,
+          },
         };
       })
     );

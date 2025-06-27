@@ -14,6 +14,8 @@ export function setupAssociations() {
   UserProfile.hasOne(FamilyMember, { foreignKey: 'memberId', sourceKey: 'userId', as: 'familyMember' });
   FamilyMember. belongsTo(UserProfile, { foreignKey: 'memberId', targetKey: 'userId', as: 'userProfile' });
 
+  Post.belongsTo(User, { foreignKey: 'createdBy', as: 'user' });
+  Post.belongsTo(UserProfile, { foreignKey: 'createdBy', targetKey: 'userId',  as: 'userProfile' });
   PostComment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
   PostComment.belongsTo(UserProfile, { foreignKey: 'userId', targetKey: 'userId',  as: 'userProfile' });
 

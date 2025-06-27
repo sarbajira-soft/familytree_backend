@@ -248,6 +248,28 @@ export class PostService {
     };
   }
 
+async getPost(postId: number) {
+  const baseUrl = process.env.BASE_URL || '';
+  const postUploadPath = process.env.POST_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/posts';
+
+  const post = await this.postModel.findOne({
+      where: { id: postId },
+    });
+
+    if (!post) {
+      throw new Error(`Post with ID ${postId} not found`);
+    }
+
+    if(post.postImage){
+      post.postImage = `${baseUrl}/${postUploadPath}/${post.postImage}`;
+    }
+
+    return {
+      data: post,
+      imageUrl: `${baseUrl}/${postUploadPath}/${post.postImage || 'default.png'}`
+    };
+  }
+
   async getCommentCount(postId: number) {
     const count = await this.postCommentModel.count({ where: { postId } });
     return { postId, likes: count };
@@ -256,6 +278,38 @@ export class PostService {
   async getLikeCount(postId: number) {
     const count = await this.postLikeModel.count({ where: { postId } });
     return { postId, likes: count };
+  }
+
+  async deletePost(postId: number, userId: number) {
+    const post = await this.postModel.findOne({ where: { id: postId, createdBy: userId } });
+
+    if (!post) {
+      throw new NotFoundException('Post not found or access denied.');
+    }
+
+    // Delete related comments
+    await this.postCommentModel.destroy({ where: { postId } });
+
+    // Delete related likes
+    await this.postLikeModel.destroy({ where: { postId } });
+
+    // Delete image file if exists
+    const imageFilename = post.postImage;
+    if (imageFilename) {
+      const uploadPath = process.env.POST_PHOTO_UPLOAD_PATH || './uploads/posts';
+      const imagePath = `${uploadPath}/${imageFilename}`;
+
+      if (fs.existsSync(imagePath)) {
+        fs.unlinkSync(imagePath);
+      }
+    }
+
+    // Delete the post
+    await post.destroy();
+
+    return {
+      message: 'Post deleted successfully along with associated comments and likes',
+    };
   }
 
 }

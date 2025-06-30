@@ -17,6 +17,8 @@ import { UserProfile } from '../user/model/user-profile.model';
 import { CreateGalleryDto } from './dto/gallery.dto';
 import { CreateGalleryCommentDto } from './dto/gallery-comment.dto';
 
+import { NotificationService } from '../notification/notification.service';
+
 @Injectable()
 export class GalleryService {
   constructor(
@@ -30,6 +32,8 @@ export class GalleryService {
     private readonly galleryCommentModel: typeof GalleryComment,
     @InjectModel(UserProfile)
     private readonly userProfileModel: typeof UserProfile,
+
+    private readonly notificationService: NotificationService,
   ) {}
 
   async createGallery(
@@ -37,13 +41,11 @@ export class GalleryService {
     createdBy: number,
     albumImages: Express.Multer.File[],
   ) {
-    //await this.validateFamilyCode(dto.familyCode, createdBy);
-
     if (!albumImages || albumImages.length === 0) {
       throw new BadRequestException('At least one album image is required.');
     }
 
-    // Create gallery
+    // Step 1: Create Gallery
     const gallery = await this.galleryModel.create({
       galleryTitle: dto.galleryTitle,
       galleryDescription: dto.galleryDescription,
@@ -54,7 +56,7 @@ export class GalleryService {
       privacy: dto.privacy ?? 'public',
     });
 
-    // Save album images
+    // Step 2: Save Album Images
     const albumData = albumImages.map((file) => ({
       galleryId: gallery.id,
       album: file.filename,
@@ -62,6 +64,26 @@ export class GalleryService {
 
     await this.galleryAlbumModel.bulkCreate(albumData);
 
+    // Fetch approved family members from ft_family_members
+    const memberIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
+
+    // Extract memberIds excluding the creator
+    // Send notification to all approved members (excluding the creator)
+    if (memberIds.length > 0) {
+      await this.notificationService.createNotification(
+        {
+          type: 'FAMILY_GALLERY_CREATED',
+          title: 'New Gallery Added',
+          message: `${gallery.galleryTitle} has been added to the family gallery.`,
+          familyCode: dto.familyCode,
+          referenceId: gallery.id,
+          userIds: memberIds,
+        },
+        createdBy, // performedBy
+      );
+    }
+
+    // Step 5: Return Response
     return {
       message: 'Gallery created successfully',
       data: {
@@ -72,6 +94,7 @@ export class GalleryService {
       },
     };
   }
+
 
   async getGalleryByOptions(
     privacy: 'public' | 'private',

@@ -2,178 +2,55 @@ import {
   Controller,
   Get,
   Post,
-  Query,
-  Param,
   Body,
+  Param,
+  Req,
+  UseGuards,
   ParseIntPipe,
+  HttpCode,
+  HttpStatus,
+  Query,
 } from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { NotificationService } from './notification.service';
-import {
-  ApiTags,
-  ApiOperation,
-  ApiQuery,
-  ApiParam,
-  ApiResponse,
-  ApiBody,
-} from '@nestjs/swagger';
-import {
-  DashboardNotificationResponseDTO,
-  NotificationStatsResponseDTO,
-  CleanupResponseDTO,
-  MarkReadResponseDTO,
-  WeeklyNotificationResponseDTO,
-  CreateEventNotificationDTO,
-  CreateSystemNotificationDTO,
-} from './notification.dto';
+import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
+import { CreateNotificationDto } from './dto/create-notification.dto';
 
-@ApiTags('Notification')
-@Controller('notification')
+@ApiTags('Notifications')
+@ApiBearerAuth()
+@UseGuards(JwtAuthGuard)
+@Controller('notifications')
 export class NotificationController {
   constructor(private readonly notificationService: NotificationService) {}
 
-  @Post('/trigger')
-  @ApiOperation({ summary: 'Trigger birthday push notifications manually' })
-  @ApiResponse({
-    status: 200,
-    description: 'Birthday push notifications processed successfully',
-    type: NotificationStatsResponseDTO,
-  })
-  @ApiResponse({
-    status: 500,
-    description: 'Failed to process birthday notifications',
-  })
-  async triggerNotifications(): Promise<NotificationStatsResponseDTO> {
-    return await this.notificationService.sendBirthdayNotifications();
-  }
-
-  @Post('/weekly')
-  @ApiOperation({ summary: 'Generate weekly family notifications' })
-  @ApiResponse({
-    status: 200,
-    description: 'Weekly notifications created successfully',
-    type: WeeklyNotificationResponseDTO,
-  })
-  @ApiResponse({
-    status: 500,
-    description: 'Failed to create weekly notifications',
-  })
-  async triggerWeeklyNotifications(): Promise<WeeklyNotificationResponseDTO> {
-    return await this.notificationService.sendWeeklyNotifications();
-  }
-
-  @Post('/event')
-  @ApiOperation({ summary: 'Create event notification' })
-  @ApiBody({ type: CreateEventNotificationDTO })
-  @ApiResponse({
-    status: 200,
-    description: 'Event notification created successfully',
-  })
-  @ApiResponse({
-    status: 500,
-    description: 'Failed to create event notification',
-  })
-  async createEventNotification(
-    @Body() createEventDto: CreateEventNotificationDTO,
+  @Post()
+  @ApiOperation({ summary: 'Create a new notification and assign recipients' })
+  async createNotification(
+    @Body() dto: CreateNotificationDto,
+    @Req() req,
   ) {
-    return await this.notificationService.createEventNotification(
-      createEventDto.userId,
-      createEventDto.eventTitle,
-      new Date(createEventDto.eventDate),
-      createEventDto.eventDescription,
-    );
+    return this.notificationService.createNotification(dto, req.user.userId);
   }
 
-  @Post('/system')
-  @ApiOperation({ summary: 'Create system notification for multiple users' })
-  @ApiBody({ type: CreateSystemNotificationDTO })
-  @ApiResponse({
-    status: 200,
-    description: 'System notifications created successfully',
-  })
-  @ApiResponse({
-    status: 500,
-    description: 'Failed to create system notifications',
-  })
-  async createSystemNotification(
-    @Body() createSystemDto: CreateSystemNotificationDTO,
-  ) {
-    return await this.notificationService.createSystemNotification(
-      createSystemDto.userIds,
-      createSystemDto.message,
-    );
+  @Get()
+  @ApiOperation({ summary: 'Get all notifications for logged-in user' })
+  async getMyNotifications(@Req() req) {
+    return this.notificationService.getNotificationsForUser(req.user.userId);
   }
 
-  @Get('/dashboard/:userId')
-  @ApiOperation({ summary: 'Get dashboard notifications for a user' })
-  @ApiParam({ name: 'userId', description: 'User ID', type: 'number' })
-  @ApiQuery({
-    name: 'limit',
-    description: 'Number of notifications to fetch',
-    required: false,
-    type: 'number',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Dashboard notifications retrieved successfully',
-    type: [DashboardNotificationResponseDTO],
-  })
-  @ApiResponse({
-    status: 404,
-    description: 'User not found',
-  })
-  async getDashboardNotifications(
-    @Param('userId', ParseIntPipe) userId: number,
-    @Query('limit') limit?: number,
-  ) {
-    return await this.notificationService.getDashboardNotifications(
-      userId,
-      limit || 10,
-    );
-  }
-
-  @Post('/cleanup')
-  @ApiOperation({ summary: 'Cleanup old notifications' })
-  @ApiQuery({
-    name: 'days',
-    description: 'Delete notifications older than specified days',
-    required: false,
-    type: 'number',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Cleanup completed successfully',
-    type: CleanupResponseDTO,
-  })
-  async cleanupNotifications(
-    @Query('days') days?: number,
-  ): Promise<CleanupResponseDTO> {
-    return await this.notificationService.cleanupOldNotifications(days || 30);
-  }
-
-  @Post('/mark-read/:notificationId/:userId')
-  @ApiOperation({ summary: 'Mark notification as read' })
-  @ApiParam({
-    name: 'notificationId',
-    description: 'Notification ID',
-    type: 'number',
-  })
-  @ApiParam({ name: 'userId', description: 'User ID', type: 'number' })
-  @ApiResponse({
-    status: 200,
-    description: 'Notification marked as read successfully',
-    type: MarkReadResponseDTO,
-  })
-  @ApiResponse({
-    status: 404,
-    description: 'Notification not found',
-  })
+  @Post(':id/read')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Mark a specific notification as read' })
   async markAsRead(
-    @Param('notificationId', ParseIntPipe) notificationId: number,
-    @Param('userId', ParseIntPipe) userId: number,
-  ): Promise<MarkReadResponseDTO> {
-    return await this.notificationService.markNotificationAsRead(
-      notificationId,
-      userId,
-    );
+    @Param('id', ParseIntPipe) id: number,
+    @Req() req,
+  ) {
+    return this.notificationService.markNotificationAsRead(id, req.user.userId);
+  }
+
+  @Get('unread/count')
+  @ApiOperation({ summary: 'Get count of unread notifications' })
+  async getUnreadCount(@Req() req) {
+    return this.notificationService.getUnreadCount(req.user.userId);
   }
 }

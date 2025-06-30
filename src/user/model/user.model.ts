@@ -1,4 +1,6 @@
 import { Table, Column, Model, DataType, Default } from 'sequelize-typescript';
+import { HasManyGetAssociationsMixin, HasOneGetAssociationMixin } from 'sequelize';
+import { FamilyMember } from '../../family/model/family-member.model';
 import { UserProfile } from './user-profile.model';
 
 @Table({ tableName: 'ft_user' })
@@ -45,4 +47,9 @@ export class User extends Model<User> {
   createdBy: number;
 
   userProfile?: UserProfile;
+  familyMemberships?: FamilyMember[];
+
+  // Optional: Add mixins for type safety
+  public getUserProfile!: HasOneGetAssociationMixin<UserProfile>;
+  public getFamilyMemberships!: HasManyGetAssociationsMixin<FamilyMember>;
 }

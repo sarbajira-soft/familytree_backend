@@ -8,6 +8,7 @@ import { GalleryLike } from './model/gallery-like.model';
 import { GalleryComment } from './model/gallery-comment.model';
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
+import { NotificationModule } from '../notification/notification.module';
 
 @Module({
   imports: [SequelizeModule.forFeature([
@@ -17,7 +18,9 @@ import { UserProfile } from '../user/model/user-profile.model';
     GalleryComment, 
     User, 
     UserProfile
-  ])],
+  ]),
+  NotificationModule
+  ],
   controllers: [GalleryController],
   providers: [GalleryService],
   exports: [GalleryService],

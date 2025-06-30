@@ -11,18 +11,27 @@ export function setupAssociations() {
   User.hasOne(UserProfile, { foreignKey: 'userId', as: 'userProfile' });
   UserProfile.belongsTo(User, { foreignKey: 'userId', as: 'profileOwner' });
 
-  // FamilyMember ↔ UserProfile
-  UserProfile.hasOne(FamilyMember, { foreignKey: 'memberId', sourceKey: 'userId', as: 'familyMember' });
-  FamilyMember. belongsTo(UserProfile, { foreignKey: 'memberId', targetKey: 'userId', as: 'userProfile' });
-
+  // Post ↔ User
   Post.belongsTo(User, { foreignKey: 'createdBy', as: 'user' });
-  Post.belongsTo(UserProfile, { foreignKey: 'createdBy', targetKey: 'userId',  as: 'userProfile' });
+  Post.belongsTo(UserProfile, { foreignKey: 'createdBy', targetKey: 'userId', as: 'userProfile' });
+
+  // PostComment ↔ User
   PostComment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
-  PostComment.belongsTo(UserProfile, { foreignKey: 'userId', targetKey: 'userId',  as: 'userProfile' });
+  PostComment.belongsTo(UserProfile, { foreignKey: 'userId', targetKey: 'userId', as: 'userProfile' });
 
+  // Gallery ↔ User
   Gallery.belongsTo(User, { foreignKey: 'createdBy', as: 'user' });
-  Gallery.belongsTo(UserProfile, { foreignKey: 'createdBy', targetKey: 'userId',  as: 'userProfile' });
-  GalleryComment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
-  GalleryComment.belongsTo(UserProfile, { foreignKey: 'userId', targetKey: 'userId',  as: 'userProfile' });
+  Gallery.belongsTo(UserProfile, { foreignKey: 'createdBy', targetKey: 'userId', as: 'userProfile' });
 
+  // GalleryComment ↔ User
+  GalleryComment.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+  GalleryComment.belongsTo(UserProfile, { foreignKey: 'userId', targetKey: 'userId', as: 'userProfile' });
+
+  // FamilyMember ↔ User (Member and Creator)
+  User.hasMany(FamilyMember, { foreignKey: 'memberId', as: 'familyMemberships' });
+  FamilyMember.belongsTo(User, { foreignKey: 'memberId', as: 'user' });      // memberId -> user
+  FamilyMember.belongsTo(User, { foreignKey: 'creatorId', as: 'creator' });  // creatorId -> creator
+  
+  UserProfile.hasOne(FamilyMember, { foreignKey: 'memberId', sourceKey: 'userId', as: 'familyMember' });
+  FamilyMember.belongsTo(UserProfile, { foreignKey: 'memberId', targetKey: 'userId', as: 'userProfile' });
 }

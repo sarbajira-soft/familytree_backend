@@ -5,7 +5,7 @@ import {
   Body,
   Param,
   Req,
-  UploadedFile,
+  UploadedFiles,
   UseGuards,
   UseInterceptors,
   HttpCode,
@@ -13,11 +13,11 @@ import {
   Delete,
   Put,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FilesInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import * as fs from 'fs';
 import { EventService } from '../event/event.service';
-import { CreateEventDto } from './dto/event.dto';
+import { CreateEventDto, UpdateEventDto } from './dto/event.dto';
 import {
   ApiBearerAuth,
   ApiConsumes,
@@ -28,6 +28,7 @@ import {
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { generateFileName, imageFileFilter } from '../utils/upload.utils';
+import { Op } from 'sequelize';
 
 @ApiTags('Event Module')
 @Controller('event')
@@ -37,11 +38,11 @@ export class EventController {
   @UseGuards(JwtAuthGuard)
   @Post('create')
   @UseInterceptors(
-    FileInterceptor('eventImage', {
+    FilesInterceptor('eventImages', 10, {
       storage: diskStorage({
         destination: (req, file, cb) => {
           const uploadPath =
-            process.env.EVENT_IMAGE_UPLOAD_PATH || './uploads/events';
+            process.env.EVENT_IMAGE_UPLOAD_PATH || '/uploads/events';
           if (!fs.existsSync(uploadPath)) {
             fs.mkdirSync(uploadPath, { recursive: true });
           }
@@ -63,23 +64,45 @@ export class EventController {
   @HttpCode(HttpStatus.CREATED)
   async createEvent(
     @Req() req,
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFiles() files: Express.Multer.File[],
     @Body() body: CreateEventDto,
   ) {
     const loggedInUser = req.user;
 
-    if (file) {
-      body.eventImage = file.filename;
+    // Set userId from logged-in user if not provided
+    if (!body.userId) {
+      body.userId = loggedInUser.userId;
     }
 
-    return this.eventService.createEvent(body, loggedInUser.userId);
+    // Set createdBy to userId if not provided
+    if (!body.createdBy) {
+      body.createdBy = loggedInUser.userId;
+    }
+
+    // Handle multiple image uploads
+    if (files && files.length > 0) {
+      const imageNames = files.map(file => file.filename);
+      // LOG the full URL for each uploaded image
+      const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
+      const uploadPath = process.env.EVENT_IMAGE_UPLOAD_PATH?.replace(/^\.?\/?/, '') || 'uploads/events';
+      const fullUrls = imageNames.map(name => `${baseUrl.replace(/\/$/, '')}/${uploadPath.replace(/\/$/, '')}/${name}`);
+      console.log('Uploaded image URLs:', fullUrls);
+      body.eventImages = JSON.stringify(imageNames);
+    }
+
+    return this.eventService.createEvent(body);
   }
 
-  @Get()
+  @Get('all')
   @ApiOperation({ summary: 'Get all events' })
-  @ApiResponse({ status: 200, description: 'List of events' })
   getAllEvents() {
     return this.eventService.getAll();
+  }
+
+  @Get('upcoming')
+  @ApiOperation({ summary: 'Get upcoming events' })
+  getUpcomingEvents() {
+    return this.eventService.getUpcoming();
   }
 
   @Get(':id')
@@ -92,11 +115,11 @@ export class EventController {
   @UseGuards(JwtAuthGuard)
   @Put(':id')
   @UseInterceptors(
-    FileInterceptor('eventImage', {
+    FilesInterceptor('eventImages', 10, {
       storage: diskStorage({
         destination: (req, file, cb) => {
           const uploadPath =
-            process.env.EVENT_IMAGE_UPLOAD_PATH || './uploads/events';
+            process.env.EVENT_IMAGE_UPLOAD_PATH || '/uploads/events';
           if (!fs.existsSync(uploadPath)) {
             fs.mkdirSync(uploadPath, { recursive: true });
           }
@@ -115,15 +138,18 @@ export class EventController {
   async updateEvent(
     @Req() req,
     @Param('id') id: number,
-    @UploadedFile() file: Express.Multer.File,
-    @Body() body: CreateEventDto,
+    @UploadedFiles() files: Express.Multer.File[],
+    @Body() body: UpdateEventDto,
   ) {
     const loggedInUser = req.user;
-    if (file) {
-      body.eventImage = file.filename;
+
+    // Handle multiple image uploads
+    if (files && files.length > 0) {
+      const imageNames = files.map(file => file.filename);
+      body.eventImages = JSON.stringify(imageNames);
     }
 
-    return this.eventService.update(id, body, loggedInUser.userId);
+    return this.eventService.update(id, body);
   }
 
   @UseGuards(JwtAuthGuard)

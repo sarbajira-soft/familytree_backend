@@ -8,8 +8,10 @@ import {
   Default,
   ForeignKey,
   BelongsTo,
+  HasMany,
 } from 'sequelize-typescript';
 import { User } from '../../user/model/user.model';
+import { EventImage } from './event-image.model';
 
 @Table({ tableName: 'ft_event' })
 export class Event extends Model<Event> {
@@ -59,12 +61,6 @@ export class Event extends Model<Event> {
   location: string;
 
   @Column({
-    type: DataType.TEXT,
-    allowNull: true,
-  })
-  eventImages: string; // JSON string to store multiple image paths
-
-  @Column({
     type: DataType.STRING,
     allowNull: false,
   })
@@ -77,4 +73,7 @@ export class Event extends Model<Event> {
   @Default(1)
   @Column(DataType.INTEGER)
   status: number; // 1 = active, 0 = inactive
+
+  @HasMany(() => EventImage)
+  images: EventImage[];
 }

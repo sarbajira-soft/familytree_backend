@@ -11,6 +11,7 @@ import { NotificationService } from '../notification/notification.service';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Op } from 'sequelize';
+import { EventImage } from './model/event-image.model';
 
 @Injectable()
 export class EventService {
@@ -21,13 +22,23 @@ export class EventService {
     @InjectModel(UserProfile)
     private readonly userProfileModel: typeof UserProfile,
 
+    @InjectModel(EventImage)
+    private readonly eventImageModel: typeof EventImage,
+
     private readonly notificationService: NotificationService,
   ) {}
 
-  async createEvent(dto: CreateEventDto) {
-    // Optional: await this.validateFamilyCode(dto.familyCode, dto.userId);
-
+  async createEvent(dto: CreateEventDto, imageFiles?: string[]) {
     const event = await this.eventModel.create(dto);
+
+    // Save images if provided
+    if (imageFiles && imageFiles.length > 0) {
+      await Promise.all(
+        imageFiles.map(imageUrl =>
+          this.eventImageModel.create({ eventId: event.id, imageUrl })
+        )
+      );
+    }
 
     // Create notifications for all family members after event creation
     try {
@@ -57,19 +68,10 @@ export class EventService {
   }
 
   async getAll() {
-    const events = await this.eventModel.findAll();
+    const events = await this.eventModel.findAll({ include: [EventImage] });
     return events.map(event => {
       const eventJson = event.toJSON();
-      let eventImages: string[] = [];
-      try {
-        const images = JSON.parse(eventJson.eventImages || '[]');
-        if (Array.isArray(images)) {
-          eventImages = images.map((img: string) => this.constructEventImageUrl(img));
-        }
-      } catch {
-        eventImages = [];
-      }
-      // Remove user field if present
+      const eventImages = eventJson.images?.map(img => this.constructEventImageUrl(img.imageUrl)) || [];
       delete eventJson.user;
       return {
         ...eventJson,
@@ -88,19 +90,10 @@ export class EventService {
   }
 
   async getById(id: number) {
-    const event = await this.eventModel.findByPk(id);
+    const event = await this.eventModel.findByPk(id, { include: [EventImage] });
     if (!event) throw new NotFoundException('Event not found');
     const eventJson = event.toJSON();
-    let eventImages: string[] = [];
-    try {
-      const images = JSON.parse(eventJson.eventImages || '[]');
-      if (Array.isArray(images)) {
-        eventImages = images.map((img: string) => this.constructEventImageUrl(img));
-      }
-    } catch {
-      eventImages = [];
-    }
-    // Remove user field if present
+    const eventImages = eventJson.images?.map(img => this.constructEventImageUrl(img.imageUrl)) || [];
     delete eventJson.user;
     return {
       ...eventJson,
@@ -108,30 +101,29 @@ export class EventService {
     };
   }
 
-  async update(id: number, dto: any, loggedId?: number) {
-    const event = await this.eventModel.findByPk(id);
+  async update(id: number, dto: any, imageFiles?: string[], loggedId?: number) {
+    const event = await this.eventModel.findByPk(id, { include: [EventImage] });
     if (!event) throw new NotFoundException('Event not found');
 
     // Optional: await this.validateFamilyCode(dto.familyCode, loggedId);
 
-    // Delete old images if new ones provided
-    if (dto.eventImages && event.eventImages && dto.eventImages !== event.eventImages) {
+    // If new images provided, delete old image files and records
+    if (imageFiles && imageFiles.length > 0) {
+      const oldImages = event.images || [];
       const uploadDir = process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
-      
-      try {
-        const oldImages = JSON.parse(event.eventImages);
-        if (Array.isArray(oldImages)) {
-          oldImages.forEach(imageName => {
-            const oldFilePath = path.join(uploadDir, imageName);
-            if (fs.existsSync(oldFilePath)) {
-              fs.unlinkSync(oldFilePath);
-              console.log('Old event image deleted:', oldFilePath);
-            }
-          });
+      for (const img of oldImages) {
+        const oldFilePath = path.join(uploadDir, img.imageUrl);
+        if (fs.existsSync(oldFilePath)) {
+          fs.unlinkSync(oldFilePath);
         }
-      } catch (err) {
-        console.warn('Failed to delete old images:', err.message);
+        await img.destroy();
       }
+      // Save new images
+      await Promise.all(
+        imageFiles.map(imageUrl =>
+          this.eventImageModel.create({ eventId: event.id, imageUrl })
+        )
+      );
     }
 
     dto.createdBy = loggedId;
@@ -159,28 +151,17 @@ export class EventService {
   }
 
   async delete(id: number, loggedId?: number) {
-    const event = await this.eventModel.findByPk(id);
+    const event = await this.eventModel.findByPk(id, { include: [EventImage] });
     if (!event) throw new NotFoundException('Event not found');
 
-    // Optional: await this.validateUserFamilyAccess(event.familyCode, loggedId);
-
-    // Delete event images
-    if (event.eventImages) {
-      const uploadDir = process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
-      
-      try {
-        const images = JSON.parse(event.eventImages);
-        if (Array.isArray(images)) {
-          images.forEach(imageName => {
-            const imagePath = path.join(uploadDir, imageName);
-            if (fs.existsSync(imagePath)) {
-              fs.unlinkSync(imagePath);
-            }
-          });
-        }
-      } catch (err) {
-        console.warn('Failed to delete event images:', err.message);
+    // Delete event images and files
+    const uploadDir = process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
+    for (const img of event.images || []) {
+      const imagePath = path.join(uploadDir, img.imageUrl);
+      if (fs.existsSync(imagePath)) {
+        fs.unlinkSync(imagePath);
       }
+      await img.destroy();
     }
 
     // Create cancellation notification before deleting
@@ -250,20 +231,43 @@ export class EventService {
     });
     return events.map(event => {
       const eventJson = event.toJSON();
-      let eventImages: string[] = [];
-      try {
-        const images = JSON.parse(eventJson.eventImages || '[]');
-        if (Array.isArray(images)) {
-          eventImages = images.map((img: string) => this.constructEventImageUrl(img));
-        }
-      } catch {
-        eventImages = [];
-      }
+      const eventImages = eventJson.images?.map(img => this.constructEventImageUrl(img.imageUrl)) || [];
       delete eventJson.user;
       return {
         ...eventJson,
         eventImages,
       };
     });
+  }
+
+  async addEventImages(eventId: number, imageFiles: string[]) {
+    const event = await this.eventModel.findByPk(eventId);
+    if (!event) throw new NotFoundException('Event not found');
+    const createdImages = await Promise.all(
+      imageFiles.map(imageUrl =>
+        this.eventImageModel.create({ eventId, imageUrl })
+      )
+    );
+    return {
+      message: 'Images added successfully',
+      images: createdImages.map(img => ({ id: img.id, imageUrl: this.constructEventImageUrl(img.imageUrl) })),
+    };
+  }
+
+  async deleteEventImage(imageId: number) {
+    const image = await this.eventImageModel.findByPk(imageId);
+    if (!image) throw new NotFoundException('Image not found');
+    const uploadDir = process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
+    const imagePath = path.join(uploadDir, image.imageUrl);
+    if (fs.existsSync(imagePath)) {
+      fs.unlinkSync(imagePath);
+    }
+    await image.destroy();
+    return { message: 'Image deleted successfully' };
+  }
+
+  async getEventImages(eventId: number) {
+    const images = await this.eventImageModel.findAll({ where: { eventId } });
+    return images.map(img => ({ id: img.id, imageUrl: this.constructEventImageUrl(img.imageUrl) }));
   }
 }

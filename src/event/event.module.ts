@@ -6,10 +6,11 @@ import { Event } from './model/event.model';
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { NotificationModule } from '../notification/notification.module';
+import { EventImage } from './model/event-image.model';
 
 @Module({
   imports: [
-    SequelizeModule.forFeature([Event, User, UserProfile]),
+    SequelizeModule.forFeature([Event, User, UserProfile, EventImage]),
     NotificationModule, // Import NotificationModule to use NotificationService
   ],
   controllers: [EventController],

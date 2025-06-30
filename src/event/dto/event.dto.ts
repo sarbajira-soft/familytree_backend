@@ -58,15 +58,6 @@ export class CreateEventDto {
   @IsString()
   location?: string;
 
-  @ApiPropertyOptional({
-    description: 'Event image files (multiple images supported)',
-    type: 'string',
-    format: 'binary',
-    isArray: true,
-  })
-  @IsOptional()
-  eventImages?: any;
-
   @ApiProperty({
     example: 'FAM001122',
     description: 'Family code associated with this event',
@@ -83,6 +74,15 @@ export class CreateEventDto {
   @Type(() => Number)
   @IsNumber({}, { message: 'Created by must be a number' })
   createdBy?: number;
+
+  @ApiPropertyOptional({
+    description: 'Event image files (multiple images supported)',
+    type: 'string',
+    format: 'binary',
+    isArray: true,
+  })
+  @IsOptional()
+  eventImages?: any;
 }
 
 export class UpdateEventDto {
@@ -127,15 +127,6 @@ export class UpdateEventDto {
   location?: string;
 
   @ApiPropertyOptional({
-    description: 'Event image files (multiple images supported)',
-    type: 'string',
-    format: 'binary',
-    isArray: true,
-  })
-  @IsOptional()
-  eventImages?: any;
-
-  @ApiPropertyOptional({
     example: 'FAM001122',
     description: 'Family code associated with this event',
   })
@@ -151,4 +142,26 @@ export class UpdateEventDto {
   @Type(() => Number)
   @IsNumber({}, { message: 'Status must be a number' })
   status?: number;
+
+  @ApiPropertyOptional({
+    description: 'Event image files (multiple images supported)',
+    type: 'string',
+    format: 'binary',
+    isArray: true,
+  })
+  @IsOptional()
+  eventImages?: any;
+}
+
+export class CreateEventImageDto {
+  @ApiProperty({ example: 1, description: 'Event ID' })
+  @IsNotEmpty()
+  @Type(() => Number)
+  @IsNumber({}, { message: 'Event ID must be a number' })
+  eventId: number;
+
+  @ApiProperty({ example: 'event-image.jpg', description: 'Image URL or filename' })
+  @IsNotEmpty()
+  @IsString()
+  imageUrl: string;
 }

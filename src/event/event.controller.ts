@@ -17,7 +17,7 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import * as fs from 'fs';
 import { EventService } from '../event/event.service';
-import { CreateEventDto, UpdateEventDto } from './dto/event.dto';
+import { CreateEventDto, UpdateEventDto, CreateEventImageDto } from './dto/event.dto';
 import {
   ApiBearerAuth,
   ApiConsumes,
@@ -25,10 +25,12 @@ import {
   ApiResponse,
   ApiTags,
   ApiSecurity,
+  ApiBody,
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { generateFileName, imageFileFilter } from '../utils/upload.utils';
 import { Op } from 'sequelize';
+import { EventImage } from './model/event-image.model';
 
 @ApiTags('Event Module')
 @Controller('event')
@@ -42,7 +44,7 @@ export class EventController {
       storage: diskStorage({
         destination: (req, file, cb) => {
           const uploadPath =
-            process.env.EVENT_IMAGE_UPLOAD_PATH || '/uploads/events';
+            process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
           if (!fs.existsSync(uploadPath)) {
             fs.mkdirSync(uploadPath, { recursive: true });
           }
@@ -80,17 +82,12 @@ export class EventController {
     }
 
     // Handle multiple image uploads
+    let imageNames: string[] = [];
     if (files && files.length > 0) {
-      const imageNames = files.map(file => file.filename);
-      // LOG the full URL for each uploaded image
-      const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
-      const uploadPath = process.env.EVENT_IMAGE_UPLOAD_PATH?.replace(/^\.?\/?/, '') || 'uploads/events';
-      const fullUrls = imageNames.map(name => `${baseUrl.replace(/\/$/, '')}/${uploadPath.replace(/\/$/, '')}/${name}`);
-      console.log('Uploaded image URLs:', fullUrls);
-      body.eventImages = JSON.stringify(imageNames);
+      imageNames = files.map(file => file.filename);
     }
 
-    return this.eventService.createEvent(body);
+    return this.eventService.createEvent(body, imageNames);
   }
 
   @Get('all')
@@ -119,7 +116,7 @@ export class EventController {
       storage: diskStorage({
         destination: (req, file, cb) => {
           const uploadPath =
-            process.env.EVENT_IMAGE_UPLOAD_PATH || '/uploads/events';
+            process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
           if (!fs.existsSync(uploadPath)) {
             fs.mkdirSync(uploadPath, { recursive: true });
           }
@@ -144,12 +141,12 @@ export class EventController {
     const loggedInUser = req.user;
 
     // Handle multiple image uploads
+    let imageNames: string[] = [];
     if (files && files.length > 0) {
-      const imageNames = files.map(file => file.filename);
-      body.eventImages = JSON.stringify(imageNames);
+      imageNames = files.map(file => file.filename);
     }
 
-    return this.eventService.update(id, body);
+    return this.eventService.update(id, body, imageNames, loggedInUser.userId);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -158,5 +155,63 @@ export class EventController {
   @ApiOperation({ summary: 'Delete event by ID' })
   deleteEvent(@Param('id') id: number) {
     return this.eventService.delete(id);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/images')
+  @UseInterceptors(
+    FilesInterceptor('eventImages', 10, {
+      storage: diskStorage({
+        destination: (req, file, cb) => {
+          const uploadPath = process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
+          if (!fs.existsSync(uploadPath)) {
+            fs.mkdirSync(uploadPath, { recursive: true });
+          }
+          cb(null, uploadPath);
+        },
+        filename: (req, file, cb) => {
+          cb(null, generateFileName(file.originalname));
+        },
+      }),
+      fileFilter: imageFileFilter,
+    }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Add images to an existing event' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        eventImages: {
+          type: 'array',
+          items: {
+            type: 'string',
+            format: 'binary',
+          },
+        },
+      },
+    },
+  })
+  async addEventImages(
+    @Param('id') id: number,
+    @UploadedFiles() files: Express.Multer.File[],
+  ) {
+    const imageNames = files?.map(file => file.filename) || [];
+    return this.eventService.addEventImages(id, imageNames);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('images/:imageId')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Delete a specific image from an event' })
+  async deleteEventImage(@Param('imageId') imageId: number) {
+    return this.eventService.deleteEventImage(imageId);
+  }
+
+  @Get(':id/images')
+  @ApiOperation({ summary: 'Get all images for an event' })
+  async getEventImages(@Param('id') id: number) {
+    return this.eventService.getEventImages(id);
   }
 }

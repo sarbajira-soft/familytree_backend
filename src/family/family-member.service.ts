@@ -172,34 +172,63 @@ export class FamilyMemberService {
 
   // Get all approved family members by family code
   async getAllFamilyMembers(familyCode: string) {
-    const members = await this.familyMemberModel.findAll({
-      where: { familyCode },
-      include: [
-        {
-          model: this.userModel,
-          as: 'user',
-          attributes: ['id', 'email', 'mobile', 'status', 'role'],
-          include: [
-            {
-              model: this.userProfileModel,
-              as: 'userProfile',
-            },
-          ],
-        },
-        {
-          model: this.userModel,
-          as: 'creator', // optional: to get creator details too
-          attributes: ['id', 'email'],
-        },
-      ],
-      order: [['createdAt', 'DESC']],
-    });
+  const members = await this.familyMemberModel.findAll({
+    where: {
+      familyCode,
+      approveStatus: 'approved',
+    },
+    include: [
+      {
+        model: this.userModel,
+        as: 'user',
+        attributes: ['id', 'email', 'mobile', 'status', 'role'],
+        include: [
+          {
+            model: this.userProfileModel,
+            as: 'userProfile',
+            attributes: ['firstName', 'lastName', 'profile'],
+          },
+        ],
+      },
+      {
+        model: this.userModel,
+        as: 'creator',
+        attributes: ['id', 'email'],
+      },
+    ],
+    order: [['createdAt', 'DESC']],
+  });
+
+  const baseUrl = process.env.BASE_URL || '';
+  const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
+
+  const result = members.map((memberInstance: any) => {
+    const member = memberInstance.get({ plain: true });
+
+    const user = member.user;
+    const profileImage = user?.userProfile?.profile
+      ? `${baseUrl.replace(/\/$/, '')}/${profilePath}/${user.userProfile.profile}`
+      : null;
 
     return {
-      message: `${members.length} family members found.`,
-      data: members,
+      ...member,
+      user: {
+        ...user,
+        fullName: user?.userProfile
+          ? `${user.userProfile.firstName} ${user.userProfile.lastName}`
+          : null,
+        profileImage,
+      },
     };
-  }
+  });
+
+  return {
+    message: `${result.length} approved family members found.`,
+    data: result,
+  };
+}
+
+
 
   async getMemberById(memberId: number) {
     const member = await this.familyMemberModel.findOne({
@@ -229,5 +258,55 @@ export class FamilyMemberService {
 
     return member;
   }
+
+  async getFamilyStatsByCode(familyCode: string) {
+    const members = await this.familyMemberModel.findAll({
+      where: { familyCode, approveStatus: "approved" },
+      include: [
+        {
+          model: this.userModel,
+          as: 'user',
+          attributes: ['id'],
+          include: [
+            {
+              model: this.userProfileModel,
+              as: 'userProfile',
+              attributes: ['gender', 'dob'],
+            },
+          ],
+        },
+      ],
+    });
+
+    let total = 0, males = 0, females = 0, totalAge = 0;
+
+    for (const member of members as any) {
+      const profile = member.user?.userProfile;
+      if (!profile) continue;
+
+      total++;
+
+      const gender = profile.gender?.toLowerCase();
+
+      if (gender === 'male') males++;
+      else if (gender === 'female') females++;
+
+      if (profile.dob) {
+        const dob = new Date(profile.dob);
+        const age = new Date().getFullYear() - dob.getFullYear();
+        totalAge += age;
+      }
+    }
+
+    const averageAge = total > 0 ? parseFloat((totalAge / total).toFixed(1)) : 0;
+
+    return {
+      totalMembers: total,
+      males,
+      females,
+      averageAge,
+    };
+  }
+
   
 }

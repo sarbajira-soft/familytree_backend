@@ -88,4 +88,11 @@ export class FamilyMemberController {
   async getMemberRelation(@Param('memberId') memberId: number) {
     return this.familyMemberService.getMemberById(memberId);
   }
+
+  @Get(':familyCode/stats')
+  async getStats(@Param('familyCode') familyCode: string) {
+    const stats = await this.familyMemberService.getFamilyStatsByCode(familyCode);
+    return { message: 'Family stats fetched successfully', data: stats };
+  }
+
 }

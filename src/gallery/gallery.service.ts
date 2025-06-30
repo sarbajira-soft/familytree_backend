@@ -95,7 +95,6 @@ export class GalleryService {
     };
   }
 
-
   async getGalleryByOptions(
     privacy: 'public' | 'private',
     familyCode?: string,

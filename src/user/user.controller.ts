@@ -180,7 +180,6 @@ export class UserController {
     if (loggedInUser.role === 1 && loggedInUser.userId !== targetUserId) {
       throw new BadRequestException({message:'Access denied: Members can only update their own profile'});
     }
-    console.log(body)
     Object.keys(body).forEach((key) => {
       if (body[key] === '') {
         body[key] = undefined;
@@ -191,7 +190,7 @@ export class UserController {
     if (file) {
       body.profile = file.filename;
     }
-
+    
     return this.userService.updateProfile(targetUserId, body);
   }
 

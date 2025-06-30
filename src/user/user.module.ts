@@ -10,6 +10,8 @@ import { Family } from '../family/model/family.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { MailService } from '../utils/mail.service';
 
+import { NotificationModule } from '../notification/notification.module';
+
 @Module({
   imports: [
     SequelizeModule.forFeature([
@@ -17,8 +19,9 @@ import { MailService } from '../utils/mail.service';
       UserProfile,
       Family,
       FamilyMember,
-      Invite
+      Invite,
     ]),
+    NotificationModule,
   ],
   controllers: [UserController],
   providers: [UserService, MailService],

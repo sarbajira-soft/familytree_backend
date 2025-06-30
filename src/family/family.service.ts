@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
 import { User} from '../user/model/user.model';
@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { CreateFamilyDto } from './dto/create-family.dto';
+import { NotificationService } from '../notification/notification.service';
 
 @Injectable()
 export class FamilyService {
@@ -25,6 +26,8 @@ export class FamilyService {
     @InjectModel(FamilyMember)
     private familyMemberModel: typeof FamilyMember,
     private mailService: MailService,
+
+    private readonly notificationService: NotificationService,
   ) {}
 
   async createFamily(dto: CreateFamilyDto, createdBy: number) {
@@ -43,7 +46,8 @@ export class FamilyService {
     await this.familyMemberModel.create({
       memberId: createdBy,          // The user who created the family
       familyCode: created.familyCode,
-      creatorId: null,              // No one invited them — they are the creator
+      creatorId: null, // No one invited them — they are the creator
+      approveStatus: "approved"
     });
 
     return {
@@ -59,7 +63,20 @@ export class FamilyService {
   async getByCode(code: string) {
     const family = await this.familyModel.findOne({ where: { familyCode: code } });
     if (!family) throw new NotFoundException('Family not found');
-    return family;
+
+    const baseUrl = process.env.BASE_URL || '';
+    const familyPhotoPath = process.env.FAMILY_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/family';
+
+    // If familyPhoto exists, prepend the full URL; otherwise keep null or empty
+    const familyPhotoUrl = family.familyPhoto
+      ? `${baseUrl}/${familyPhotoPath}${family.familyPhoto}`
+      : null;
+
+    // Return family details with full photo URL
+    return {
+      ...family.get(), // get raw data values
+      familyPhotoUrl,
+    };
   }
 
   async update(id: number, dto: any, newFileName?: string, loggedId?: number) {
@@ -93,12 +110,55 @@ export class FamilyService {
 
   }
 
-  async delete(id: number) {
-    const family = await this.familyModel.findByPk(id);
+  async delete(familyId: number, userId: number) {
+    const family = await this.familyModel.findByPk(familyId);
     if (!family) throw new NotFoundException('Family not found');
 
+    const familyCode = family.familyCode;
+
+    // Check if user is an approved admin of this family
+    const isAdmin = await this.familyMemberModel.findOne({
+      where: {
+        memberId: userId,
+        familyCode,
+        approveStatus: 'approved',
+      },
+      include: [{
+        model: this.userModel,
+        as: 'userProfile', // or change based on your association name
+        where: {
+          role: [2, 3],
+        },
+      }],
+    });
+
+    if (!isAdmin) {
+      throw new ForbiddenException('Only family admins can delete this family');
+    }
+
+    // Get all family members
+    const members = await this.familyMemberModel.findAll({ where: { familyCode } });
+    const userIds = members.map((m) => m.memberId);
+
+    // Delete all family members
+    await this.familyMemberModel.destroy({ where: { familyCode } });
+
+    // Delete the family
     await family.destroy();
-    return { message: 'Family deleted successfully' };
+
+    // Notify members
+    if (userIds.length > 0) {
+      await this.notificationService.createNotification({
+        type: 'FAMILY_REMOVED',
+        title: 'Family Deleted',
+        message: `The family (${family.familyName}) has been deleted by the admin.`,
+        familyCode,
+        referenceId: familyId,
+        userIds,
+      }, userId);
+    }
+
+    return { message: 'Family and its members deleted successfully' };
   }
 
   async searchFamilies(query: string) {

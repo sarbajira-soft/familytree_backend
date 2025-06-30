@@ -118,9 +118,10 @@ export class FamilyController {
   @UseGuards(JwtAuthGuard)
   @Delete(':id')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Delete family by ID' })
-  delete(@Param('id') id: number) {
-    return this.familyService.delete(id);
+  @ApiOperation({ summary: 'Delete family by ID (admin only)' })
+  async delete(@Param('id') id: number, @Req() req) {
+    const userId = req.user.userId;
+    return this.familyService.delete(id, userId);
   }
 
   @Get('search')

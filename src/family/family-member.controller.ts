@@ -6,108 +6,86 @@ import {
   Get,
   Param,
   Body,
-  UploadedFile,
-  UseInterceptors,
   UseGuards,
   Req,
-  Query,
   HttpCode,
   HttpStatus,
-  BadRequestException,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { FamilyMemberService } from './family-member.service ';
-import { generateFileName, imageFileFilter } from '../utils/upload.utils';
+import { FamilyMemberService } from './family-member.service';
 import { CreateFamilyMemberDto } from './dto/create-family-member.dto';
-import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 
 @ApiTags('Family Member')
 @Controller('family/member')
 @UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
-@ApiConsumes('multipart/form-data')
 export class FamilyMemberController {
   constructor(private readonly familyMemberService: FamilyMemberService) {}
 
-  @Post('create')
-  @UseInterceptors(FileInterceptor('profile', {
-    storage: diskStorage({
-      destination: process.env.PROFILE_UPLOAD_PATH || './uploads/profile',
-      filename: (req, file, cb) => {
-        const filename = generateFileName(file.originalname);
-        cb(null, filename);
-      },
-    }),
-    fileFilter: imageFileFilter,
-  }))
-  @ApiOperation({ summary: 'Create family member' })
-  @ApiResponse({ status: 201, description: 'Family member created successfully' })
-  async createMember(
-    @UploadedFile() file: Express.Multer.File,
-    @Req() req,
-    @Body() body: CreateFamilyMemberDto
-  ) {
-    if (file) {
-      body.profile = file.filename;
-    }
-    const loggedInUser = req.user;
-    
-    return this.familyMemberService.createFamilyMember(body, loggedInUser.userId);
+  // User requests to join a family (creates membership with pending)
+  @Post('request-join')
+  @ApiOperation({ summary: 'Request to join family' })
+  @ApiResponse({ status: 201, description: 'Family join request submitted' })
+  async requestToJoinFamily(@Body() body: CreateFamilyMemberDto, @Req() req) {
+    const loggedInUserId = req.user?.userId;
+    return this.familyMemberService.requestToJoinFamily(body, loggedInUserId);
   }
 
-  @Put('update/:id')
-  @UseInterceptors(FileInterceptor('profile', {
-    storage: diskStorage({
-      destination: process.env.PROFILE_UPLOAD_PATH || './uploads/profile',
-      filename: (req, file, cb) => {
-        const filename = generateFileName(file.originalname);
-        cb(null, filename);
-      },
-    }),
-    fileFilter: imageFileFilter,
-  }))
-  @ApiOperation({ summary: 'Update family member' })
-  @ApiResponse({ status: 200, description: 'Family member updated successfully' })
-  async updateMember(
-    @Param('id') id: number,
-    @UploadedFile() file: Express.Multer.File,
-    @Req() req,
-    @Body() body: CreateFamilyMemberDto
+  // Approve member (admin action)
+  @Put('approve/:memberId/:familyCode')
+  @ApiOperation({ summary: 'Approve family member request' })
+  @ApiResponse({ status: 200, description: 'Member approved successfully' })
+  async approveMember(
+    @Param('memberId') memberId: number,
+    @Param('familyCode') familyCode: string,
   ) {
-    if (file) {
-      body.profile = file.filename;
-    }
-
-    return this.familyMemberService.updateFamilyMember(id, body);
+    return this.familyMemberService.approveFamilyMember(memberId, familyCode);
   }
 
-  @Delete('delete/:id')
+  // Reject member (admin action)
+  @Put('reject/:memberId/:familyCode')
+  @ApiOperation({ summary: 'Reject family member request' })
+  @ApiResponse({ status: 200, description: 'Member rejected successfully' })
+  async rejectMember(
+    @Param('memberId') memberId: number,
+    @Param('familyCode') familyCode: string,
+    @Req() req
+  ) {
+    const rejectorId = req.user?.userId;
+    return this.familyMemberService.rejectFamilyMember(memberId, rejectorId, familyCode);
+  }
+
+  // Delete member from family (remove membership)
+  @Delete('delete/:memberId/:familyCode')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Delete family member' })
-  @ApiResponse({ status: 200, description: 'Family member deleted successfully' })
-  async deleteMember(@Param('id') id: number, @Req() req) {
-    return this.familyMemberService.deleteFamilyMember(id);
+  @ApiOperation({ summary: 'Remove member from family' })
+  @ApiResponse({ status: 200, description: 'Family member removed successfully' })
+  async deleteMember(
+    @Param('memberId') memberId: number,
+    @Param('familyCode') familyCode: string,
+  ) {
+    return this.familyMemberService.deleteFamilyMember(memberId, familyCode);
   }
 
-  @UseGuards(JwtAuthGuard)
-  @Get('family-member/:familyCode')
-  @ApiOperation({ summary: 'Get all family members by family code' })
-  @ApiResponse({ status: 200, description: 'List of family members' })
-  @ApiBearerAuth()
-  async getAllFamilyMembers(@Param('familyCode') familyCode: string) {
+  // Get all approved family members by family code
+  @Get(':familyCode')
+  @ApiOperation({ summary: 'Get all approved family members by family code' })
+  @ApiResponse({ status: 200, description: 'List of family members returned' })
+  async getFamilyMembers(@Param('familyCode') familyCode: string) {
     return this.familyMemberService.getAllFamilyMembers(familyCode);
   }
 
-  @UseGuards(JwtAuthGuard)
-  @Get('members/:id')
-  @ApiOperation({ summary: 'Get all family members by family code' })
-  @ApiResponse({ status: 200, description: 'List of family members' })
-  @ApiBearerAuth()
-  async getMemberById(@Param('id') id: number) {
-    return this.familyMemberService.getMemberById(id);
+  // Get member relationship details by memberId
+  @Get('member/:memberId')
+  @ApiOperation({ summary: 'Get family member details by memberId' })
+  @ApiResponse({ status: 200, description: 'Family member details returned' })
+  async getMemberRelation(@Param('memberId') memberId: number) {
+    return this.familyMemberService.getMemberById(memberId);
   }
-
-
 }

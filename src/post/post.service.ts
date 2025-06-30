@@ -14,6 +14,7 @@ import { PostComment } from './model/post-comment.model';
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { CreatePostDto } from './dto/createpost.dto';
+import { NotificationService } from '../notification/notification.service';
 
 @Injectable()
 export class PostService {
@@ -28,16 +29,15 @@ export class PostService {
       private readonly userProfileModel: typeof UserProfile,
       @InjectModel(User)
       private readonly userModel: typeof User,
+
+      private readonly notificationService: NotificationService,
   ) {}
 
   async createPost(
     dto: CreatePostDto,
     createdBy: number,
   ) {
-    // Optional: Validate familyCode if needed
-    // await this.validateFamilyCode(dto.familyCode, createdBy);
-
-    // Create post
+    // Step 1: Create post
     const post = await this.postModel.create({
       caption: dto.caption,
       familyCode: dto.familyCode,
@@ -47,6 +47,25 @@ export class PostService {
       privacy: dto.privacy ?? 'public',
     });
 
+    // Step 2: Fetch approved family members from ft_family_members
+    const memberIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
+
+    // Step 4: Send notification to all approved members
+    if (memberIds.length > 0) {
+      await this.notificationService.createNotification(
+        {
+          type: 'FAMILY_POST_CREATED',
+          title: 'New Family Post',
+          message: `A new post has been shared in the family feed.`,
+          familyCode: dto.familyCode,
+          referenceId: post.id,
+          userIds: memberIds,
+        },
+        createdBy, // performedBy
+      );
+    }
+
+    // Step 5: Return post details
     return {
       message: 'Post created successfully',
       data: {

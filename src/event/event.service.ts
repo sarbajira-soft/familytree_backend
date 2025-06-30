@@ -33,13 +33,13 @@ export class EventService {
 
     // Create notifications for all family members after event creation
     try {
-      await this.notificationService.createEventNotificationForFamily(
-        dto.familyCode,
-        dto.eventName,
-        dto.eventStartDate,
-        dto.eventDescription,
-        createdBy,
-      );
+      // await this.notificationService.createEventNotificationForFamily(
+      //   dto.familyCode,
+      //   dto.eventName,
+      //   dto.eventStartDate,
+      //   dto.eventDescription,
+      //   createdBy,
+      // );
     } catch (error) {
       console.error('Failed to create event notifications:', error);
       // Don't throw error here - event creation should succeed even if notifications fail
@@ -101,13 +101,13 @@ export class EventService {
     // Create notifications for event update if significant changes
     if (dto.eventName || dto.eventStartDate || dto.eventDescription) {
       try {
-        await this.notificationService.createEventNotificationForFamily(
-          dto.familyCode || event.familyCode,
-          dto.eventName || event.eventName,
-          dto.eventStartDate || event.eventStartDate,
-          `Event Updated: ${dto.eventDescription || event.eventDescription}`,
-          loggedId,
-        );
+        // await this.notificationService.createEventNotificationForFamily(
+        //   dto.familyCode || event.familyCode,
+        //   dto.eventName || event.eventName,
+        //   dto.eventStartDate || event.eventStartDate,
+        //   `Event Updated: ${dto.eventDescription || event.eventDescription}`,
+        //   loggedId,
+        // );
       } catch (error) {
         console.error('Failed to create event update notifications:', error);
       }
@@ -140,13 +140,13 @@ export class EventService {
 
     // Create cancellation notification before deleting
     try {
-      await this.notificationService.createEventNotificationForFamily(
-        event.familyCode,
-        event.eventName,
-        event.eventStartDate,
-        `Event Cancelled: ${event.eventDescription || 'This event has been cancelled'}`,
-        loggedId,
-      );
+      // await this.notificationService.createEventNotificationForFamily(
+      //   event.familyCode,
+      //   event.eventName,
+      //   event.eventStartDate,
+      //   `Event Cancelled: ${event.eventDescription || 'This event has been cancelled'}`,
+      //   loggedId,
+      // );
     } catch (error) {
       console.error(
         'Failed to create event cancellation notifications:',

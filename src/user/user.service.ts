@@ -16,6 +16,7 @@ import { ForgetPasswordDto } from './dto/forget-password.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { Family } from '../family/model/family.model';
 import { RegisterDto } from './dto/register.dto';
+import { NotificationService } from '../notification/notification.service';
 
 @Injectable()
 export class UserService {
@@ -31,6 +32,8 @@ export class UserService {
     @InjectModel(Invite)
     private inviteModel: typeof Invite,
     private mailService: MailService,
+
+    private readonly notificationService: NotificationService,
   ) {}
 
   private generateOtp(): string {
@@ -396,62 +399,70 @@ export class UserService {
   }
 
   async updateProfile(userId: number, dto: UpdateProfileDto) {
-    const user = await this.userProfileModel.findOne({ where: { userId } });
-    if (!user) throw new BadRequestException({message:'User not found'});
+    try{
 
-    //  Check if familyCode is present and valid
-    if (dto.familyCode) {
-      const existingFamily = await this.familyModel.findOne({ where: { familyCode: dto.familyCode } });
-      if (!existingFamily) {
-        throw new BadRequestException({message:'Invalid family code. Please enter a valid family code.'});
-      }
-    }
-
-    // Handle profile image update and old file removal
-    if (dto.profile) {
-      const newFile = path.basename(dto.profile);
-      if (newFile && user.profile && user.profile !== newFile) {
-        const uploadPath = process.env.UPLOAD_FOLDER_PATH || './uploads/profile';
-        const oldImagePath = path.join(uploadPath, user.profile);
-        try {
-          if (fs.existsSync(oldImagePath)) {
-            fs.unlinkSync(oldImagePath);
-            console.log('Old profile image deleted:', oldImagePath);
-          }
-        } catch (err) {
-          console.warn(`Failed to remove old profile image: ${err.message}`);
+      const user = await this.userProfileModel.findOne({ where: { userId } });
+      if (!user) throw new BadRequestException({ message: 'User not found' });
+      // Validate family code
+      if (dto.familyCode) {
+        const existingFamily = await this.familyModel.findOne({ where: { familyCode: dto.familyCode } });
+        if (!existingFamily) {
+          throw new BadRequestException({ message: 'Invalid family code. Please enter a valid family code.' });
         }
       }
+
+      // Handle profile image removal
+      if (dto.profile) {
+        const newFile = path.basename(dto.profile);
+        if (newFile && user.profile && user.profile !== newFile) {
+          const uploadPath = process.env.UPLOAD_FOLDER_PATH || './uploads/profile';
+          const oldImagePath = path.join(uploadPath, user.profile);
+          try {
+            if (fs.existsSync(oldImagePath)) fs.unlinkSync(oldImagePath);
+          } catch (err) {
+            console.warn(`Failed to remove old profile image: ${err.message}`);
+          }
+        }
+      }
+
+      const existingFamilyMember = await this.familyMemberModel.findOne({ where: { memberId: userId } });
+      const currentFamilyCode = existingFamilyMember?.familyCode || null;
+      
+      if (dto.familyCode && dto.familyCode !== currentFamilyCode) {
+        
+        await this.familyMemberModel.create({
+          memberId: userId,
+          familyCode: dto.familyCode,
+          creatorId: null,
+          approveStatus: 'pending',
+        });
+
+        // Notify family admins
+        const adminUserIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
+             
+        if (adminUserIds.length > 0) {
+          await this.notificationService.createNotification({
+            type: 'FAMILY_JOIN_REQUEST',
+            title: 'New Family Join Request',
+            message: `User ${dto.firstName} ${dto.lastName} has requested to join your family.`,
+            familyCode: dto.familyCode,
+            referenceId: userId,
+            userIds: adminUserIds,
+          }, userId);
+        }
+      }
+
+      user.set(dto as any);
+      await user.save();
+
+      return {
+        message: 'Profile updated successfully',
+        data: user,
+      };
+    }catch(err){
+      throw new BadRequestException({ message: err });
     }
-
-    const existingFamilyMember = await this.familyMemberModel.findOne({ where: { memberId: userId } });
-    const currentFamilyCode = existingFamilyMember?.familyCode || null;
-    if (dto.familyCode && dto.familyCode !== currentFamilyCode) {
-      const remarks = `Requested to join family using code ${dto.familyCode}`;
-      await this.inviteModel.create({
-        userId: userId,
-        familyCode: dto.familyCode,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        remarks: remarks,
-        inviteType: 'FAMILY_JOIN'
-      });
-      await this.familyMemberModel.create({
-        memberId: userId,       
-        familyCode: dto.familyCode,
-        creatorId: null,
-        approveStatus: 'pending'
-      });
-    }
-
-
-    user.set(dto as any);
-    await user.save();
-
-    return {
-      message: 'Profile updated successfully',
-      data: user,
-    };
   }
+
 
 }

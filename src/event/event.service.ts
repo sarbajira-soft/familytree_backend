@@ -10,6 +10,7 @@ import { UserProfile } from '../user/model/user-profile.model';
 import { NotificationService } from '../notification/notification.service';
 import * as fs from 'fs';
 import * as path from 'path';
+import { Op } from 'sequelize';
 
 @Injectable()
 export class EventService {
@@ -23,27 +24,24 @@ export class EventService {
     private readonly notificationService: NotificationService,
   ) {}
 
-  async createEvent(dto: CreateEventDto, createdBy: number) {
-    // Optional: await this.validateFamilyCode(dto.familyCode, createdBy);
+  async createEvent(dto: CreateEventDto) {
+    // Optional: await this.validateFamilyCode(dto.familyCode, dto.userId);
 
-    const event = await this.eventModel.create({
-      ...dto,
-      createdBy,
-    });
+    const event = await this.eventModel.create(dto);
 
     // Create notifications for all family members after event creation
-    try {
-      // await this.notificationService.createEventNotificationForFamily(
-      //   dto.familyCode,
-      //   dto.eventName,
-      //   dto.eventStartDate,
-      //   dto.eventDescription,
-      //   createdBy,
-      // );
-    } catch (error) {
-      console.error('Failed to create event notifications:', error);
-      // Don't throw error here - event creation should succeed even if notifications fail
-    }
+    // try {
+    //   await this.notificationService.createEventNotificationForFamily(
+    //     dto.familyCode,
+    //     dto.eventTitle,
+    //     dto.eventDate,
+    //     dto.eventDescription,
+    //     dto.createdBy || dto.userId,
+    //   );
+    // } catch (error) {
+    //   console.error('Failed to create event notifications:', error);
+    //   // Don't throw error here - event creation should succeed even if notifications fail
+    // }
 
     return {
       message: 'Event created successfully',
@@ -51,8 +49,33 @@ export class EventService {
     };
   }
 
+  private constructEventImageUrl(filename: string): string {
+    if (!filename) return null;
+    const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
+    const uploadPath = process.env.EVENT_IMAGE_UPLOAD_PATH?.replace(/^\.?\/?/, '') || 'uploads/events';
+    return `${baseUrl.replace(/\/$/, '')}/${uploadPath.replace(/\/$/, '')}/${filename}`;
+  }
+
   async getAll() {
-    return this.eventModel.findAll();
+    const events = await this.eventModel.findAll();
+    return events.map(event => {
+      const eventJson = event.toJSON();
+      let eventImages: string[] = [];
+      try {
+        const images = JSON.parse(eventJson.eventImages || '[]');
+        if (Array.isArray(images)) {
+          eventImages = images.map((img: string) => this.constructEventImageUrl(img));
+        }
+      } catch {
+        eventImages = [];
+      }
+      // Remove user field if present
+      delete eventJson.user;
+      return {
+        ...eventJson,
+        eventImages,
+      };
+    });
   }
 
   async getByFamilyCode(familyCode: string) {
@@ -67,7 +90,22 @@ export class EventService {
   async getById(id: number) {
     const event = await this.eventModel.findByPk(id);
     if (!event) throw new NotFoundException('Event not found');
-    return event;
+    const eventJson = event.toJSON();
+    let eventImages: string[] = [];
+    try {
+      const images = JSON.parse(eventJson.eventImages || '[]');
+      if (Array.isArray(images)) {
+        eventImages = images.map((img: string) => this.constructEventImageUrl(img));
+      }
+    } catch {
+      eventImages = [];
+    }
+    // Remove user field if present
+    delete eventJson.user;
+    return {
+      ...eventJson,
+      eventImages,
+    };
   }
 
   async update(id: number, dto: any, loggedId?: number) {
@@ -76,22 +114,23 @@ export class EventService {
 
     // Optional: await this.validateFamilyCode(dto.familyCode, loggedId);
 
-    // Delete old image if new one provided
-    if (
-      dto.eventImage &&
-      event.eventImage &&
-      dto.eventImage !== event.eventImage
-    ) {
-      const uploadDir =
-        process.env.EVENT_IMAGE_UPLOAD_PATH || './uploads/events';
-      const oldFilePath = path.join(uploadDir, event.eventImage);
-      if (fs.existsSync(oldFilePath)) {
-        try {
-          fs.unlinkSync(oldFilePath);
-          console.log('Old event image deleted:', oldFilePath);
-        } catch (err) {
-          console.warn('Failed to delete old image:', err.message);
+    // Delete old images if new ones provided
+    if (dto.eventImages && event.eventImages && dto.eventImages !== event.eventImages) {
+      const uploadDir = process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
+      
+      try {
+        const oldImages = JSON.parse(event.eventImages);
+        if (Array.isArray(oldImages)) {
+          oldImages.forEach(imageName => {
+            const oldFilePath = path.join(uploadDir, imageName);
+            if (fs.existsSync(oldFilePath)) {
+              fs.unlinkSync(oldFilePath);
+              console.log('Old event image deleted:', oldFilePath);
+            }
+          });
         }
+      } catch (err) {
+        console.warn('Failed to delete old images:', err.message);
       }
     }
 
@@ -99,12 +138,12 @@ export class EventService {
     await event.update(dto);
 
     // Create notifications for event update if significant changes
-    if (dto.eventName || dto.eventStartDate || dto.eventDescription) {
+    if (dto.eventTitle || dto.eventDate || dto.eventDescription) {
       try {
         // await this.notificationService.createEventNotificationForFamily(
         //   dto.familyCode || event.familyCode,
-        //   dto.eventName || event.eventName,
-        //   dto.eventStartDate || event.eventStartDate,
+        //   dto.eventTitle || event.eventTitle,
+        //   dto.eventDate || event.eventDate,
         //   `Event Updated: ${dto.eventDescription || event.eventDescription}`,
         //   loggedId,
         // );
@@ -125,16 +164,22 @@ export class EventService {
 
     // Optional: await this.validateUserFamilyAccess(event.familyCode, loggedId);
 
-    if (event.eventImage) {
-      const uploadDir =
-        process.env.EVENT_IMAGE_UPLOAD_PATH || './uploads/events';
-      const imagePath = path.join(uploadDir, event.eventImage);
-      if (fs.existsSync(imagePath)) {
-        try {
-          fs.unlinkSync(imagePath);
-        } catch (err) {
-          console.warn('Failed to delete event image:', err.message);
+    // Delete event images
+    if (event.eventImages) {
+      const uploadDir = process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
+      
+      try {
+        const images = JSON.parse(event.eventImages);
+        if (Array.isArray(images)) {
+          images.forEach(imageName => {
+            const imagePath = path.join(uploadDir, imageName);
+            if (fs.existsSync(imagePath)) {
+              fs.unlinkSync(imagePath);
+            }
+          });
         }
+      } catch (err) {
+        console.warn('Failed to delete event images:', err.message);
       }
     }
 
@@ -142,8 +187,8 @@ export class EventService {
     try {
       // await this.notificationService.createEventNotificationForFamily(
       //   event.familyCode,
-      //   event.eventName,
-      //   event.eventStartDate,
+      //   event.eventTitle,
+      //   event.eventDate,
       //   `Event Cancelled: ${event.eventDescription || 'This event has been cancelled'}`,
       //   loggedId,
       // );
@@ -192,5 +237,33 @@ export class EventService {
         'You can only access events from your family',
       );
     }
+  }
+
+  async getUpcoming() {
+    const today = new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD'
+    const events = await this.eventModel.findAll({
+      where: {
+        eventDate: { [Op.gte]: today },
+        status: 1,
+      },
+      order: [['eventDate', 'ASC']],
+    });
+    return events.map(event => {
+      const eventJson = event.toJSON();
+      let eventImages: string[] = [];
+      try {
+        const images = JSON.parse(eventJson.eventImages || '[]');
+        if (Array.isArray(images)) {
+          eventImages = images.map((img: string) => this.constructEventImageUrl(img));
+        }
+      } catch {
+        eventImages = [];
+      }
+      delete eventJson.user;
+      return {
+        ...eventJson,
+        eventImages,
+      };
+    });
   }
 }

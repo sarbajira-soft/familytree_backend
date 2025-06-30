@@ -8,8 +8,12 @@ export const generateFileName = (originalName: string): string => {
 };
 
 export const imageFileFilter = (req, file, callback) => {
-  if (!file.mimetype.match(/^image\/(jpeg|png|jpg)$/)) {
-    return callback(new BadRequestException('Only image files are allowed'), false);
+  if (
+    file.mimetype.match(/^image\/(jpeg|png|jpg)$/) ||
+    file.mimetype === 'application/pdf'
+  ) {
+    callback(null, true);
+  } else {
+    return callback(new BadRequestException('Only image (jpeg, png, jpg) or PDF files are allowed'), false);
   }
-  callback(null, true);
 };

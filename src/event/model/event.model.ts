@@ -6,7 +6,10 @@ import {
   PrimaryKey,
   AutoIncrement,
   Default,
+  ForeignKey,
+  BelongsTo,
 } from 'sequelize-typescript';
+import { User } from '../../user/model/user.model';
 
 @Table({ tableName: 'ft_event' })
 export class Event extends Model<Event> {
@@ -15,11 +18,21 @@ export class Event extends Model<Event> {
   @Column(DataType.INTEGER)
   id: number;
 
+  @ForeignKey(() => User)
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: false,
+  })
+  userId: number;
+
+  @BelongsTo(() => User)
+  user: User;
+
   @Column({
     type: DataType.STRING,
     allowNull: false,
   })
-  eventName: string;
+  eventTitle: string;
 
   @Column({
     type: DataType.TEXT,
@@ -28,27 +41,32 @@ export class Event extends Model<Event> {
   eventDescription: string;
 
   @Column({
-    type: DataType.STRING,
-    allowNull: true,
-  })
-  eventImage: string;
-
-  @Column({
     type: DataType.DATEONLY,
     allowNull: false,
   })
-  eventStartDate: string;
+  eventDate: string;
 
   @Column({
-    type: DataType.DATEONLY,
+    type: DataType.TIME,
     allowNull: true,
   })
-  eventEndDate: string;
+  eventTime: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  location: string;
+
+  @Column({
+    type: DataType.TEXT,
+    allowNull: true,
+  })
+  eventImages: string; // JSON string to store multiple image paths
 
   @Column({
     type: DataType.STRING,
     allowNull: false,
-    unique: true,
   })
   familyCode: string;
 

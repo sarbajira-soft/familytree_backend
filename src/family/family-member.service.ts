@@ -1,5 +1,6 @@
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
+import { Sequelize } from 'sequelize-typescript';
 import { Op } from 'sequelize';
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
@@ -8,10 +9,12 @@ import { FamilyMember } from './model/family-member.model';
 import { MailService } from '../utils/mail.service';
 import { NotificationService } from '../notification/notification.service'; // Import your notification service
 import { extractUserProfileFields } from '../utils/profile-mapper.util';
+import * as bcrypt from 'bcrypt';
 import * as path from 'path';
 import * as fs from 'fs';
 
 import { CreateFamilyMemberDto } from './dto/create-family-member.dto';
+import { CreateUserAndJoinFamilyDto } from './dto/create-user-and-join-family.dto';
 
 @Injectable()
 export class FamilyMemberService {
@@ -30,8 +33,133 @@ export class FamilyMemberService {
 
     private mailService: MailService,
 
-    private notificationService: NotificationService, // inject notification service
+    private notificationService: NotificationService,
+
+    private readonly sequelize: Sequelize,
   ) {}
+
+  async createUserAndJoinFamily(dto: CreateUserAndJoinFamilyDto) {
+    const transaction = await this.sequelize.transaction();
+    const existingVerifiedUser = await this.userModel.findOne({
+        where: {
+          status: 1,
+          [Op.or]: [
+            { email: dto.email },
+            {
+              countryCode: dto.countryCode,
+              mobile: dto.mobile,
+            },
+          ],
+        },
+      });
+
+    if (existingVerifiedUser) {
+      throw new BadRequestException({
+        message: 'User with this email or mobile already exists',
+      });
+    }
+
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(dto.password, saltRounds);
+    try { 
+      // Step 1: Create user
+      const user = await this.userModel.create(
+        {
+          email: dto.email,
+          countryCode: dto.countryCode,
+          mobile: dto.mobile,
+          password: hashedPassword,
+          status: 1,
+          role: dto.role,
+        },
+        { transaction }
+      );
+
+      // Step 2: Create full profile
+      await this.userProfileModel.create(
+        {
+          userId: user.id,
+          firstName: dto.firstName,
+          lastName: dto.lastName,
+          profile: dto.profile,
+          gender: dto.gender,
+          dob: dto.dob,
+          age: dto.age,
+          maritalStatus: dto.maritalStatus,
+          marriageDate: dto.marriageDate,
+          spouseName: dto.spouseName,
+          childrenNames: dto.childrenNames,
+          fatherName: dto.fatherName,
+          motherName: dto.motherName,
+          religionId: dto.religionId,
+          languageId: dto.languageId,
+          caste: dto.caste,
+          gothramId: dto.gothramId,
+          kuladevata: dto.kuladevata,
+          region: dto.region,
+          hobbies: dto.hobbies,
+          likes: dto.likes,
+          dislikes: dto.dislikes,
+          favoriteFoods: dto.favoriteFoods,
+          contactNumber: dto.contactNumber,
+          countryId: dto.countryId,
+          address: dto.address,
+          bio: dto.bio,
+          familyCode: dto.familyCode,
+        },
+        { transaction }
+      );
+
+      // Step 3: Create family join request
+      const existing = await this.familyMemberModel.findOne({
+        where: {
+          memberId: user.id,
+          familyCode: dto.familyCode,
+        },
+      });
+
+      if (existing) {
+        throw new BadRequestException('User already requested or joined this family');
+      }
+
+      const membership = await this.familyMemberModel.create(
+        {
+          memberId: user.id,
+          familyCode: dto.familyCode,
+          creatorId: user.id,
+          approveStatus: 'approved',
+        },
+        { transaction }
+      );
+
+      // Step 4: Notify admins
+      const adminUserIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
+      if (adminUserIds.length > 0) {
+        await this.notificationService.createNotification(
+          {
+            type: 'FAMILY_MEMBER_JOINED',
+            title: 'New Family Member Joined',
+            message: `User ${dto?.firstName || ''} ${dto?.lastName || ''} has successfully joined your family.`,
+            familyCode: dto.familyCode,
+            referenceId: user.id,
+            userIds: adminUserIds,
+          },
+          user.id
+        );
+      }
+
+      await transaction.commit();
+      return {
+        message: 'User registered and join request submitted successfully',
+        data: { user, membership },
+      };
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+  }
+
+
 
   // User requests to join family
   async requestToJoinFamily(dto: CreateFamilyMemberDto, createdBy: number) {
@@ -52,7 +180,7 @@ export class FamilyMemberService {
       memberId: dto.memberId,
       familyCode: dto.familyCode,
       creatorId: createdBy,
-      approveStatus: 'pending',
+      approveStatus: 'approved',
     });
 
     // Notify all family admins about new join request
@@ -61,9 +189,9 @@ export class FamilyMemberService {
       const user = await this.userProfileModel.findOne({ where: { userId: dto.memberId } });
       await this.notificationService.createNotification(
         {
-          type: 'FAMILY_JOIN_REQUEST',
-          title: 'New Family Join Request',
-          message: `User ${user?.firstName || ''} ${user?.lastName || ''} has requested to join your family.`,
+          type: 'FAMILY_MEMBER_JOINED',
+          title: 'New Family Member Joined',
+          message: `User ${user?.firstName || ''} ${user?.lastName || ''} has successfully joined your family.`,
           familyCode: dto.familyCode,
           referenceId: dto.memberId,
           userIds: adminUserIds,
@@ -186,7 +314,7 @@ export class FamilyMemberService {
           {
             model: this.userProfileModel,
             as: 'userProfile',
-            attributes: ['firstName', 'lastName', 'profile'],
+            attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'contactNumber'],
           },
         ],
       },

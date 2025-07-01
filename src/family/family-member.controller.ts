@@ -5,20 +5,30 @@ import {
   Delete,
   Get,
   Param,
+  UploadedFile,
+  UseInterceptors,
   Body,
   UseGuards,
   Req,
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { generateFileName, imageFileFilter } from '../utils/upload.utils';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { FamilyMemberService } from './family-member.service';
 import { CreateFamilyMemberDto } from './dto/create-family-member.dto';
+import { CreateUserAndJoinFamilyDto } from './dto/create-user-and-join-family.dto';
+
 import {
   ApiBearerAuth,
   ApiOperation,
   ApiResponse,
   ApiTags,
+  ApiConsumes,
+  ApiBody, 
+  ApiSecurity
 } from '@nestjs/swagger';
 
 @ApiTags('Family Member')
@@ -27,6 +37,36 @@ import {
 @ApiBearerAuth()
 export class FamilyMemberController {
   constructor(private readonly familyMemberService: FamilyMemberService) {}
+
+  @Post('register-and-join-family')
+  @UseInterceptors(
+    FileInterceptor('profile', {
+      storage: diskStorage({
+        destination: (req, file, cb) => {
+          cb(null, process.env.PROFILE_UPLOAD_PATH || './uploads/profile');
+        },
+        filename: (req, file, cb) => {
+          const filename = generateFileName(file.originalname);
+          cb(null, filename);
+        },
+      }),
+      fileFilter: imageFileFilter,
+    }),
+  )
+  @ApiOperation({ summary: 'Register new user and request to join family' })
+  @ApiResponse({ status: 201, description: 'User created and family join request submitted' })
+  @ApiConsumes('multipart/form-data')
+  async registerAndJoinFamily(
+    @UploadedFile() file: Express.Multer.File,
+    @Body() dto: CreateUserAndJoinFamilyDto,
+  ) {
+    // Save uploaded filename to DTO before passing it
+    if (file) {
+      dto.profile = file.filename;
+    }
+
+    return this.familyMemberService.createUserAndJoinFamily(dto);
+  }
 
   // User requests to join a family (creates membership with pending)
   @Post('request-join')

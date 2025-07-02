@@ -3,6 +3,7 @@ import { SequelizeModule } from '@nestjs/sequelize';
 import { Product } from './model/product.model';
 import { Category } from './model/category.model';
 import { Order } from './model/order.model'; // <-- Import Order model
+import { ProductImage } from './model/product-image.model';
 
 import { ProductService } from './product.service';
 import { ProductController } from './product.controller';
@@ -13,7 +14,9 @@ import { OrderService } from './order.service'; // <-- Import OrderService
 import { OrderController } from './order.controller'; // <-- Import OrderController
 
 @Module({
-  imports: [SequelizeModule.forFeature([Product, Category, Order])], // <-- Register Order
+  imports: [
+    SequelizeModule.forFeature([Product, Category, Order, ProductImage]),
+  ],
   providers: [
     ProductService,
     CategoryService,

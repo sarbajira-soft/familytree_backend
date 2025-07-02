@@ -26,15 +26,6 @@ export class CreateProductDto {
   @IsOptional()
   description?: string;
 
-  @ApiPropertyOptional({
-    description: 'Product image file (only filename stored)',
-    type: 'string',
-    format: 'binary',
-  })
-  @IsOptional()
-  @IsString()
-  image?: string;
-
   @ApiProperty({
     example: 7999,
     description: 'Price of the product in INR',
@@ -69,4 +60,17 @@ export class CreateProductDto {
   @Type(() => Number)
   @IsNumber({}, { message: 'Category ID must be a number' })
   categoryId: number;
+}
+
+export class CreateProductImageDto {
+  @ApiProperty({ example: 1, description: 'Product ID' })
+  @IsNotEmpty()
+  @Type(() => Number)
+  @IsNumber({}, { message: 'Product ID must be a number' })
+  productId: number;
+
+  @ApiProperty({ example: 'product-image.jpg', description: 'Image URL or filename' })
+  @IsNotEmpty()
+  @IsString()
+  imageUrl: string;
 }

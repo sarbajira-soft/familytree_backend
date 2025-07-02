@@ -8,8 +8,10 @@ import {
   Default,
   ForeignKey,
   BelongsTo,
+  HasMany,
 } from 'sequelize-typescript';
 import { Category } from './category.model'; // Adjust path if needed
+import { ProductImage } from './product-image.model';
 
 @Table({ tableName: 'ft_product' })
 export class Product extends Model<Product> {
@@ -29,12 +31,6 @@ export class Product extends Model<Product> {
     allowNull: true,
   })
   description: string;
-
-  @Column({
-    type: DataType.STRING,
-    allowNull: true,
-  })
-  image: string;
 
   @Column({
     type: DataType.DECIMAL(10, 2),
@@ -63,4 +59,7 @@ export class Product extends Model<Product> {
 
   @BelongsTo(() => Category)
   category: Category;
+
+  @HasMany(() => ProductImage)
+  images: ProductImage[];
 }

@@ -10,8 +10,9 @@ import {
   HttpStatus,
   Delete,
   Put,
+  UploadedFiles,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
+import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import * as fs from 'fs';
 import { ProductService } from './product.service';
@@ -22,6 +23,7 @@ import {
   ApiOperation,
   ApiResponse,
   ApiTags,
+  ApiBody,
 } from '@nestjs/swagger';
 import { generateFileName, imageFileFilter } from '../utils/upload.utils';
 
@@ -32,11 +34,10 @@ export class ProductController {
 
   @Post('create')
   @UseInterceptors(
-    FileInterceptor('image', {
+    FilesInterceptor('productImages', 10, {
       storage: diskStorage({
         destination: (req, file, cb) => {
-          const uploadPath =
-            process.env.PRODUCT_IMAGE_UPLOAD_PATH || './uploads/products';
+          const uploadPath = process.env.PRODUCT_IMAGE_UPLOAD_PATH || 'uploads/products';
           if (!fs.existsSync(uploadPath)) {
             fs.mkdirSync(uploadPath, { recursive: true });
           }
@@ -50,17 +51,95 @@ export class ProductController {
     }),
   )
   @ApiConsumes('multipart/form-data')
-  @ApiOperation({ summary: 'Create a new product' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        description: { type: 'string' },
+        price: { type: 'number' },
+        stock: { type: 'number' },
+        status: { type: 'number' },
+        categoryId: { type: 'number' },
+        productImages: {
+          type: 'array',
+          items: {
+            type: 'string',
+            format: 'binary',
+          },
+        },
+      },
+      required: ['name', 'description', 'price', 'stock', 'status', 'categoryId'],
+    },
+  })
+  @ApiOperation({ summary: 'Create a new product with images' })
   @ApiResponse({ status: 201, description: 'Product created successfully' })
   @HttpCode(HttpStatus.CREATED)
   async createProduct(
-    @UploadedFile() file: Express.Multer.File,
+    @UploadedFiles() files: Express.Multer.File[],
     @Body() body: CreateProductDto,
   ) {
-    if (file) {
-      body.image = file.filename;
+    const result = await this.productService.createProduct(body);
+    const productId = result.data.id;
+    const imageNames = files?.map(file => file.filename) || [];
+    if (imageNames.length > 0) {
+      await this.productService.addProductImages(productId, imageNames);
     }
-    return this.productService.createProduct(body);
+    return result;
+  }
+
+  @Post(':id/images')
+  @UseInterceptors(
+    FileInterceptor('productImages', {
+      storage: diskStorage({
+        destination: (req, file, cb) => {
+          const uploadPath = process.env.PRODUCT_IMAGE_UPLOAD_PATH || 'uploads/products';
+          if (!fs.existsSync(uploadPath)) {
+            fs.mkdirSync(uploadPath, { recursive: true });
+          }
+          cb(null, uploadPath);
+        },
+        filename: (req, file, cb) => {
+          cb(null, generateFileName(file.originalname));
+        },
+      }),
+      fileFilter: imageFileFilter,
+    }),
+  )
+  @ApiConsumes('multipart/form-data')
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        productImages: {
+          type: 'array',
+          items: {
+            type: 'string',
+            format: 'binary',
+          },
+        },
+      },
+    },
+  })
+  @ApiOperation({ summary: 'Add images to an existing product' })
+  async addProductImages(
+    @Param('id') id: number,
+    @UploadedFile() file: Express.Multer.File,
+  ) {
+    const imageNames = file ? [file.filename] : [];
+    return this.productService.addProductImages(id, imageNames);
+  }
+
+  @Delete('images/:imageId')
+  @ApiOperation({ summary: 'Delete a specific image from a product' })
+  async deleteProductImage(@Param('imageId') imageId: number) {
+    return this.productService.deleteProductImage(imageId);
+  }
+
+  @Get(':id/images')
+  @ApiOperation({ summary: 'Get all images for a product' })
+  async getProductImages(@Param('id') id: number) {
+    return this.productService.getProductImages(id);
   }
 
   @Get()
@@ -103,9 +182,6 @@ export class ProductController {
     @UploadedFile() file: Express.Multer.File,
     @Body() body: UpdateProductDto,
   ) {
-    if (file) {
-      body.image = file.filename;
-    }
     return this.productService.update(id, body);
   }
 

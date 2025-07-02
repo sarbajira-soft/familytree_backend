@@ -38,20 +38,23 @@ export class FamilyMemberService {
     private readonly sequelize: Sequelize,
   ) {}
 
-  async createUserAndJoinFamily(dto: CreateUserAndJoinFamilyDto) {
-    const transaction = await this.sequelize.transaction();
+ async createUserAndJoinFamily(dto: CreateUserAndJoinFamilyDto, creatorId: number) {
+  const transaction = await this.sequelize.transaction();
+
+  try {
     const existingVerifiedUser = await this.userModel.findOne({
-        where: {
-          status: 1,
-          [Op.or]: [
-            { email: dto.email },
-            {
-              countryCode: dto.countryCode,
-              mobile: dto.mobile,
-            },
-          ],
-        },
-      });
+      where: {
+        status: 1,
+        [Op.or]: [
+          { email: dto.email },
+          {
+            countryCode: dto.countryCode,
+            mobile: dto.mobile,
+          },
+        ],
+      },
+      transaction,
+    });
 
     if (existingVerifiedUser) {
       throw new BadRequestException({
@@ -59,107 +62,106 @@ export class FamilyMemberService {
       });
     }
 
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(dto.password, saltRounds);
-    try { 
-      // Step 1: Create user
-      const user = await this.userModel.create(
-        {
-          email: dto.email,
-          countryCode: dto.countryCode,
-          mobile: dto.mobile,
-          password: hashedPassword,
-          status: 1,
-          role: dto.role,
-        },
-        { transaction }
-      );
+    // Step 1: Create user
+    const user = await this.userModel.create(
+      {
+        email: dto.email,
+        countryCode: dto.countryCode,
+        mobile: dto.mobile,
+        password: await bcrypt.hash(dto.password, 10),
+        status: dto.status ?? 1,
+        role: dto.role ?? 1,
+        createdBy: creatorId,
+      },
+      { transaction }
+    );
 
-      // Step 2: Create full profile
-      await this.userProfileModel.create(
-        {
-          userId: user.id,
-          firstName: dto.firstName,
-          lastName: dto.lastName,
-          profile: dto.profile,
-          gender: dto.gender,
-          dob: dto.dob,
-          age: dto.age,
-          maritalStatus: dto.maritalStatus,
-          marriageDate: dto.marriageDate,
-          spouseName: dto.spouseName,
-          childrenNames: dto.childrenNames,
-          fatherName: dto.fatherName,
-          motherName: dto.motherName,
-          religionId: dto.religionId,
-          languageId: dto.languageId,
-          caste: dto.caste,
-          gothramId: dto.gothramId,
-          kuladevata: dto.kuladevata,
-          region: dto.region,
-          hobbies: dto.hobbies,
-          likes: dto.likes,
-          dislikes: dto.dislikes,
-          favoriteFoods: dto.favoriteFoods,
-          contactNumber: dto.contactNumber,
-          countryId: dto.countryId,
-          address: dto.address,
-          bio: dto.bio,
-          familyCode: dto.familyCode,
-        },
-        { transaction }
-      );
+    // Step 2: Create user profile
+    await this.userProfileModel.create(
+      {
+        userId: user.id,
+        firstName: dto.firstName || '',
+        lastName: dto.lastName || '',
+        profile: dto.profile || null,
+        gender: dto.gender || null,
+        dob: dto.dob || null,
+        age: dto.age || null,
+        maritalStatus: dto.maritalStatus || null,
+        marriageDate: dto.marriageDate || null,
+        spouseName: dto.spouseName || null,
+        childrenNames: dto.childrenNames || null,
+        fatherName: dto.fatherName || null,
+        motherName: dto.motherName || null,
+        religionId: dto.religionId || null,
+        languageId: dto.languageId || null,
+        caste: dto.caste || null,
+        gothramId: dto.gothramId || null,
+        kuladevata: dto.kuladevata || null,
+        region: dto.region || null,
+        hobbies: dto.hobbies || null,
+        likes: dto.likes || null,
+        dislikes: dto.dislikes || null,
+        favoriteFoods: dto.favoriteFoods || null,
+        contactNumber: dto.contactNumber || null,
+        countryId: dto.countryId || null,
+        address: dto.address || null,
+        bio: dto.bio || null,
+        familyCode: dto.familyCode || null,
+      },
+      { transaction }
+    );
 
-      // Step 3: Create family join request
-      const existing = await this.familyMemberModel.findOne({
-        where: {
-          memberId: user.id,
-          familyCode: dto.familyCode,
-        },
-      });
+    // Step 3: Create family join request
+    const existing = await this.familyMemberModel.findOne({
+      where: {
+        memberId: user.id,
+        familyCode: dto.familyCode,
+      },
+      transaction,
+    });
 
-      if (existing) {
-        throw new BadRequestException('User already requested or joined this family');
-      }
-
-      const membership = await this.familyMemberModel.create(
-        {
-          memberId: user.id,
-          familyCode: dto.familyCode,
-          creatorId: user.id,
-          approveStatus: 'approved',
-        },
-        { transaction }
-      );
-
-      // Step 4: Notify admins
-      const adminUserIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
-      if (adminUserIds.length > 0) {
-        await this.notificationService.createNotification(
-          {
-            type: 'FAMILY_MEMBER_JOINED',
-            title: 'New Family Member Joined',
-            message: `User ${dto?.firstName || ''} ${dto?.lastName || ''} has successfully joined your family.`,
-            familyCode: dto.familyCode,
-            referenceId: user.id,
-            userIds: adminUserIds,
-          },
-          user.id
-        );
-      }
-
-      await transaction.commit();
-      return {
-        message: 'User registered and join request submitted successfully',
-        data: { user, membership },
-      };
-    } catch (error) {
-      await transaction.rollback();
-      throw error;
+    if (existing) {
+      throw new BadRequestException('User already requested or joined this family');
     }
+
+    const membership = await this.familyMemberModel.create(
+      {
+        memberId: user.id,
+        familyCode: dto.familyCode,
+        creatorId: creatorId,
+        approveStatus: 'approved',
+      },
+      { transaction }
+    );
+
+    // Step 4: Notify admins
+    const adminUserIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
+    if (adminUserIds.length > 0) {
+      await this.notificationService.createNotification(
+        {
+          type: 'FAMILY_MEMBER_JOINED',
+          title: 'New Family Member Joined',
+          message: `User ${dto?.firstName || ''} ${dto?.lastName || ''} has successfully joined your family.`,
+          familyCode: dto.familyCode,
+          referenceId: user.id,
+          userIds: adminUserIds,
+        },
+        user.id
+      );
+    }
+
+    await transaction.commit();
+
+    return {
+      message: 'User registered and join request submitted successfully',
+      data: { user, membership },
+    };
+  } catch (error) {
+    await transaction.rollback();
+    console.error('Error in createUserAndJoinFamily:', error);
+    throw error;
   }
-
-
+}
 
   // User requests to join family
   async requestToJoinFamily(dto: CreateFamilyMemberDto, createdBy: number) {
@@ -314,7 +316,7 @@ export class FamilyMemberService {
           {
             model: this.userProfileModel,
             as: 'userProfile',
-            attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'contactNumber'],
+            attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', ],
           },
         ],
       },

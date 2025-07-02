@@ -31,8 +31,10 @@ export class Post extends Model<Post> {
   })
   familyCode: string;
 
-  @Default(0)
-  @Column(DataType.INTEGER)
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: false,
+  })
   createdBy: number;
 
   @Default(1)

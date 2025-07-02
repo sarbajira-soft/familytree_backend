@@ -6,7 +6,6 @@ import {
   ForeignKey,
   BelongsTo,
   Default,
-  HasMany,
 } from 'sequelize-typescript';
 import { User } from '../../user/model/user.model';
 
@@ -29,8 +28,5 @@ export class FamilyMember extends Model<FamilyMember> {
     allowNull: false,
   })
   approveStatus: 'pending' | 'approved' | 'rejected';
-
-  @HasMany(() => FamilyMember, 'memberId')
-  familyMemberships: FamilyMember[];
 
 }

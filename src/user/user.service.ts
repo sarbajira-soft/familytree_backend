@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
 import { User } from './model/user.model';
@@ -399,10 +399,13 @@ export class UserService {
   }
 
   async updateProfile(userId: number, dto: UpdateProfileDto) {
-    try{
+    try {
+      // Fetch both user and user profile
+      const user = await this.userModel.findByPk(userId); // main User table
+      const userProfile = await this.userProfileModel.findOne({ where: { userId } });
 
-      const user = await this.userProfileModel.findOne({ where: { userId } });
-      if (!user) throw new BadRequestException({ message: 'User not found' });
+      if (!user || !userProfile) throw new BadRequestException({ message: 'User not found' });
+
       // Validate family code
       if (dto.familyCode) {
         const existingFamily = await this.familyModel.findOne({ where: { familyCode: dto.familyCode } });
@@ -411,12 +414,50 @@ export class UserService {
         }
       }
 
-      // Handle profile image removal
+      const { email, countryCode, mobile, role, status } = dto;
+      // Check for new email conflict
+      if (email && email !== user.email) {
+        const emailExists = await this.userModel.findOne({
+          where: { email, id: { [Op.ne]: userId } },
+        });
+        if (emailExists) {
+          throw new BadRequestException({ message: 'Email already in use' });
+        }
+        user.email = email;
+      }
+
+      // Check for new mobile + countryCode conflict
+      if (
+        mobile &&
+        countryCode &&
+        (mobile !== user.mobile || countryCode !== user.countryCode)
+      ) {
+        const mobileExists = await this.userModel.findOne({
+          where: {
+            mobile,
+            countryCode,
+            id: { [Op.ne]: userId },
+          },
+        });
+        if (mobileExists) {
+          throw new BadRequestException({ message: 'Mobile number already in use' });
+        }
+        user.mobile = mobile;
+        user.countryCode = countryCode;
+      }
+
+      // Direct assignments (no uniqueness checks needed)
+      if (role !== undefined) user.role = role;
+      if (status !== undefined) user.status = status;
+
+      await user.save();
+
+      // Handle profile image cleanup
       if (dto.profile) {
         const newFile = path.basename(dto.profile);
-        if (newFile && user.profile && user.profile !== newFile) {
+        if (newFile && userProfile.profile && userProfile.profile !== newFile) {
           const uploadPath = process.env.UPLOAD_FOLDER_PATH || './uploads/profile';
-          const oldImagePath = path.join(uploadPath, user.profile);
+          const oldImagePath = path.join(uploadPath, userProfile.profile);
           try {
             if (fs.existsSync(oldImagePath)) fs.unlinkSync(oldImagePath);
           } catch (err) {
@@ -425,11 +466,13 @@ export class UserService {
         }
       }
 
-      const existingFamilyMember = await this.familyMemberModel.findOne({ where: { memberId: userId } });
-      const currentFamilyCode = existingFamilyMember?.familyCode || null;
-      
-      if (dto.familyCode && dto.familyCode !== currentFamilyCode) {
-        
+
+      // Handle family member update
+      const existing = await this.familyMemberModel.findOne({
+        where: { memberId: userId, familyCode: dto.familyCode },
+      });
+
+      if (!existing) {
         await this.familyMemberModel.create({
           memberId: userId,
           familyCode: dto.familyCode,
@@ -437,32 +480,67 @@ export class UserService {
           approveStatus: 'pending',
         });
 
-        // Notify family admins
         const adminUserIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
-             
         if (adminUserIds.length > 0) {
-          await this.notificationService.createNotification({
-            type: 'FAMILY_JOIN_REQUEST',
-            title: 'New Family Join Request',
-            message: `User ${dto.firstName} ${dto.lastName} has requested to join your family.`,
-            familyCode: dto.familyCode,
-            referenceId: userId,
-            userIds: adminUserIds,
-          }, userId);
+          await this.notificationService.createNotification(
+            {
+              type: 'FAMILY_JOIN_REQUEST',
+              title: 'New Family Join Request',
+              message: `User ${dto.firstName || ''} ${dto.lastName || ''} has requested to join your family.`,
+              familyCode: dto.familyCode,
+              referenceId: userId,
+              userIds: adminUserIds,
+            },
+            userId
+          );
         }
       }
 
-      user.set(dto as any);
-      await user.save();
+      // Update user profile table
+      userProfile.set(dto as any);
+      await userProfile.save();
 
       return {
         message: 'Profile updated successfully',
-        data: user,
+        data: {
+          ...user.toJSON(),
+          userProfile: userProfile.toJSON(),
+        },
       };
-    }catch(err){
-      throw new BadRequestException({ message: err });
+    } catch (err) {
+      console.error('Update Profile Error:', err);
+      if (err?.name === 'SequelizeValidationError') {
+        throw new BadRequestException({
+          message: 'Validation error',
+          errors: err.errors.map((e) => e.message),
+        });
+      }
+      throw new BadRequestException({ message: err?.message || 'Something went wrong' });
     }
   }
 
+  async deleteUser(userId: number, requesterId: number) {
+    const member = await this.familyMemberModel.findOne({ where: { memberId: userId } });
+
+    if (!member) {
+      throw new BadRequestException({ message: 'Family member record not found.' });
+    }
+
+    if (member.creatorId !== requesterId) {
+      throw new ForbiddenException('You are not authorized to delete this member.');
+    }
+
+    // Soft delete user
+    const user = await this.userModel.findByPk(userId);
+    if (!user) throw new BadRequestException({ message: 'User not found' });
+
+    user.status = 3;
+    await user.save();
+
+    // Remove from ft_family_members
+    await this.familyMemberModel.destroy({ where: { memberId: userId } });
+
+    return { message: 'User deleted successfully' };
+  }
 
 }

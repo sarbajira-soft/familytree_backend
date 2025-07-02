@@ -18,6 +18,37 @@ export class UpdateProfileDto {
   @IsString()
   profile?: string;
 
+  @ApiPropertyOptional({ description: 'Email address', example: 'user@example.com' })
+  @IsOptional()
+  email?: string;
+
+  @ApiPropertyOptional({ description: 'Country code for phone', example: '+91' })
+  @IsOptional()
+  @IsString()
+  countryCode?: string;
+
+  @ApiPropertyOptional({ description: 'Mobile phone number', example: '9876543210' })
+  @IsOptional()
+  @IsString()
+  mobile?: string;
+
+  @ApiPropertyOptional({ description: 'Password (hashed or raw)', example: 'secret123' })
+  @IsOptional()
+  @IsString()
+  password?: string;
+
+  @ApiPropertyOptional({ description: 'User role ID', example: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  role?: number;
+
+  @ApiPropertyOptional({ description: 'User status', example: 1 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  status?: number;
+
   @ApiPropertyOptional({ description: 'First Name', example: 'John' })
   @IsOptional()
   @IsString()
@@ -152,4 +183,5 @@ export class UpdateProfileDto {
   @IsOptional()
   @IsString()
   familyCode?: string;
+  
 }

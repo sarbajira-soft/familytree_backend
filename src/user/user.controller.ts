@@ -15,7 +15,7 @@ import {
   BadRequestException,
   UseGuards,
   UseInterceptors,
-  
+  Delete
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
@@ -194,5 +194,17 @@ export class UserController {
     return this.userService.updateProfile(targetUserId, body);
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Delete(':id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Delete a user if creator' })
+  @ApiResponse({ status: 200, description: 'User deleted successfully' })
+  @ApiResponse({ status: 403, description: 'Forbidden' })
+  @ApiBearerAuth()
+  @ApiSecurity('application-token')
+  async deleteUser(@Param('id', ParseIntPipe) id: number, @Req() req) {
+    const loggedInUser = req.user;
+    return this.userService.deleteUser(id, loggedInUser.userId);
+  }
 
 }

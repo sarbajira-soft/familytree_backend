@@ -31,7 +31,6 @@ export function setupAssociations() {
   User.hasMany(FamilyMember, { foreignKey: 'memberId', as: 'familyMemberships' });
   FamilyMember.belongsTo(User, { foreignKey: 'memberId', as: 'user' });      // memberId -> user
   FamilyMember.belongsTo(User, { foreignKey: 'creatorId', as: 'creator' });  // creatorId -> creator
-  
   UserProfile.hasOne(FamilyMember, { foreignKey: 'memberId', sourceKey: 'userId', as: 'familyMember' });
   FamilyMember.belongsTo(UserProfile, { foreignKey: 'memberId', targetKey: 'userId', as: 'userProfile' });
 }

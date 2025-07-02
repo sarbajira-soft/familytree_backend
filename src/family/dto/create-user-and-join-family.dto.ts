@@ -23,6 +23,11 @@ export class CreateUserAndJoinFamilyDto {
   @IsNumber()
   role?: number;
 
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  status?: number;
+
   // --- USER PROFILE fields ---
   @IsString()
   firstName: string;

@@ -59,13 +59,14 @@ export class FamilyMemberController {
   async registerAndJoinFamily(
     @UploadedFile() file: Express.Multer.File,
     @Body() dto: CreateUserAndJoinFamilyDto,
+    @Req() req
   ) {
     // Save uploaded filename to DTO before passing it
     if (file) {
       dto.profile = file.filename;
     }
-
-    return this.familyMemberService.createUserAndJoinFamily(dto);
+    const creatorId = req.user?.userId;
+    return this.familyMemberService.createUserAndJoinFamily(dto, creatorId);
   }
 
   // User requests to join a family (creates membership with pending)

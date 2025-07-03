@@ -122,6 +122,15 @@ export class FamilyMemberController {
     return this.familyMemberService.getAllFamilyMembers(familyCode);
   }
 
+  // Get all pending family member requests for logged-in user
+  @Get('requests/pending')
+  @ApiOperation({ summary: 'Get all pending family member requests' })
+  @ApiResponse({ status: 200, description: 'List of pending family member requests returned' })
+  async getPendingRequests(@Req() req) {
+    const userId = req.user.userId; // Extract logged-in user ID from token
+    return this.familyMemberService.getPendingRequestsByUser(userId);
+  }
+
   // Get member relationship details by memberId
   @Get('member/:memberId')
   @ApiOperation({ summary: 'Get family member details by memberId' })

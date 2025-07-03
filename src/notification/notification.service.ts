@@ -83,12 +83,18 @@ export class NotificationService {
     return admins.map((u) => u.id);
   }
 
-  async getNotificationsForUser(userId: number) {
-    const notifications = await this.recipientModel.findAll({
+  async getNotificationsForUser(userId: number, showAll = false) {
+    const options: any = {
       where: { userId },
       include: [{ model: Notification, required: true }],
       order: [['createdAt', 'DESC']],
-    });
+    };
+
+    if (!showAll) {
+      options.limit = 5; // Only 5 recent if not all
+    }
+
+    const notifications = await this.recipientModel.findAll(options);
 
     return notifications.map((notifRecipient) => ({
       id: notifRecipient.notificationId,
@@ -217,5 +223,18 @@ export class NotificationService {
     return { message: 'Birthday and anniversary notifications sent.' };
   }
 
+  async markAllAsRead(userId: number): Promise<{ message: string }> {
+    await this.recipientModel.update(
+      { isRead: true },
+      {
+        where: {
+          userId,
+          isRead: false, // only update unread
+        },
+      }
+    );
+
+    return { message: 'All notifications marked as read' };
+  }
 
 }

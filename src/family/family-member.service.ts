@@ -243,12 +243,14 @@ export class FamilyMemberService {
   // Reject family member request (optional, no notification example here)
   async rejectFamilyMember(memberId: number, rejectorId: number, familyCode: string) {
     // Find the family member entry
-    const familyMember = await this.familyMemberModel.findOne({ where: { memberId } });
-    if (!familyMember) throw new BadRequestException('Family member not found');
+    const membership = await this.familyMemberModel.findOne({
+      where: { memberId, familyCode },
+    });
+    if (!membership) {
+      throw new NotFoundException('Family member not found');
+    }
 
-    // Update approveStatus to 'rejected'
-    familyMember.approveStatus = 'rejected';
-    await familyMember.save();
+    await membership.destroy();
 
     // Find user profile of rejected member to get their name
     const userProfile = await this.userProfileModel.findOne({ where: { userId: memberId } });
@@ -261,7 +263,7 @@ export class FamilyMemberService {
       type: 'FAMILY_JOIN_REJECTED',
       title: 'Family Join Request Rejected',
       message: `Hello ${userName}, your request to join the family has been rejected.`,
-      familyCode: familyMember.familyCode,
+      familyCode: membership.familyCode,
       referenceId: memberId,
       userIds: [memberId], // notify the rejected member
     }, rejectorId);
@@ -302,63 +304,62 @@ export class FamilyMemberService {
 
   // Get all approved family members by family code
   async getAllFamilyMembers(familyCode: string) {
-  const members = await this.familyMemberModel.findAll({
-    where: {
-      familyCode,
-      approveStatus: 'approved',
-    },
-    include: [
-      {
-        model: this.userModel,
-        as: 'user',
-        attributes: ['id', 'email', 'mobile', 'status', 'role'],
-        include: [
-          {
-            model: this.userProfileModel,
-            as: 'userProfile',
-            attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', ],
-          },
-        ],
+    const members = await this.familyMemberModel.findAll({
+      where: {
+        familyCode,
+        approveStatus: 'approved',
       },
-      {
-        model: this.userModel,
-        as: 'creator',
-        attributes: ['id', 'email'],
-      },
-    ],
-    order: [['createdAt', 'DESC']],
-  });
+      include: [
+        {
+          model: this.userModel,
+          as: 'user',
+          attributes: ['id', 'email', 'mobile', 'status', 'role'],
+          include: [
+            {
+              model: this.userProfileModel,
+              as: 'userProfile',
+              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', ],
+            },
+          ],
+        },
+        {
+          model: this.userModel,
+          as: 'creator',
+          attributes: ['id', 'email'],
+        },
+      ],
+      order: [['createdAt', 'DESC']],
+    });
 
-  const baseUrl = process.env.BASE_URL || '';
-  const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
+    const baseUrl = process.env.BASE_URL || '';
+    const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
 
-  const result = members.map((memberInstance: any) => {
-    const member = memberInstance.get({ plain: true });
+    const result = members.map((memberInstance: any) => {
+      const member = memberInstance.get({ plain: true });
 
-    const user = member.user;
-    const profileImage = user?.userProfile?.profile
-      ? `${baseUrl.replace(/\/$/, '')}/${profilePath}/${user.userProfile.profile}`
-      : null;
+      const user = member.user;
+      const profileImage = user?.userProfile?.profile
+        ? `${baseUrl.replace(/\/$/, '')}/${profilePath}/${user.userProfile.profile}`
+        : null;
+
+      return {
+        ...member,
+        user: {
+          ...user,
+          fullName: user?.userProfile
+            ? `${user.userProfile.firstName} ${user.userProfile.lastName}`
+            : null,
+          profileImage,
+        },
+      };
+    });
 
     return {
-      ...member,
-      user: {
-        ...user,
-        fullName: user?.userProfile
-          ? `${user.userProfile.firstName} ${user.userProfile.lastName}`
-          : null,
-        profileImage,
-      },
+      message: `${result.length} approved family members found.`,
+      data: result,
     };
-  });
 
-  return {
-    message: `${result.length} approved family members found.`,
-    data: result,
-  };
-}
-
-
+  }
 
   async getMemberById(memberId: number) {
     const member = await this.familyMemberModel.findOne({
@@ -435,6 +436,76 @@ export class FamilyMemberService {
       males,
       females,
       averageAge,
+    };
+  }
+
+  async getPendingRequestsByUser(userId: number) {
+    // Step 1: Get the logged-in user's familyCode
+    const currentMember = await this.familyMemberModel.findOne({
+      where: { memberId: userId },
+    });
+
+    if (!currentMember) {
+      throw new Error('Family membership not found for current user.');
+    }
+
+    const familyCode = currentMember.familyCode;
+
+    // Step 2: Get all pending members for this familyCode
+    const members = await this.familyMemberModel.findAll({
+      where: {
+        familyCode,
+        approveStatus: 'pending',
+      },
+      include: [
+        {
+          model: this.userModel,
+          as: 'user',
+          attributes: ['id', 'email', 'mobile', 'status', 'role'],
+          include: [
+            {
+              model: this.userProfileModel,
+              as: 'userProfile',
+              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address'],
+            },
+          ],
+        },
+        {
+          model: this.userModel,
+          as: 'creator',
+          attributes: ['id', 'email'],
+        },
+      ],
+      order: [['createdAt', 'DESC']],
+    });
+
+    // Step 3: Format response
+    const baseUrl = process.env.BASE_URL || '';
+    const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
+
+    const result = members.map((memberInstance: any) => {
+      const member = memberInstance.get({ plain: true });
+
+      const user = member.user;
+      const profileImage = user?.userProfile?.profile
+        ? `${baseUrl.replace(/\/$/, '')}/${profilePath}/${user.userProfile.profile}`
+        : null;
+
+      return {
+        ...member,
+        user: {
+          ...user,
+          fullName: user?.userProfile
+            ? `${user.userProfile.firstName} ${user.userProfile.lastName}`
+            : null,
+          profileImage,
+        },
+      };
+    });
+
+    return {
+      message: `${result.length} pending family member request(s) found.`,
+      data: result,
     };
   }
 

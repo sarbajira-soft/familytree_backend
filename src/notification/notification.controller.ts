@@ -9,6 +9,7 @@ import {
   ParseIntPipe,
   HttpCode,
   HttpStatus,
+  Patch,
   Query,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -33,9 +34,10 @@ export class NotificationController {
   }
 
   @Get()
-  @ApiOperation({ summary: 'Get all notifications for logged-in user' })
-  async getMyNotifications(@Req() req) {
-    return this.notificationService.getNotificationsForUser(req.user.userId);
+  @ApiOperation({ summary: 'Get notifications for logged-in user' })
+  async getMyNotifications(@Req() req, @Query('all') all: boolean) {
+    const showAll = all === true;
+    return this.notificationService.getNotificationsForUser(req.user.userId, showAll);
   }
 
   @Post(':id/read')
@@ -53,4 +55,11 @@ export class NotificationController {
   async getUnreadCount(@Req() req) {
     return this.notificationService.getUnreadCount(req.user.userId);
   }
+
+  @Patch('mark-all-read')
+  @ApiOperation({ summary: 'Mark all notifications as read for the logged-in user' })
+  async markAllAsRead(@Req() req) {
+    return this.notificationService.markAllAsRead(req.user.userId);
+  }
+
 }

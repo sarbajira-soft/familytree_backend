@@ -227,6 +227,7 @@ export class EventService {
         eventDate: { [Op.gte]: today },
         status: 1,
       },
+      include: [EventImage],
       order: [['eventDate', 'ASC']],
     });
     return events.map(event => {

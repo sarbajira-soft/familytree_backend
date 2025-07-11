@@ -5,6 +5,7 @@ import { User} from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { Family } from './model/family.model';
 import { FamilyMember } from './model/family-member.model';
+import { FamilyTree } from './model/family-tree.model';
 import { MailService } from '../utils/mail.service';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
@@ -12,7 +13,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { CreateFamilyDto } from './dto/create-family.dto';
+import { CreateFamilyTreeDto, FamilyTreeMemberDto } from './dto/family-tree.dto';
 import { NotificationService } from '../notification/notification.service';
+import { saveBase64Image } from '../utils/upload.utils';
 
 @Injectable()
 export class FamilyService {
@@ -25,6 +28,8 @@ export class FamilyService {
     private familyModel: typeof Family,
     @InjectModel(FamilyMember)
     private familyMemberModel: typeof FamilyMember,
+    @InjectModel(FamilyTree)
+    private familyTreeModel: typeof FamilyTree,
     private mailService: MailService,
 
     private readonly notificationService: NotificationService,
@@ -174,5 +179,162 @@ export class FamilyService {
       order: [['familyCode', 'ASC']],
     });
   }
+
+  async createFamilyTree(dto: CreateFamilyTreeDto) {
+    const { familyCode, members } = dto;
+
+    // Check if family exists
+    const family = await this.familyModel.findOne({ where: { familyCode } });
+    if (!family) {
+      throw new NotFoundException('Family not found');
+    }
+
+    // Remove existing family tree data for this family
+    await this.familyTreeModel.destroy({ where: { familyCode } });
+
+    const createdMembers = [];
+
+    for (const member of members) {
+      let userId = member.memberId; // Use memberId as userId
+
+
+      // If user doesn't exist (no memberId), create new user and profile
+      if (!userId) {
+        // Generate a temporary email
+        const tempEmail = `familytree_${Date.now()}_${Math.floor(Math.random() * 10000)}@example.com`;
+        // Generate a temporary mobile number
+        const tempMobile = `99999${Math.floor(100000 + Math.random() * 899999)}`;
+        // Create new user
+        const newUser = await this.userModel.create({
+          email: tempEmail,
+          mobile: tempMobile,
+          status: 1, // Active
+          role: 1, // Member
+        });
+
+        // Handle profile image if provided
+        let profileImage = null;
+        if (member.img && member.img.startsWith('data:image/')) {
+          const uploadPath = process.env.PROFILE_PHOTO_UPLOAD_PATH || './uploads/profile';
+          profileImage = await saveBase64Image(member.img, uploadPath);
+        } else if (member.img) {
+          // If it's already a URL, extract filename or use as is
+          profileImage = member.img;
+        }
+
+        // Create user profile
+        await this.userProfileModel.create({
+          userId: newUser.id,
+          firstName: member.name,
+          gender: member.gender,
+          age: typeof member.age === 'string' ? parseInt(member.age) : member.age,
+          profile: profileImage, // Use extracted filename
+          familyCode: familyCode,
+        });
+
+        // Add new user to family member table as approved member
+        await this.familyMemberModel.create({
+          memberId: newUser.id,
+          familyCode: familyCode,
+          creatorId: null,
+          approveStatus: 'approved'
+        });
+
+        userId = newUser.id;
+      }
+
+      //Create family tree entry
+      const familyTreeEntry = await this.familyTreeModel.create({
+        familyCode,
+        userId,
+        personId: member.id, // Store the position ID (person_X_id)
+        generation: member.generation,
+        parents: member.parents,
+        children: member.children,
+        spouses: member.spouses,
+        siblings: member.siblings,
+      });
+
+      createdMembers.push({
+        id: familyTreeEntry.id,
+        userId,
+        personId: member.id, // Include position ID in response
+        name: member.name,
+        generation: member.generation,
+        parents: member.parents,
+        children: member.children,
+        spouses: member.spouses,
+        siblings: member.siblings,
+      });
+      console.log(member);
+      
+    }
+
+    return {
+      message: 'Family tree created successfully',
+      data: createdMembers,
+    };
+  }
+
+  async getFamilyTree(familyCode: string) {
+    const familyTree = await this.familyTreeModel.findAll({
+      where: { familyCode },
+      include: [
+        {
+          model: this.userModel,
+          as: 'user',
+          include: [
+            {
+              model: this.userProfileModel,
+              as: 'userProfile', // Use the correct alias
+            },
+          ],
+        },
+      ],
+    });
+
+    if (!familyTree.length) {
+      throw new NotFoundException('Family tree not found');
+    }
+
+    // Transform data to the required format
+    const baseUrl = process.env.BASE_URL || '';
+    const profilePhotoPath = process.env.PROFILE_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
+
+    const people = familyTree.map(entry => {
+      const userProfile = entry.user?.userProfile;
+      
+      // Build full image URL if profile image exists
+      let img = null;
+      if (userProfile?.profile) {
+        if (userProfile.profile.startsWith('http')) {
+          img = userProfile.profile; // Already a full URL
+        } else {
+          img = `${baseUrl}/${profilePhotoPath}/${userProfile.profile}`;
+        }
+      }
+
+      return {
+        id: entry.personId, // Use personId as id
+        memberId: entry.userId, // Include userId as memberId
+        name: userProfile ? `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim() : 'Unknown',
+        gender: userProfile?.gender || 'unknown',
+        age: userProfile?.age || null,
+        generation: entry.generation,
+        parents: entry.parents || [],
+        children: entry.children || [],
+        spouses: entry.spouses || [],
+        siblings: entry.siblings || [],
+        img: img
+      };
+    });
+
+    return {
+      message: 'Family tree retrieved successfully',
+      people: people
+    };
+  }
+
+
 
 }

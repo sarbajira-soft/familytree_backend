@@ -12,6 +12,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { Op } from 'sequelize';
 import { EventImage } from './model/event-image.model';
+import { FamilyMember } from '../family/model/family-member.model';
 
 @Injectable()
 export class EventService {
@@ -24,6 +25,9 @@ export class EventService {
 
     @InjectModel(EventImage)
     private readonly eventImageModel: typeof EventImage,
+
+    @InjectModel(FamilyMember)
+    private readonly familyMemberModel: typeof FamilyMember,
 
     private readonly notificationService: NotificationService,
   ) {}
@@ -67,8 +71,45 @@ export class EventService {
     return `${baseUrl.replace(/\/$/, '')}/${uploadPath.replace(/\/$/, '')}/${filename}`;
   }
 
-  async getAll() {
-    const events = await this.eventModel.findAll({ include: [EventImage] });
+  async getAll(userId?: number) {
+    let events;
+    if (userId) {
+      // Get user's family code from familymembers table
+      const familyMember = await this.familyMemberModel.findOne({ where: { memberId: userId } });
+      if (familyMember && familyMember.familyCode) {
+        events = await this.eventModel.findAll({ 
+          where: { familyCode: familyMember.familyCode },
+          include: [EventImage] 
+        });
+      } else {
+        events = [];
+      }
+    } else {
+      events = await this.eventModel.findAll({ include: [EventImage] });
+    }
+    return events.map(event => {
+      const eventJson = event.toJSON();
+      const eventImages = eventJson.images?.map(img => this.constructEventImageUrl(img.imageUrl)) || [];
+      delete eventJson.user;
+      return {
+        ...eventJson,
+        eventImages,
+      };
+    });
+  }
+
+  async getEventsForUser(userId: number) {
+    const familyMember = await this.familyMemberModel.findOne({ where: { memberId: userId } });
+    if (!familyMember || !familyMember.familyCode) {
+      return [];
+    }
+    const events = await this.eventModel.findAll({
+      where: { 
+        familyCode: familyMember.familyCode,
+        status: 1 
+      },
+      include: [EventImage]
+    });
     return events.map(event => {
       const eventJson = event.toJSON();
       const eventImages = eventJson.images?.map(img => this.constructEventImageUrl(img.imageUrl)) || [];
@@ -220,16 +261,34 @@ export class EventService {
     }
   }
 
-  async getUpcoming() {
-    const today = new Date().toISOString().slice(0, 10); // 'YYYY-MM-DD'
-    const events = await this.eventModel.findAll({
-      where: {
-        eventDate: { [Op.gte]: today },
-        status: 1,
-      },
-      include: [EventImage],
-      order: [['eventDate', 'ASC']],
-    });
+  async getUpcoming(userId?: number) {
+    const today = new Date();
+    let events;
+    if (userId) {
+      const familyMember = await this.familyMemberModel.findOne({ where: { memberId: userId } });
+      if (familyMember && familyMember.familyCode) {
+        events = await this.eventModel.findAll({
+          where: {
+            eventDate: { [Op.gt]: today },
+            status: 1,
+            familyCode: familyMember.familyCode,
+          },
+          include: [EventImage],
+          order: [['eventDate', 'ASC']],
+        });
+      } else {
+        events = [];
+      }
+    } else {
+      events = await this.eventModel.findAll({
+        where: {
+          eventDate: { [Op.gt]: today },
+          status: 1,
+        },
+        include: [EventImage],
+        order: [['eventDate', 'ASC']],
+      });
+    }
     return events.map(event => {
       const eventJson = event.toJSON();
       const eventImages = eventJson.images?.map(img => this.constructEventImageUrl(img.imageUrl)) || [];

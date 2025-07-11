@@ -467,32 +467,34 @@ export class UserService {
       }
 
 
-      // Handle family member update
-      const existing = await this.familyMemberModel.findOne({
-        where: { memberId: userId, familyCode: dto.familyCode },
-      });
-
-      if (!existing) {
-        await this.familyMemberModel.create({
-          memberId: userId,
-          familyCode: dto.familyCode,
-          creatorId: null,
-          approveStatus: 'pending',
+      // Handle family member update only if familyCode is present
+      if (dto.familyCode) {
+        const existing = await this.familyMemberModel.findOne({
+          where: { memberId: userId, familyCode: dto.familyCode },
         });
 
-        const adminUserIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
-        if (adminUserIds.length > 0) {
-          await this.notificationService.createNotification(
-            {
-              type: 'FAMILY_JOIN_REQUEST',
-              title: 'New Family Join Request',
-              message: `User ${dto.firstName || ''} ${dto.lastName || ''} has requested to join your family.`,
-              familyCode: dto.familyCode,
-              referenceId: userId,
-              userIds: adminUserIds,
-            },
-            userId
-          );
+        if (!existing) {
+          await this.familyMemberModel.create({
+            memberId: userId,
+            familyCode: dto.familyCode,
+            creatorId: null,
+            approveStatus: 'pending',
+          });
+
+          const adminUserIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
+          if (adminUserIds.length > 0) {
+            await this.notificationService.createNotification(
+              {
+                type: 'FAMILY_JOIN_REQUEST',
+                title: 'New Family Join Request',
+                message: `User ${dto.firstName || ''} ${dto.lastName || ''} has requested to join your family.`,
+                familyCode: dto.familyCode,
+                referenceId: userId,
+                userIds: adminUserIds,
+              },
+              userId
+            );
+          }
         }
       }
 

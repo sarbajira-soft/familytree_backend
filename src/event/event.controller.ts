@@ -90,16 +90,31 @@ export class EventController {
     return this.eventService.createEvent(body, imageNames);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get('all')
-  @ApiOperation({ summary: 'Get all events' })
-  getAllEvents() {
-    return this.eventService.getAll();
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get all events for the logged-in user\'s family' })
+  getAllEvents(@Req() req) {
+    const loggedInUser = req.user;
+    return this.eventService.getAll(loggedInUser.userId);
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Get('my-events')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get events for the logged-in user\'s family' })
+  getMyEvents(@Req() req) {
+    const loggedInUser = req.user;
+    return this.eventService.getEventsForUser(loggedInUser.userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get('upcoming')
-  @ApiOperation({ summary: 'Get upcoming events' })
-  getUpcomingEvents() {
-    return this.eventService.getUpcoming();
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get upcoming events for the logged-in user\'s family' })
+  getUpcomingEvents(@Req() req) {
+    const loggedInUser = req.user;
+    return this.eventService.getUpcoming(loggedInUser.userId);
   }
 
   @Get(':id')

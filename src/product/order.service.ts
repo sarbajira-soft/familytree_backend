@@ -3,7 +3,7 @@ import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
 import { Order, DeliveryStatus, PaymentStatus } from './model/order.model';
 import { Product } from '../product/model/product.model';
-import { CreateOrderDto, UpdateOrderDto } from './dto/order.dto';
+import { CreateOrderDto, UpdateOrderDto, UpdateOrderStatusDto } from './dto/order.dto';
 
 interface FilterOptions {
   userId?: number;
@@ -351,6 +351,16 @@ export class OrderService {
       }
       throw new BadRequestException(`Failed to update payment status: ${error.message}`);
     }
+  }
+
+  // Update order status (delivery and payment)
+  async updateOrderStatus(id: number, dto: UpdateOrderStatusDto) {
+    const order = await this.orderModel.findByPk(id);
+    if (!order) throw new NotFoundException('Order not found');
+    if (dto.deliveryStatus) order.deliveryStatus = dto.deliveryStatus;
+    if (dto.paymentStatus) order.paymentStatus = dto.paymentStatus;
+    await order.save();
+    return { success: true, message: 'Order status updated', data: order };
   }
 
   // Delete order permanently

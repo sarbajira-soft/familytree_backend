@@ -282,3 +282,15 @@ export class UpdatePaymentStatusDto {
   })
   paymentStatus: PaymentStatus;
 }
+
+export class UpdateOrderStatusDto {
+  @ApiProperty({ enum: DeliveryStatus, required: false })
+  @IsEnum(DeliveryStatus)
+  @IsOptional()
+  deliveryStatus?: DeliveryStatus;
+
+  @ApiProperty({ enum: PaymentStatus, required: false })
+  @IsEnum(PaymentStatus)
+  @IsOptional()
+  paymentStatus?: PaymentStatus;
+}

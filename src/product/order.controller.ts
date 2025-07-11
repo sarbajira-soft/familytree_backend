@@ -13,8 +13,8 @@ import {
   Patch,
 } from '@nestjs/common';
 import { OrderService } from './order.service';
-import { CreateOrderDto, UpdateOrderDto } from './dto/order.dto';
-import { ApiOperation, ApiResponse, ApiTags, ApiParam, ApiQuery } from '@nestjs/swagger';
+import { CreateOrderDto, UpdateOrderDto, UpdateOrderStatusDto } from './dto/order.dto';
+import { ApiOperation, ApiResponse, ApiTags, ApiParam, ApiQuery, ApiBody } from '@nestjs/swagger';
 import { DeliveryStatus, PaymentStatus } from './model/order.model';
 
 @ApiTags('Order Module')
@@ -218,6 +218,33 @@ export class OrderController {
     @Body('paymentStatus') paymentStatus: PaymentStatus
   ) {
     return this.orderService.updatePaymentStatus(id, paymentStatus);
+  }
+
+  @Patch(':id/status')
+  @ApiOperation({ summary: 'Update only paymentStatus and deliveryStatus for an order' })
+  @ApiBody({
+    description: `Allowed values:\n\n- deliveryStatus: pending, confirmed, shipped, in_transit, out_for_delivery, delivered, cancelled, returned\n- paymentStatus: unpaid, pending, paid, failed, refunded, partial_refund`,
+    schema: {
+      type: 'object',
+      properties: {
+        deliveryStatus: {
+          type: 'string',
+          enum: Object.values(DeliveryStatus),
+          example: 'pending',
+        },
+        paymentStatus: {
+          type: 'string',
+          enum: Object.values(PaymentStatus),
+          example: 'unpaid',
+        },
+      },
+    },
+  })
+  async updateOrderStatus(
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateOrderStatusDto
+  ) {
+    return this.orderService.updateOrderStatus(id, dto);
   }
 
   @Delete(':id')

@@ -208,7 +208,7 @@ export class FamilyMemberService {
     };
   }
 
-  // Approve family member request (only by admin)
+  // Approve family member request
   async approveFamilyMember(memberId: number, familyCode: string) {
     const membership = await this.familyMemberModel.findOne({
       where: { memberId, familyCode, approveStatus: 'pending' },
@@ -216,8 +216,7 @@ export class FamilyMemberService {
     if (!membership) {
       throw new NotFoundException('Pending family member request not found');
     }
-    //console.log(membership);return;
-    
+
     membership.approveStatus = 'approved';
     await membership.save();
 
@@ -229,7 +228,7 @@ export class FamilyMemberService {
         message: `Your request to join the family (${familyCode}) has been approved. Welcome!`,
         familyCode,
         referenceId: memberId,
-        userIds: [memberId], // Notify only the member
+        userIds: [memberId],
       },
       membership.creatorId,
     );
@@ -242,12 +241,30 @@ export class FamilyMemberService {
 
   // Reject family member request (optional, no notification example here)
   async rejectFamilyMember(memberId: number, rejectorId: number, familyCode: string) {
-    // Find the family member entry
     const membership = await this.familyMemberModel.findOne({
       where: { memberId, familyCode },
     });
     if (!membership) {
       throw new NotFoundException('Family member not found');
+    }
+
+    // Permission check - only admins can reject members
+    const adminUser = await this.userModel.findByPk(rejectorId);
+    if (!adminUser || adminUser.role !== 2) {
+      throw new BadRequestException('Access denied: Only family admins can reject members');
+    }
+
+    // Check if admin is in the same family
+    const adminMembership = await this.familyMemberModel.findOne({
+      where: {
+        memberId: rejectorId,
+        familyCode,
+        approveStatus: 'approved',
+      },
+    });
+    
+    if (!adminMembership) {
+      throw new BadRequestException('Access denied: Only family admins can reject members');
     }
 
     await membership.destroy();
@@ -258,15 +275,18 @@ export class FamilyMemberService {
       ? `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim()
       : 'User';
 
-    // Notify the rejected user about rejection
-    await this.notificationService.createNotification({
-      type: 'FAMILY_JOIN_REJECTED',
-      title: 'Family Join Request Rejected',
-      message: `Hello ${userName}, your request to join the family has been rejected.`,
-      familyCode: membership.familyCode,
-      referenceId: memberId,
-      userIds: [memberId], // notify the rejected member
-    }, rejectorId);
+    // Create notification for rejected member
+    await this.notificationService.createNotification(
+      {
+        type: 'FAMILY_JOIN_REJECTED',
+        title: 'Family Join Request Rejected',
+        message: `Your request to join the family (${familyCode}) has been rejected.`,
+        familyCode,
+        referenceId: memberId,
+        userIds: [memberId],
+      },
+      null,
+    );
 
     return { message: `Family member ${userName} rejected successfully` };
   }

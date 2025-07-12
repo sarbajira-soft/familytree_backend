@@ -6,6 +6,7 @@ import { FamilyMemberController } from './family-member.controller';
 import { FamilyMemberService } from './family-member.service';
 import { Family } from './model/family.model';
 import { FamilyMember } from './model/family-member.model';
+import { FamilyTree } from './model/family-tree.model';
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { MailService } from '../utils/mail.service';
@@ -18,6 +19,7 @@ import { NotificationModule } from '../notification/notification.module';
       User,
       FamilyMember,
       UserProfile,
+      FamilyTree,
     ]),
     NotificationModule,
   ],

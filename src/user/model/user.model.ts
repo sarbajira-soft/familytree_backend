@@ -1,11 +1,12 @@
 import { Table, Column, Model, DataType, Default } from 'sequelize-typescript';
 import { HasManyGetAssociationsMixin, HasOneGetAssociationMixin } from 'sequelize';
 import { FamilyMember } from '../../family/model/family-member.model';
+import { FamilyTree } from '../../family/model/family-tree.model';
 import { UserProfile } from './user-profile.model';
 
 @Table({ tableName: 'ft_user' })
 export class User extends Model<User> {
-  @Column({ type: DataType.STRING, unique: true, allowNull: false })
+  @Column({ type: DataType.STRING, unique: true, allowNull: true })
   email: string;
 
   // New field for country code (e.g., +91, +1)
@@ -48,8 +49,10 @@ export class User extends Model<User> {
 
   userProfile?: UserProfile;
   familyMemberships?: FamilyMember[];
+  familyTreeEntries?: FamilyTree[];
 
   // Optional: Add mixins for type safety
   public getUserProfile!: HasOneGetAssociationMixin<UserProfile>;
   public getFamilyMemberships!: HasManyGetAssociationsMixin<FamilyMember>;
+  public getFamilyTreeEntries!: HasManyGetAssociationsMixin<FamilyTree>;
 }

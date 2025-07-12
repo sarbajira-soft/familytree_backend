@@ -5,6 +5,7 @@ import { Gallery } from '../gallery/model/gallery.model';
 import { PostComment } from '../post/model/post-comment.model';
 import { GalleryComment } from '../gallery/model/gallery-comment.model';
 import { FamilyMember } from '../family/model/family-member.model';
+import { FamilyTree } from '../family/model/family-tree.model';
 
 export function setupAssociations() {
   // UserProfile
@@ -33,4 +34,8 @@ export function setupAssociations() {
   FamilyMember.belongsTo(User, { foreignKey: 'creatorId', as: 'creator' });  // creatorId -> creator
   UserProfile.hasOne(FamilyMember, { foreignKey: 'memberId', sourceKey: 'userId', as: 'familyMember' });
   FamilyMember.belongsTo(UserProfile, { foreignKey: 'memberId', targetKey: 'userId', as: 'userProfile' });
+
+  // FamilyTree ↔ User
+  User.hasMany(FamilyTree, { foreignKey: 'userId', as: 'familyTreeEntries' });
+  FamilyTree.belongsTo(User, { foreignKey: 'userId', as: 'familyTreeUser' });
 }

@@ -125,21 +125,50 @@ export class UserController {
   @ApiSecurity('application-token')
   async getProfile(@Req() req, @Param('id', ParseIntPipe) id: number) {
     const loggedInUser = req.user;
-
-    // Convert param to number just in case
     const targetUserId = Number(id);
-    
-    // Role 1 can only update their own profile
-    if (loggedInUser.role === 1 && loggedInUser.userId !== targetUserId) {
-      throw new BadRequestException({message:'Access denied: Members can only update their own profile'});
+  
+    // Always allow admin
+    if (loggedInUser.role === 2) {
+      const userdata = await this.userService.getUserProfile(id);
+      return {
+        message: 'Profile fetched successfully',
+        data: userdata,
+        currentUser: loggedInUser,
+      };
     }
-    // Admins and Super Admins can access any profile
-    const userdata = await this.userService.getUserProfile(id);
-    return {
-      message: 'Profile fetched successfully',
-      data: userdata,
-      currentUser: loggedInUser,
-    };
+  
+    // If member, allow if self or same family
+    if (loggedInUser.role === 1) {
+      if (loggedInUser.userId === targetUserId) {
+        // Self
+        const userdata = await this.userService.getUserProfile(id);
+        return {
+          message: 'Profile fetched successfully',
+          data: userdata,
+          currentUser: loggedInUser,
+        };
+      } else {
+        // Check if both are in the same family
+        const targetUser = await this.userService.getUserProfile(id);
+        const myProfile = await this.userService.getUserProfile(loggedInUser.userId);
+  
+        const myFamilyCode = myProfile?.userProfile?.familyCode;
+        const targetFamilyCode = targetUser?.userProfile?.familyCode;
+  
+        if (myFamilyCode && targetFamilyCode && myFamilyCode === targetFamilyCode) {
+          return {
+            message: 'Profile fetched successfully',
+            data: targetUser,
+            currentUser: loggedInUser,
+          };
+        } else {
+          throw new BadRequestException({message:'Access denied: You can only view profiles in your family'});
+        }
+      }
+    }
+  
+    // Default: deny
+    throw new BadRequestException({message:'Access denied'});
   }
 
   @UseGuards(JwtAuthGuard)

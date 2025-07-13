@@ -8,6 +8,9 @@ import { UserProfile } from './model/user-profile.model';
 import { Invite } from './model/invite.model';
 import { Family } from '../family/model/family.model';
 import { FamilyMember } from '../family/model/family-member.model';
+import { Religion } from '../religion/model/religion.model';
+import { Language } from '../language/model/language.model';
+import { Gothram } from '../gothram/model/gothram.model';
 import { MailService } from '../utils/mail.service';
 
 import { NotificationModule } from '../notification/notification.module';
@@ -20,6 +23,9 @@ import { NotificationModule } from '../notification/notification.module';
       Family,
       FamilyMember,
       Invite,
+      Religion,
+      Language,
+      Gothram,
     ]),
     NotificationModule,
   ],

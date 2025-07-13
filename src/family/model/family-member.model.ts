@@ -28,5 +28,4 @@ export class FamilyMember extends Model<FamilyMember> {
     allowNull: false,
   })
   approveStatus: 'pending' | 'approved' | 'rejected';
-
 }

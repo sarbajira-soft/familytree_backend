@@ -17,6 +17,9 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 import { Family } from '../family/model/family.model';
 import { RegisterDto } from './dto/register.dto';
 import { NotificationService } from '../notification/notification.service';
+import { Religion } from '../religion/model/religion.model';
+import { Language } from '../language/model/language.model';
+import { Gothram } from '../gothram/model/gothram.model';
 
 @Injectable()
 export class UserService {
@@ -31,6 +34,12 @@ export class UserService {
     private familyMemberModel: typeof FamilyMember,
     @InjectModel(Invite)
     private inviteModel: typeof Invite,
+    @InjectModel(Religion)
+    private religionModel: typeof Religion,
+    @InjectModel(Language)
+    private languageModel: typeof Language,
+    @InjectModel(Gothram)
+    private gothramModel: typeof Gothram,
     private mailService: MailService,
 
     private readonly notificationService: NotificationService,
@@ -377,7 +386,22 @@ export class UserService {
             {
               model: FamilyMember,
               as: 'familyMember',
-              attributes: ['familyCode'],
+              attributes: ['familyCode', 'approveStatus'],
+            },
+            {
+              model: Religion,
+              as: 'religion',
+              attributes: ['id', 'name'],
+            },
+            {
+              model: Language,
+              as: 'language',
+              attributes: ['id', 'name', 'isoCode'],
+            },
+            {
+              model: Gothram,
+              as: 'gothram',
+              attributes: ['id', 'name'],
             },
           ],
         },
@@ -415,35 +439,45 @@ export class UserService {
       }
 
       const { email, countryCode, mobile, role, status } = dto;
-      // Check for new email conflict
-      if (email && email !== user.email) {
-        const emailExists = await this.userModel.findOne({
-          where: { email, id: { [Op.ne]: userId } },
-        });
-        if (emailExists) {
-          throw new BadRequestException({ message: 'Email already in use' });
+      
+      // Handle email update - allow same email, but check for conflicts with other users
+      if (email !== undefined) {
+        if (email !== user.email) {
+          // Email is being changed, check for conflicts
+          const emailExists = await this.userModel.findOne({
+            where: { 
+              email, 
+              id: { [Op.ne]: userId },
+              status: { [Op.ne]: 3 } // Exclude deleted users
+            },
+          });
+          if (emailExists) {
+            throw new BadRequestException({ message: 'Email already in use by another user' });
+          }
+          user.email = email;
         }
-        user.email = email;
+        // If email is the same, no need to update or check
       }
 
-      // Check for new mobile + countryCode conflict
-      if (
-        mobile &&
-        countryCode &&
-        (mobile !== user.mobile || countryCode !== user.countryCode)
-      ) {
-        const mobileExists = await this.userModel.findOne({
-          where: {
-            mobile,
-            countryCode,
-            id: { [Op.ne]: userId },
-          },
-        });
-        if (mobileExists) {
-          throw new BadRequestException({ message: 'Mobile number already in use' });
+      // Handle mobile number update - allow same mobile, but check for conflicts with other users
+      if (mobile !== undefined && countryCode !== undefined) {
+        if (mobile !== user.mobile || countryCode !== user.countryCode) {
+          // Mobile is being changed, check for conflicts
+          const mobileExists = await this.userModel.findOne({
+            where: {
+              mobile,
+              countryCode,
+              id: { [Op.ne]: userId },
+              status: { [Op.ne]: 3 } // Exclude deleted users
+            },
+          });
+          if (mobileExists) {
+            throw new BadRequestException({ message: 'Mobile number already in use by another user' });
+          }
+          user.mobile = mobile;
+          user.countryCode = countryCode;
         }
-        user.mobile = mobile;
-        user.countryCode = countryCode;
+        // If mobile is the same, no need to update or check
       }
 
       // Direct assignments (no uniqueness checks needed)

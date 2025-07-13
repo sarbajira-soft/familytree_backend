@@ -73,6 +73,7 @@ export class FamilyMemberController {
   @Post('request-join')
   @ApiOperation({ summary: 'Request to join family' })
   @ApiResponse({ status: 201, description: 'Family join request submitted' })
+  @ApiResponse({ status: 400, description: 'Invalid family code or user already exists' })
   async requestToJoinFamily(@Body() body: CreateFamilyMemberDto, @Req() req) {
     const loggedInUserId = req.user?.userId;
     return this.familyMemberService.requestToJoinFamily(body, loggedInUserId);

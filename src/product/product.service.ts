@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Product } from './model/product.model';
+import { Category } from './model/category.model';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
 import * as fs from 'fs';
@@ -30,14 +31,32 @@ export class ProductService {
 
   async createProduct(dto: CreateProductDto) {
     const product = await this.productModel.create(dto);
+    const productWithCategory = await this.productModel.findByPk(product.id, {
+      include: [
+        { 
+          model: Category, 
+          as: 'category',
+          attributes: ['id', 'name']
+        }
+      ]
+    });
     return {
       message: 'Product created successfully',
-      data: product,
+      data: productWithCategory,
     };
   }
 
   async getAll() {
-    const products = await this.productModel.findAll({ include: [ProductImage] });
+    const products = await this.productModel.findAll({ 
+      include: [
+        ProductImage,
+        { 
+          model: Category, 
+          as: 'category',
+          attributes: ['id', 'name']
+        }
+      ] 
+    });
     return products.map((product) => {
       const productJson = product.toJSON();
       const images = productJson.images?.map(img => this.constructImageUrl(img.imageUrl)) || [];
@@ -49,7 +68,16 @@ export class ProductService {
   }
 
   async getById(id: number) {
-    const product = await this.productModel.findByPk(id, { include: [ProductImage] });
+    const product = await this.productModel.findByPk(id, { 
+      include: [
+        ProductImage,
+        { 
+          model: Category, 
+          as: 'category',
+          attributes: ['id', 'name']
+        }
+      ] 
+    });
     if (!product) throw new NotFoundException('Product not found');
     
     const productJson = product.toJSON();
@@ -61,7 +89,16 @@ export class ProductService {
   }
 
   async update(id: number, dto: UpdateProductDto) {
-    const product = await this.productModel.findByPk(id, { include: [ProductImage] });
+    const product = await this.productModel.findByPk(id, { 
+      include: [
+        ProductImage,
+        { 
+          model: Category, 
+          as: 'category',
+          attributes: ['id', 'name']
+        }
+      ] 
+    });
     if (!product) throw new NotFoundException('Product not found');
 
     await product.update(dto);
@@ -73,7 +110,16 @@ export class ProductService {
   }
 
   async delete(id: number) {
-    const product = await this.productModel.findByPk(id, { include: [ProductImage] });
+    const product = await this.productModel.findByPk(id, { 
+      include: [
+        ProductImage,
+        { 
+          model: Category, 
+          as: 'category',
+          attributes: ['id', 'name']
+        }
+      ] 
+    });
     if (!product) throw new NotFoundException('Product not found');
 
     // Delete product images and files

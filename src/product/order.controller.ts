@@ -26,35 +26,7 @@ export class OrderController {
 
   @Post('create')
   @ApiOperation({ summary: 'Create a new order' })
-  @ApiResponse({ 
-    status: 201, 
-    description: 'Order created successfully',
-    schema: {
-      example: {
-        success: true,
-        message: 'Order created successfully',
-        data: {
-          id: 1,
-          orderNumber: 'ORD-20250626-0001',
-          userId: 101,
-          receiverId: 202,
-          receiverName: 'John Doe',
-          from: 'Chennai',
-          to: 'Bangalore',
-          duration: 3,
-          productId: 23,
-          price: 1500.00,
-          deliveryStatus: 'pending',
-          paymentStatus: 'unpaid',
-          createdBy: 101,
-          quantity: 1,
-          deliveryInstructions: 'Please deliver to the back door',
-          giftMessage: 'Happy Birthday! Hope you enjoy this gift',
-          createdAt: '2025-06-26T10:30:00.000Z'
-        }
-      }
-    }
-  })
+  @ApiResponse({ status: 201, description: 'Order created successfully' })
   @ApiResponse({ status: 400, description: 'Bad request - Invalid input data' })
   @HttpCode(HttpStatus.CREATED)
   async create(@Body() createOrderDto: CreateOrderDto) {
@@ -66,17 +38,7 @@ export class OrderController {
   @ApiQuery({ name: 'userId', required: false, description: 'Filter by user ID' })
   @ApiQuery({ name: 'deliveryStatus', required: false, enum: DeliveryStatus, description: 'Filter by delivery status' })
   @ApiQuery({ name: 'paymentStatus', required: false, enum: PaymentStatus, description: 'Filter by payment status' })
-  @ApiResponse({ 
-    status: 200, 
-    description: 'List of orders retrieved successfully',
-    schema: {
-      example: {
-        success: true,
-        message: 'Orders retrieved successfully',
-        data: []
-      }
-    }
-  })
+  @ApiResponse({ status: 200, description: 'List of orders retrieved successfully' })
   async findAll(
     @Query('userId') userId?: number,
     @Query('deliveryStatus') deliveryStatus?: DeliveryStatus,
@@ -104,6 +66,13 @@ export class OrderController {
   @ApiResponse({ status: 200, description: 'Receiver orders retrieved successfully' })
   async findByReceiverId(@Param('receiverId', ParseIntPipe) receiverId: number) {
     return this.orderService.findByReceiverId(receiverId);
+  }
+
+  @Get('receiver/null')
+  @ApiOperation({ summary: 'Get orders with null receiver ID' })
+  @ApiResponse({ status: 200, description: 'Orders with null receiver ID retrieved successfully' })
+  async findOrdersWithNullReceiver() {
+    return this.orderService.findOrdersWithNullReceiver();
   }
 
   @Get('status/delivery/:status')
@@ -134,40 +103,7 @@ export class OrderController {
   @Get(':id')
   @ApiOperation({ summary: 'Get order by ID' })
   @ApiParam({ name: 'id', description: 'Order ID' })
-  @ApiResponse({ 
-    status: 200, 
-    description: 'Order found successfully',
-    schema: {
-      example: {
-        success: true,
-        message: 'Order retrieved successfully',
-        data: {
-          id: 1,
-          orderNumber: 'ORD-20250626-0001',
-          userId: 101,
-          receiverId: 202,
-          receiverName: 'John Doe',
-          from: 'Chennai',
-          to: 'Bangalore',
-          duration: 3,
-          productId: 23,
-          product: {
-            id: 23,
-            name: 'Product Name',
-            description: 'Product Description'
-          },
-          price: 1500.00,
-          deliveryStatus: 'pending',
-          paymentStatus: 'unpaid',
-          createdBy: 101,
-          quantity: 1,
-          deliveryInstructions: 'Please deliver to the back door',
-          giftMessage: 'Happy Birthday! Hope you enjoy this gift',
-          createdAt: '2025-06-26T10:30:00.000Z'
-        }
-      }
-    }
-  })
+  @ApiResponse({ status: 200, description: 'Order found successfully' })
   @ApiResponse({ status: 404, description: 'Order not found' })
   async findOne(@Param('id', ParseIntPipe) id: number) {
     return this.orderService.findById(id);

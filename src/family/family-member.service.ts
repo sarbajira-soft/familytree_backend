@@ -165,24 +165,63 @@ export class FamilyMemberService {
 
   // User requests to join family
   async requestToJoinFamily(dto: CreateFamilyMemberDto, createdBy: number) {
+    // First validate if familyCode exists in family table
+    const family = await this.familyModel.findOne({
+      where: {
+        familyCode: dto.familyCode,
+        status: 1, // Only active families
+      },
+    });
+
+    if (!family) {
+      throw new BadRequestException('Invalid family code. Family not found or inactive.');
+    }
+
     // Check if user is already in family (to prevent duplicates)
     const existingMember = await this.familyMemberModel.findOne({
       where: {
         memberId: dto.memberId,
-        familyCode: dto.familyCode,
       },
     });
 
     if (existingMember) {
-      throw new BadRequestException('User is already a member of this family');
+      // If member already exists, update the familyCode and set approveStatus to pending
+      existingMember.familyCode = dto.familyCode;
+      existingMember.approveStatus = 'pending';
+      if (dto.creatorId) {
+        existingMember.creatorId = dto.creatorId;
+      }
+      await existingMember.save();
+
+      // Notify all family admins about updated join request
+      const adminUserIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
+      if (adminUserIds.length > 0) {
+        const user = await this.userProfileModel.findOne({ where: { userId: dto.memberId } });
+        await this.notificationService.createNotification(
+          {
+            type: 'FAMILY_MEMBER_JOIN_REQUEST',
+            title: 'Family Join Request Updated',
+            message: `User ${user?.firstName || ''} ${user?.lastName || ''} has updated their request to join your family.`,
+            familyCode: dto.familyCode,
+            referenceId: dto.memberId,
+            userIds: adminUserIds,
+          },
+          createdBy,
+        );
+      }
+
+      return {
+        message: 'Family join request updated successfully',
+        data: existingMember,
+      };
     }
 
-    // Create family member request with status pending
+    // Create new family member request with status pending
     const membership = await this.familyMemberModel.create({
       memberId: dto.memberId,
       familyCode: dto.familyCode,
-      creatorId: createdBy,
-      approveStatus: 'approved',
+      creatorId: dto.creatorId || createdBy,
+      approveStatus: dto.approveStatus || 'pending',
     });
 
     // Notify all family admins about new join request
@@ -191,9 +230,9 @@ export class FamilyMemberService {
       const user = await this.userProfileModel.findOne({ where: { userId: dto.memberId } });
       await this.notificationService.createNotification(
         {
-          type: 'FAMILY_MEMBER_JOINED',
-          title: 'New Family Member Joined',
-          message: `User ${user?.firstName || ''} ${user?.lastName || ''} has successfully joined your family.`,
+          type: 'FAMILY_MEMBER_JOIN_REQUEST',
+          title: 'New Family Join Request',
+          message: `User ${user?.firstName || ''} ${user?.lastName || ''} has requested to join your family.`,
           familyCode: dto.familyCode,
           referenceId: dto.memberId,
           userIds: adminUserIds,

@@ -43,7 +43,7 @@ export class Gallery extends Model<Gallery> {
 
   @Column({
     type: DataType.STRING,
-    allowNull: false,
+    allowNull: true,
   })
   familyCode: string;
 

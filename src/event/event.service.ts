@@ -7,6 +7,7 @@ import { InjectModel } from '@nestjs/sequelize';
 import { Event } from './model/event.model';
 import { CreateEventDto } from './dto/event.dto';
 import { UserProfile } from '../user/model/user-profile.model';
+import { User } from '../user/model/user.model';
 import { NotificationService } from '../notification/notification.service';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -22,6 +23,9 @@ export class EventService {
 
     @InjectModel(UserProfile)
     private readonly userProfileModel: typeof UserProfile,
+
+    @InjectModel(User)
+    private readonly userModel: typeof User,
 
     @InjectModel(EventImage)
     private readonly eventImageModel: typeof EventImage,
@@ -71,11 +75,23 @@ export class EventService {
     return `${baseUrl.replace(/\/$/, '')}/${uploadPath.replace(/\/$/, '')}/${filename}`;
   }
 
+  private constructProfileImageUrl(filename: string): string {
+    if (!filename) return null;
+    const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
+    const uploadPath = process.env.PROFILE_IMAGE_UPLOAD_PATH?.replace(/^\.?\/?/, '') || 'uploads/profile';
+    return `${baseUrl.replace(/\/$/, '')}/${uploadPath.replace(/\/$/, '')}/${filename}`;
+  }
+
   async getAll(userId?: number) {
     let events;
     if (userId) {
-      // Get user's family code from familymembers table
-      const familyMember = await this.familyMemberModel.findOne({ where: { memberId: userId } });
+      // Get user's family code from familymembers table with approved status
+      const familyMember = await this.familyMemberModel.findOne({ 
+        where: { 
+          memberId: userId,
+          approveStatus: 'approved'
+        } 
+      });
       if (familyMember && familyMember.familyCode) {
         events = await this.eventModel.findAll({ 
           where: { familyCode: familyMember.familyCode },
@@ -99,13 +115,9 @@ export class EventService {
   }
 
   async getEventsForUser(userId: number) {
-    const familyMember = await this.familyMemberModel.findOne({ where: { memberId: userId } });
-    if (!familyMember || !familyMember.familyCode) {
-      return [];
-    }
     const events = await this.eventModel.findAll({
       where: { 
-        familyCode: familyMember.familyCode,
+        createdBy: userId,
         status: 1 
       },
       include: [EventImage]
@@ -142,48 +154,81 @@ export class EventService {
     };
   }
 
-  async update(id: number, dto: any, imageFiles?: string[], loggedId?: number) {
+  async update(id: number, dto: any, imageFiles?: string[], imagesToRemove?: number[], loggedId?: number) {
     const event = await this.eventModel.findByPk(id, { include: [EventImage] });
     if (!event) throw new NotFoundException('Event not found');
 
-    // Optional: await this.validateFamilyCode(dto.familyCode, loggedId);
+    // Check authorization: only creator or admin/superadmin can update
+    if (loggedId) {
+      const user = await this.userModel.findByPk(loggedId);
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
 
-    // If new images provided, delete old image files and records
-    if (imageFiles && imageFiles.length > 0) {
+      // Check if user is admin (role 2) or superadmin (role 3) or is the creator
+      const isAdmin = user.role === 2 || user.role === 3;
+      const isCreator = event.createdBy === loggedId;
+
+      if (!isAdmin && !isCreator) {
+        throw new ForbiddenException('You can only update events that you created or you need admin privileges');
+      }
+    }
+
+    // Handle image updates
+    if (imageFiles || imagesToRemove || dto.eventImages) {
       const oldImages = event.images || [];
       const uploadDir = process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
-      for (const img of oldImages) {
-        const oldFilePath = path.join(uploadDir, img.imageUrl);
-        if (fs.existsSync(oldFilePath)) {
-          fs.unlinkSync(oldFilePath);
+
+      // Extract existing image URLs from dto.eventImages (if they are URLs, not binary files)
+      const existingImageUrls: string[] = [];
+      if (dto.eventImages && Array.isArray(dto.eventImages)) {
+        dto.eventImages.forEach((img: any) => {
+          if (typeof img === 'string' && (img.startsWith('http://') || img.startsWith('https://'))) {
+            // Extract filename from URL
+            const urlParts = img.split('/');
+            const filename = urlParts[urlParts.length - 1];
+            existingImageUrls.push(filename);
+          }
+        });
+      }
+
+      // Remove images that are not in the existingImageUrls list (unless they are in imagesToRemove)
+      const imagesToKeep = oldImages.filter(img => {
+        const shouldKeep = existingImageUrls.includes(img.imageUrl);
+        const shouldRemove = imagesToRemove && imagesToRemove.includes(img.id);
+        return shouldKeep && !shouldRemove;
+      });
+
+      // Remove images that are not being kept
+      const imagesToDelete = oldImages.filter(img => {
+        const shouldKeep = existingImageUrls.includes(img.imageUrl);
+        const shouldRemove = imagesToRemove && imagesToRemove.includes(img.id);
+        return !shouldKeep || shouldRemove;
+      });
+
+      // Delete files and database records for removed images
+      for (const img of imagesToDelete) {
+        const imagePath = path.join(uploadDir, img.imageUrl);
+        if (fs.existsSync(imagePath)) {
+          fs.unlinkSync(imagePath);
         }
         await img.destroy();
       }
-      // Save new images
-      await Promise.all(
-        imageFiles.map(imageUrl =>
-          this.eventImageModel.create({ eventId: event.id, imageUrl })
-        )
-      );
-    }
 
-    dto.createdBy = loggedId;
-    await event.update(dto);
-
-    // Create notifications for event update if significant changes
-    if (dto.eventTitle || dto.eventDate || dto.eventDescription) {
-      try {
-        // await this.notificationService.createEventNotificationForFamily(
-        //   dto.familyCode || event.familyCode,
-        //   dto.eventTitle || event.eventTitle,
-        //   dto.eventDate || event.eventDate,
-        //   `Event Updated: ${dto.eventDescription || event.eventDescription}`,
-        //   loggedId,
-        // );
-      } catch (error) {
-        console.error('Failed to create event update notifications:', error);
+      // Add new images from uploaded files
+      if (imageFiles && imageFiles.length > 0) {
+        await Promise.all(
+          imageFiles.map(imageUrl =>
+            this.eventImageModel.create({ eventId: event.id, imageUrl })
+          )
+        );
       }
     }
+
+    // Remove eventImages from dto as it's handled separately
+    delete dto.eventImages;
+    dto.createdBy = loggedId;
+    await event.update(dto);
 
     return {
       message: 'Event updated successfully',
@@ -194,6 +239,22 @@ export class EventService {
   async delete(id: number, loggedId?: number) {
     const event = await this.eventModel.findByPk(id, { include: [EventImage] });
     if (!event) throw new NotFoundException('Event not found');
+
+    // Check authorization: only creator or admin/superadmin can delete
+    if (loggedId) {
+      const user = await this.userModel.findByPk(loggedId);
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
+
+      // Check if user is admin (role 2) or superadmin (role 3) or is the creator
+      const isAdmin = user.role === 2 || user.role === 3;
+      const isCreator = event.createdBy === loggedId;
+
+      if (!isAdmin && !isCreator) {
+        throw new ForbiddenException('You can only delete events that you created or you need admin privileges');
+      }
+    }
 
     // Delete event images and files
     const uploadDir = process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
@@ -263,9 +324,15 @@ export class EventService {
 
   async getUpcoming(userId?: number) {
     const today = new Date();
-    let events;
+    let events = [];
+
     if (userId) {
-      const familyMember = await this.familyMemberModel.findOne({ where: { memberId: userId } });
+      const familyMember = await this.familyMemberModel.findOne({ 
+        where: { 
+          memberId: userId,
+          approveStatus: 'approved'
+        } 
+      });
       if (familyMember && familyMember.familyCode) {
         events = await this.eventModel.findAll({
           where: {
@@ -276,8 +343,6 @@ export class EventService {
           include: [EventImage],
           order: [['eventDate', 'ASC']],
         });
-      } else {
-        events = [];
       }
     } else {
       events = await this.eventModel.findAll({
@@ -289,20 +354,398 @@ export class EventService {
         order: [['eventDate', 'ASC']],
       });
     }
+
     return events.map(event => {
       const eventJson = event.toJSON();
       const eventImages = eventJson.images?.map(img => this.constructEventImageUrl(img.imageUrl)) || [];
       delete eventJson.user;
       return {
         ...eventJson,
+        eventType: 'custom',
         eventImages,
       };
     });
   }
 
-  async addEventImages(eventId: number, imageFiles: string[]) {
+  async getUpcomingBirthdays(userId?: number) {
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const nextYear = currentYear + 1;
+    
+    let familyCode = null;
+
+    if (userId) {
+      const familyMember = await this.familyMemberModel.findOne({ 
+        where: { 
+          memberId: userId,
+          approveStatus: 'approved'
+        } 
+      });
+      if (familyMember && familyMember.familyCode) {
+        familyCode = familyMember.familyCode;
+      }
+    }
+
+    if (!familyCode) {
+      return [];
+    }
+
+    // Get family members with their profiles using direct query - only approved members
+    const { QueryTypes } = require('sequelize');
+    const familyMembers: any[] = await this.familyMemberModel.sequelize.query(`
+      SELECT 
+        fm."memberId",
+        fm."familyCode",
+        up."firstName",
+        up."lastName",
+        up."profile",
+        up."dob"
+      FROM ft_family_members fm
+      INNER JOIN ft_user_profile up ON fm."memberId" = up."userId"
+      WHERE fm."familyCode" = :familyCode
+      AND fm."approveStatus" = 'approved'
+    `, {
+      replacements: { familyCode },
+      type: QueryTypes.SELECT
+    });
+
+    const upcomingBirthdays = [];
+
+    // Process birthdays
+    for (const member of familyMembers) {
+      if (member.dob) {
+        const dob = new Date(member.dob);
+        const nextBirthday = new Date(currentYear, dob.getMonth(), dob.getDate());
+        
+        // If birthday has passed this year, check next year
+        if (nextBirthday < today) {
+          nextBirthday.setFullYear(nextYear);
+        }
+
+        // Only include if birthday is within next 30 days
+        const daysUntilBirthday = Math.ceil((nextBirthday.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        if (daysUntilBirthday <= 30) {
+          upcomingBirthdays.push({
+            id: `birthday_${member.memberId}`,
+            eventTitle: `Birthday - ${member.firstName} ${member.lastName}`,
+            eventDescription: `Happy Birthday! 🎉`,
+            eventDate: nextBirthday.toISOString().split('T')[0],
+            eventTime: null,
+            location: null,
+            familyCode: familyCode,
+            createdBy: member.memberId,
+            status: 1,
+            eventType: 'birthday',
+            memberDetails: {
+              firstName: member.firstName,
+              lastName: member.lastName,
+              profileImage: this.constructProfileImageUrl(member.profile),
+              message: `Wishing ${member.firstName} a wonderful birthday! 🎂🎈`,
+              age: nextBirthday.getFullYear() - dob.getFullYear()
+            },
+            eventImages: []
+          });
+        }
+      }
+    }
+
+    return upcomingBirthdays.sort((a, b) => new Date(a.eventDate).getTime() - new Date(b.eventDate).getTime());
+  }
+
+  async getUpcomingAnniversaries(userId?: number) {
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const nextYear = currentYear + 1;
+    
+    let familyCode = null;
+
+    if (userId) {
+      const familyMember = await this.familyMemberModel.findOne({ 
+        where: { 
+          memberId: userId,
+          approveStatus: 'approved'
+        } 
+      });
+      if (familyMember && familyMember.familyCode) {
+        familyCode = familyMember.familyCode;
+      }
+    }
+
+    if (!familyCode) {
+      return [];
+    }
+
+    // Get family members with their profiles using direct query - only approved members
+    const { QueryTypes } = require('sequelize');
+    const familyMembers: any[] = await this.familyMemberModel.sequelize.query(`
+      SELECT 
+        fm."memberId",
+        fm."familyCode",
+        up."firstName",
+        up."lastName",
+        up."profile",
+        up."marriageDate",
+        up."spouseName"
+      FROM ft_family_members fm
+      INNER JOIN ft_user_profile up ON fm."memberId" = up."userId"
+      WHERE fm."familyCode" = :familyCode
+      AND fm."approveStatus" = 'approved'
+    `, {
+      replacements: { familyCode },
+      type: QueryTypes.SELECT
+    });
+
+    const upcomingAnniversaries = [];
+
+    // Process marriage anniversaries
+    for (const member of familyMembers) {
+      if (member.marriageDate) {
+        const marriageDate = new Date(member.marriageDate);
+        const nextAnniversary = new Date(currentYear, marriageDate.getMonth(), marriageDate.getDate());
+        
+        // If anniversary has passed this year, check next year
+        if (nextAnniversary < today) {
+          nextAnniversary.setFullYear(nextYear);
+        }
+
+        // Only include if anniversary is within next 30 days
+        const daysUntilAnniversary = Math.ceil((nextAnniversary.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        if (daysUntilAnniversary <= 30) {
+          const yearsOfMarriage = nextAnniversary.getFullYear() - marriageDate.getFullYear();
+          upcomingAnniversaries.push({
+            id: `anniversary_${member.memberId}`,
+            eventTitle: `Marriage Anniversary - ${member.firstName} ${member.lastName}`,
+            eventDescription: `Happy ${yearsOfMarriage}${this.getOrdinalSuffix(yearsOfMarriage)} Anniversary! 💕`,
+            eventDate: nextAnniversary.toISOString().split('T')[0],
+            eventTime: null,
+            location: null,
+            familyCode: familyCode,
+            createdBy: member.memberId,
+            status: 1,
+            eventType: 'anniversary',
+            memberDetails: {
+              firstName: member.firstName,
+              lastName: member.lastName,
+              profileImage: this.constructProfileImageUrl(member.profile),
+              message: `Congratulations on your ${yearsOfMarriage}${this.getOrdinalSuffix(yearsOfMarriage)} wedding anniversary! 💑`,
+              spouseName: member.spouseName,
+              yearsOfMarriage: yearsOfMarriage
+            },
+            eventImages: []
+          });
+        }
+      }
+    }
+
+    return upcomingAnniversaries.sort((a, b) => new Date(a.eventDate).getTime() - new Date(b.eventDate).getTime());
+  }
+
+  async getAllUpcomingEvents(userId?: number) {
+    const [customEvents, birthdays, anniversaries] = await Promise.all([
+      this.getUpcoming(userId),
+      this.getUpcomingBirthdays(userId),
+      this.getUpcomingAnniversaries(userId)
+    ]);
+
+    // Combine all events and sort by date
+    const allEvents = [
+      ...customEvents,
+      ...birthdays,
+      ...anniversaries
+    ].sort((a, b) => new Date(a.eventDate).getTime() - new Date(b.eventDate).getTime());
+
+    return allEvents;
+  }
+
+  async getUpcomingByFamilyCode(familyCode: string) {
+    const [customEvents, birthdays, anniversaries] = await Promise.all([
+      this.getByFamilyCode(familyCode),
+      this.getUpcomingBirthdaysByFamilyCode(familyCode),
+      this.getUpcomingAnniversariesByFamilyCode(familyCode)
+    ]);
+
+    // Combine all events and sort by date
+    const allEvents = [
+      ...customEvents,
+      ...birthdays,
+      ...anniversaries
+    ].sort((a, b) => new Date(a.eventDate).getTime() - new Date(b.eventDate).getTime());
+
+    return allEvents;
+  }
+
+  private async getUpcomingBirthdaysByFamilyCode(familyCode: string) {
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const nextYear = currentYear + 1;
+
+    // Get family members with their profiles using direct query - only approved members
+    const { QueryTypes } = require('sequelize');
+    const familyMembers: any[] = await this.familyMemberModel.sequelize.query(`
+      SELECT 
+        fm."memberId",
+        fm."familyCode",
+        up."firstName",
+        up."lastName",
+        up."profile",
+        up."dob"
+      FROM ft_family_members fm
+      INNER JOIN ft_user_profile up ON fm."memberId" = up."userId"
+      WHERE fm."familyCode" = :familyCode
+      AND fm."approveStatus" = 'approved'
+    `, {
+      replacements: { familyCode },
+      type: QueryTypes.SELECT
+    });
+
+    const upcomingBirthdays = [];
+
+    // Process birthdays
+    for (const member of familyMembers) {
+      if (member.dob) {
+        const dob = new Date(member.dob);
+        const nextBirthday = new Date(currentYear, dob.getMonth(), dob.getDate());
+        
+        // If birthday has passed this year, check next year
+        if (nextBirthday < today) {
+          nextBirthday.setFullYear(nextYear);
+        }
+
+        // Only include if birthday is within next 30 days
+        const daysUntilBirthday = Math.ceil((nextBirthday.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        if (daysUntilBirthday <= 30) {
+          upcomingBirthdays.push({
+            id: `birthday_${member.memberId}`,
+            eventTitle: `Birthday - ${member.firstName} ${member.lastName}`,
+            eventDescription: `Happy Birthday! 🎉`,
+            eventDate: nextBirthday.toISOString().split('T')[0],
+            eventTime: null,
+            location: null,
+            familyCode: familyCode,
+            createdBy: member.memberId,
+            status: 1,
+            eventType: 'birthday',
+            memberDetails: {
+              firstName: member.firstName,
+              lastName: member.lastName,
+              profileImage: this.constructProfileImageUrl(member.profile),
+              message: `Wishing ${member.firstName} a wonderful birthday! 🎂🎈`,
+              age: nextBirthday.getFullYear() - dob.getFullYear()
+            },
+            eventImages: []
+          });
+        }
+      }
+    }
+
+    return upcomingBirthdays.sort((a, b) => new Date(a.eventDate).getTime() - new Date(b.eventDate).getTime());
+  }
+
+  private async getUpcomingAnniversariesByFamilyCode(familyCode: string) {
+    const today = new Date();
+    const currentYear = today.getFullYear();
+    const nextYear = currentYear + 1;
+
+    // Get family members with their profiles using direct query - only approved members
+    const { QueryTypes } = require('sequelize');
+    const familyMembers: any[] = await this.familyMemberModel.sequelize.query(`
+      SELECT 
+        fm.memberId,
+        fm.familyCode,
+        up.firstName,
+        up.lastName,
+        up.profile,
+        up.marriageDate,
+        up.spouseName
+      FROM ft_family_members fm
+      INNER JOIN ft_user_profile up ON fm.memberId = up.userId
+      WHERE fm.familyCode = :familyCode
+      AND fm.approveStatus = 'approved'
+    `, {
+      replacements: { familyCode },
+      type: QueryTypes.SELECT
+    });
+
+    const upcomingAnniversaries = [];
+
+    // Process marriage anniversaries
+    for (const member of familyMembers) {
+      if (member.marriageDate) {
+        const marriageDate = new Date(member.marriageDate);
+        const nextAnniversary = new Date(currentYear, marriageDate.getMonth(), marriageDate.getDate());
+        
+        // If anniversary has passed this year, check next year
+        if (nextAnniversary < today) {
+          nextAnniversary.setFullYear(nextYear);
+        }
+
+        // Only include if anniversary is within next 30 days
+        const daysUntilAnniversary = Math.ceil((nextAnniversary.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
+        if (daysUntilAnniversary <= 30) {
+          const yearsOfMarriage = nextAnniversary.getFullYear() - marriageDate.getFullYear();
+          upcomingAnniversaries.push({
+            id: `anniversary_${member.memberId}`,
+            eventTitle: `Marriage Anniversary - ${member.firstName} ${member.lastName}`,
+            eventDescription: `Happy ${yearsOfMarriage}${this.getOrdinalSuffix(yearsOfMarriage)} Anniversary! 💕`,
+            eventDate: nextAnniversary.toISOString().split('T')[0],
+            eventTime: null,
+            location: null,
+            familyCode: familyCode,
+            createdBy: member.memberId,
+            status: 1,
+            eventType: 'anniversary',
+            memberDetails: {
+              firstName: member.firstName,
+              lastName: member.lastName,
+              profileImage: this.constructProfileImageUrl(member.profile),
+              message: `Congratulations on your ${yearsOfMarriage}${this.getOrdinalSuffix(yearsOfMarriage)} wedding anniversary! 💑`,
+              spouseName: member.spouseName,
+              yearsOfMarriage: yearsOfMarriage
+            },
+            eventImages: []
+          });
+        }
+      }
+    }
+
+    return upcomingAnniversaries.sort((a, b) => new Date(a.eventDate).getTime() - new Date(b.eventDate).getTime());
+  }
+
+  private getOrdinalSuffix(num: number): string {
+    const j = num % 10;
+    const k = num % 100;
+    if (j === 1 && k !== 11) {
+      return "st";
+    }
+    if (j === 2 && k !== 12) {
+      return "nd";
+    }
+    if (j === 3 && k !== 13) {
+      return "rd";
+    }
+    return "th";
+  }
+
+  async addEventImages(eventId: number, imageFiles: string[], loggedId?: number) {
     const event = await this.eventModel.findByPk(eventId);
     if (!event) throw new NotFoundException('Event not found');
+
+    // Check authorization: only creator or admin/superadmin can add images
+    if (loggedId) {
+      const user = await this.userModel.findByPk(loggedId);
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
+
+      // Check if user is admin (role 2) or superadmin (role 3) or is the creator
+      const isAdmin = user.role === 2 || user.role === 3;
+      const isCreator = event.createdBy === loggedId;
+
+      if (!isAdmin && !isCreator) {
+        throw new ForbiddenException('You can only add images to events that you created or you need admin privileges');
+      }
+    }
+
     const createdImages = await Promise.all(
       imageFiles.map(imageUrl =>
         this.eventImageModel.create({ eventId, imageUrl })
@@ -314,9 +757,26 @@ export class EventService {
     };
   }
 
-  async deleteEventImage(imageId: number) {
-    const image = await this.eventImageModel.findByPk(imageId);
+  async deleteEventImage(imageId: number, loggedId?: number) {
+    const image = await this.eventImageModel.findByPk(imageId, { include: [Event] });
     if (!image) throw new NotFoundException('Image not found');
+
+    // Check authorization: only creator or admin/superadmin can delete images
+    if (loggedId) {
+      const user = await this.userModel.findByPk(loggedId);
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
+
+      // Check if user is admin (role 2) or superadmin (role 3) or is the creator
+      const isAdmin = user.role === 2 || user.role === 3;
+      const isCreator = image.event?.createdBy === loggedId;
+
+      if (!isAdmin && !isCreator) {
+        throw new ForbiddenException('You can only delete images from events that you created or you need admin privileges');
+      }
+    }
+
     const uploadDir = process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
     const imagePath = path.join(uploadDir, image.imageUrl);
     if (fs.existsSync(imagePath)) {
@@ -330,4 +790,5 @@ export class EventService {
     const images = await this.eventImageModel.findAll({ where: { eventId } });
     return images.map(img => ({ id: img.id, imageUrl: this.constructEventImageUrl(img.imageUrl) }));
   }
+
 }

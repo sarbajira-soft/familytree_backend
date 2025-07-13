@@ -33,13 +33,13 @@ export class CreateGalleryDto {
   @IsOptional()
   coverPhoto?: Express.Multer.File;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     example: 'FAM123456',
-    description: 'Family code to associate this gallery with',
+    description: 'Family code to associate this gallery with (required for private privacy)',
   })
+  @IsOptional()
   @IsString()
-  @IsNotEmpty()
-  familyCode: string;
+  familyCode?: string;
 
   @ApiProperty({
     example: 42,

@@ -97,4 +97,9 @@ export class UserProfile extends Model<UserProfile> {
 
   @Column(DataType.STRING)
   familyCode: string;
+
+  // Associations - these will be set up in sequelize.associations.ts
+  religion?: any;
+  language?: any;
+  gothram?: any;
 }

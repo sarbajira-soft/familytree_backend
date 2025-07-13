@@ -36,6 +36,7 @@ export class OrderService {
         deliveryStatus: createOrderDto.deliveryStatus || DeliveryStatus.PENDING,
         paymentStatus: createOrderDto.paymentStatus || PaymentStatus.UNPAID,
         quantity: createOrderDto.quantity || 1, // Ensure quantity has a default value
+        receiverId: createOrderDto.receiverId || null, // Allow null receiverId
       }, {
         include: [Product] // Include product details in response
       });
@@ -174,6 +175,25 @@ export class OrderService {
       };
     } catch (error) {
       throw new BadRequestException(`Failed to retrieve receiver orders: ${error.message}`);
+    }
+  }
+
+  // Get orders with null receiver ID
+  async findOrdersWithNullReceiver() {
+    try {
+      const orders = await this.orderModel.findAll({
+        where: { receiverId: null },
+        include: [Product],
+        order: [['createdAt', 'DESC']],
+      });
+
+      return {
+        success: true,
+        message: 'Orders with null receiver ID retrieved successfully',
+        data: orders,
+      };
+    } catch (error) {
+      throw new BadRequestException(`Failed to retrieve orders with null receiver ID: ${error.message}`);
     }
   }
 

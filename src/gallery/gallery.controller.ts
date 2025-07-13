@@ -40,6 +40,18 @@ import { generateFileName, imageFileFilter } from '../utils/upload.utils';
 export class GalleryController {
   constructor(private readonly galleryService: GalleryService) {}
 
+  @Get('health')
+  @ApiOperation({ summary: 'Gallery service health check' })
+  @ApiResponse({ status: 200, description: 'Service is healthy' })
+  async healthCheck() {
+    return {
+      status: 'healthy',
+      service: 'gallery',
+      timestamp: new Date().toISOString(),
+      message: 'Gallery service is running'
+    };
+  }
+
   @UseGuards(JwtAuthGuard)
   @Post('create')
   @UseInterceptors(
@@ -69,8 +81,35 @@ export class GalleryController {
   )
   @ApiConsumes('multipart/form-data')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Create a new gallery with album photos' })
-  @ApiResponse({ status: 201, description: 'Gallery created successfully' })
+  @ApiOperation({ 
+    summary: 'Create a new gallery with album photos',
+    description: 'Creates a gallery with uploaded images. Returns detailed response with progress information.'
+  })
+  @ApiResponse({ 
+    status: 201, 
+    description: 'Gallery created successfully',
+    schema: {
+      type: 'object',
+      properties: {
+        success: { type: 'boolean' },
+        message: { type: 'string' },
+        data: {
+          type: 'object',
+          properties: {
+            id: { type: 'number' },
+            galleryTitle: { type: 'string' },
+            coverPhoto: { type: 'string' },
+            album: { type: 'array', items: { type: 'string' } },
+            totalImages: { type: 'number' },
+            privacy: { type: 'string' },
+            familyCode: { type: 'string' }
+          }
+        }
+      }
+    }
+  })
+  @ApiResponse({ status: 400, description: 'Bad request - validation failed' })
+  @ApiResponse({ status: 500, description: 'Internal server error' })
   @HttpCode(HttpStatus.CREATED)
   async createGallery(
     @Req() req,

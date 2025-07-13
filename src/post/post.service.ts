@@ -40,32 +40,33 @@ export class PostService {
     // Step 1: Create post
     const post = await this.postModel.create({
       caption: dto.caption,
-      familyCode: dto.familyCode,
+      familyCode: dto.familyCode || null,
       createdBy,
       status: dto.status ?? 1,
       postImage: dto.postImage as any || null,
       privacy: dto.privacy ?? 'public',
     });
 
-    // Step 2: Fetch approved family members from ft_family_members
-    const memberIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
+    // Step 2: Send notification only if familyCode exists (for private/family posts)
+    if (dto.familyCode && (dto.privacy === 'private' || dto.privacy === 'family')) {
+      const memberIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
 
-    // Step 4: Send notification to all approved members
-    if (memberIds.length > 0) {
-      await this.notificationService.createNotification(
-        {
-          type: 'FAMILY_POST_CREATED',
-          title: 'New Family Post',
-          message: `A new post has been shared in the family feed.`,
-          familyCode: dto.familyCode,
-          referenceId: post.id,
-          userIds: memberIds,
-        },
-        createdBy, // performedBy
-      );
+      if (memberIds.length > 0) {
+        await this.notificationService.createNotification(
+          {
+            type: 'FAMILY_POST_CREATED',
+            title: 'New Family Post',
+            message: `A new post has been shared in the family feed.`,
+            familyCode: dto.familyCode,
+            referenceId: post.id,
+            userIds: memberIds,
+          },
+          createdBy, // performedBy
+        );
+      }
     }
 
-    // Step 5: Return post details
+    // Step 3: Return post details
     return {
       message: 'Post created successfully',
       data: {
@@ -110,7 +111,7 @@ export class PostService {
     await post.update({
       caption: dto.caption ?? post.caption,
       privacy: dto.privacy ?? post.privacy,
-      familyCode: dto.familyCode ?? post.familyCode,
+      familyCode: dto.familyCode || null,
       status: dto.status ?? post.status,
       postImage: dto.postImage ?? post.postImage as any,
     });

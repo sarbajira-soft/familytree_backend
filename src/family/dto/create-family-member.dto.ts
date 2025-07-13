@@ -20,7 +20,7 @@ export class CreateFamilyMemberDto {
 
   @ApiPropertyOptional({
     example: 88,
-    description: 'User ID of the creator who is adding the member (usually auto-filled from auth token)',
+    description: 'User ID of the creator who is adding the member (optional)',
   })
   @IsNumber()
   @IsOptional()
@@ -28,7 +28,7 @@ export class CreateFamilyMemberDto {
 
   @ApiPropertyOptional({
     example: 'pending',
-    description: 'Approval status of the membership request',
+    description: 'Approval status of the membership request (optional, defaults to pending)',
     enum: ['pending', 'approved', 'rejected'],
   })
   @IsIn(['pending', 'approved', 'rejected'])

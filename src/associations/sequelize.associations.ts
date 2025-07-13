@@ -6,11 +6,19 @@ import { PostComment } from '../post/model/post-comment.model';
 import { GalleryComment } from '../gallery/model/gallery-comment.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { FamilyTree } from '../family/model/family-tree.model';
+import { Religion } from '../religion/model/religion.model';
+import { Language } from '../language/model/language.model';
+import { Gothram } from '../gothram/model/gothram.model';
 
 export function setupAssociations() {
   // UserProfile
   User.hasOne(UserProfile, { foreignKey: 'userId', as: 'userProfile' });
   UserProfile.belongsTo(User, { foreignKey: 'userId', as: 'profileOwner' });
+
+  // UserProfile ↔ Religion, Language, Gothram
+  UserProfile.belongsTo(Religion, { foreignKey: 'religionId', as: 'religion' });
+  UserProfile.belongsTo(Language, { foreignKey: 'languageId', as: 'language' });
+  UserProfile.belongsTo(Gothram, { foreignKey: 'gothramId', as: 'gothram' });
 
   // Post ↔ User
   Post.belongsTo(User, { foreignKey: 'createdBy', as: 'user' });

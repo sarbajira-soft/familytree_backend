@@ -117,6 +117,41 @@ export class EventController {
     return this.eventService.getUpcoming(loggedInUser.userId);
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Get('upcoming/birthdays')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get upcoming birthdays for the logged-in user\'s family' })
+  getUpcomingBirthdays(@Req() req) {
+    const loggedInUser = req.user;
+    return this.eventService.getUpcomingBirthdays(loggedInUser.userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('upcoming/anniversaries')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get upcoming marriage anniversaries for the logged-in user\'s family' })
+  getUpcomingAnniversaries(@Req() req) {
+    const loggedInUser = req.user;
+    return this.eventService.getUpcomingAnniversaries(loggedInUser.userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('upcoming/all')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get all upcoming events including custom events, birthdays, and anniversaries' })
+  getAllUpcomingEvents(@Req() req) {
+    const loggedInUser = req.user;
+    return this.eventService.getAllUpcomingEvents(loggedInUser.userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('upcoming/family/:familyCode')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get all upcoming events for a specific family code (admin only)' })
+  getUpcomingByFamilyCode(@Param('familyCode') familyCode: string) {
+    return this.eventService.getUpcomingByFamilyCode(familyCode);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Get event by ID' })
   @ApiResponse({ status: 200, description: 'Event found' })
@@ -161,15 +196,42 @@ export class EventController {
       imageNames = files.map(file => file.filename);
     }
 
-    return this.eventService.update(id, body, imageNames, loggedInUser.userId);
+    // Handle images to remove (from request body)
+    let imagesToRemove: number[] = [];
+    if (body.imagesToRemove) {
+      try {
+        imagesToRemove = Array.isArray(body.imagesToRemove) 
+          ? body.imagesToRemove 
+          : JSON.parse(body.imagesToRemove);
+      } catch (error) {
+        console.error('Error parsing imagesToRemove:', error);
+        imagesToRemove = [];
+      }
+    }
+
+    // Handle existing image URLs from the request body
+    // The frontend might send existing image URLs in the eventImages field
+    // along with new binary files
+    if (body.eventImages && typeof body.eventImages === 'string') {
+      try {
+        // If it's a JSON string, parse it
+        body.eventImages = JSON.parse(body.eventImages);
+      } catch (error) {
+        // If it's not JSON, treat it as a single string
+        body.eventImages = [body.eventImages];
+      }
+    }
+
+    return this.eventService.update(id, body, imageNames, imagesToRemove, loggedInUser.userId);
   }
 
   @UseGuards(JwtAuthGuard)
   @Delete(':id')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Delete event by ID' })
-  deleteEvent(@Param('id') id: number) {
-    return this.eventService.delete(id);
+  deleteEvent(@Req() req, @Param('id') id: number) {
+    const loggedInUser = req.user;
+    return this.eventService.delete(id, loggedInUser.userId);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -209,19 +271,22 @@ export class EventController {
     },
   })
   async addEventImages(
+    @Req() req,
     @Param('id') id: number,
     @UploadedFiles() files: Express.Multer.File[],
   ) {
+    const loggedInUser = req.user;
     const imageNames = files?.map(file => file.filename) || [];
-    return this.eventService.addEventImages(id, imageNames);
+    return this.eventService.addEventImages(id, imageNames, loggedInUser.userId);
   }
 
   @UseGuards(JwtAuthGuard)
   @Delete('images/:imageId')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Delete a specific image from an event' })
-  async deleteEventImage(@Param('imageId') imageId: number) {
-    return this.eventService.deleteEventImage(imageId);
+  async deleteEventImage(@Req() req, @Param('imageId') imageId: number) {
+    const loggedInUser = req.user;
+    return this.eventService.deleteEventImage(imageId, loggedInUser.userId);
   }
 
   @Get(':id/images')

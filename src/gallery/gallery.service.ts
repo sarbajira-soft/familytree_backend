@@ -45,54 +45,89 @@ export class GalleryService {
       throw new BadRequestException('At least one album image is required.');
     }
 
-    // Step 1: Create Gallery
-    const gallery = await this.galleryModel.create({
-      galleryTitle: dto.galleryTitle,
-      galleryDescription: dto.galleryDescription,
-      familyCode: dto.familyCode,
-      createdBy,
-      status: dto.status ?? 1,
-      coverPhoto: dto.coverPhoto as any || null,
-      privacy: dto.privacy ?? 'public',
-    });
-
-    // Step 2: Save Album Images
-    const albumData = albumImages.map((file) => ({
-      galleryId: gallery.id,
-      album: file.filename,
-    }));
-
-    await this.galleryAlbumModel.bulkCreate(albumData);
-
-    // Fetch approved family members from ft_family_members
-    const memberIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
-
-    // Extract memberIds excluding the creator
-    // Send notification to all approved members (excluding the creator)
-    if (memberIds.length > 0) {
-      await this.notificationService.createNotification(
-        {
-          type: 'FAMILY_GALLERY_CREATED',
-          title: 'New Gallery Added',
-          message: `${gallery.galleryTitle} has been added to the family gallery.`,
-          familyCode: dto.familyCode,
-          referenceId: gallery.id,
-          userIds: memberIds,
-        },
-        createdBy, // performedBy
-      );
+    // Validate familyCode requirement based on privacy
+    const privacy = dto.privacy ?? 'public';
+    if (privacy === 'private' && !dto.familyCode) {
+      throw new BadRequestException('familyCode is required for private privacy');
     }
 
-    // Step 5: Return Response
-    return {
-      message: 'Gallery created successfully',
-      data: {
-        id: gallery.id,
-        galleryTitle: gallery.galleryTitle,
-        coverPhoto: gallery.coverPhoto,
-        album: albumImages.map((img) => img.filename),
-      },
-    };
+    try {
+      // Step 1: Create Gallery
+      const galleryData: any = {
+        galleryTitle: dto.galleryTitle,
+        galleryDescription: dto.galleryDescription,
+        createdBy,
+        status: dto.status ?? 1,
+        coverPhoto: dto.coverPhoto as any || null,
+        privacy: privacy,
+      };
+
+      // Set familyCode - use empty string for public galleries if database requires it
+      if (dto.familyCode) {
+        galleryData.familyCode = dto.familyCode;
+      } else {
+        // For public galleries, use empty string if database doesn't allow null
+        galleryData.familyCode = '';
+      }
+
+      const gallery = await this.galleryModel.create(galleryData);
+
+      // Step 2: Save Album Images
+      const albumData = albumImages.map((file) => ({
+        galleryId: gallery.id,
+        album: file.filename,
+      }));
+
+      await this.galleryAlbumModel.bulkCreate(albumData);
+
+      // Step 3: Send notifications only for private galleries with familyCode
+      if (privacy === 'private' && dto.familyCode) {
+        try {
+          // Fetch approved family members from ft_family_members
+          const memberIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
+
+          // Extract memberIds excluding the creator
+          // Send notification to all approved members (excluding the creator)
+          if (memberIds.length > 0) {
+            await this.notificationService.createNotification(
+              {
+                type: 'FAMILY_GALLERY_CREATED',
+                title: 'New Gallery Added',
+                message: `${gallery.galleryTitle} has been added to the family gallery.`,
+                familyCode: dto.familyCode,
+                referenceId: gallery.id,
+                userIds: memberIds,
+              },
+              createdBy, // performedBy
+            );
+          }
+        } catch (notificationError) {
+          // Log notification error but don't fail the gallery creation
+          console.error('Failed to send notifications:', notificationError);
+        }
+      }
+
+      // Step 4: Return Response
+      return {
+        success: true,
+        message: 'Gallery created successfully',
+        data: {
+          id: gallery.id,
+          galleryTitle: gallery.galleryTitle,
+          coverPhoto: gallery.coverPhoto,
+          album: albumImages.map((img) => img.filename),
+          totalImages: albumImages.length,
+          privacy: privacy,
+          familyCode: dto.familyCode || null, // Return null in response even if empty string in DB
+        },
+      };
+    } catch (error) {
+      // Enhanced error handling
+      console.error('Gallery creation failed:', error);
+      throw new BadRequestException(
+        `Failed to create gallery: ${error.message || 'Unknown error occurred'}`
+      );
+    }
   }
 
   async getGalleryByOptions(
@@ -194,6 +229,7 @@ export class GalleryService {
           likeCount,
           commentCount,
           ...(userId !== undefined && { isLiked }),
+          familyCode: galleryJson.familyCode || null, // Convert empty string to null in response
           user: {
             name: fullName,
             profile: profileImage,
@@ -217,6 +253,12 @@ export class GalleryService {
     });
 
     if (!gallery) throw new NotFoundException('Gallery not found');
+
+    // Validate familyCode requirement based on privacy
+    const privacy = dto.privacy ?? gallery.privacy;
+    if (privacy === 'private' && !dto.familyCode) {
+      throw new BadRequestException('familyCode is required for private privacy');
+    }
 
     const uploadPath = process.env.GALLERY_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/gallery';
 
@@ -244,7 +286,11 @@ export class GalleryService {
     }
 
     // Update fields
-    await gallery.update({ ...dto as any });
+    const updateData = { ...dto as any };
+    if (privacy === 'public' && !dto.familyCode) {
+      updateData.familyCode = ''; // Use empty string instead of null for database compatibility
+    }
+    await gallery.update(updateData);
 
     // Return updated gallery with full URLs
     const baseUrl = process.env.BASE_URL || '';
@@ -464,6 +510,7 @@ export class GalleryService {
       galleryAlbums: albumImages,
       likeCount,
       commentCount,
+      familyCode: galleryJson.familyCode || null, // Convert empty string to null in response
       ...(userId !== undefined && { isLiked }),
     };
   }

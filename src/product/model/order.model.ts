@@ -54,9 +54,9 @@ export class Order extends Model<Order> {
 
   @Column({
     type: DataType.INTEGER,
-    allowNull: false,
+    allowNull: true,
   })
-  receiverId: number;
+  receiverId?: number;
 
   @Column({
     type: DataType.STRING,

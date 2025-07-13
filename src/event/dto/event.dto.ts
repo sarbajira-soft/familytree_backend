@@ -76,7 +76,7 @@ export class CreateEventDto {
   createdBy?: number;
 
   @ApiPropertyOptional({
-    description: 'Event image files (multiple images supported)',
+    description: 'Event image files (multiple images supported) or existing image URLs',
     type: 'string',
     format: 'binary',
     isArray: true,
@@ -144,13 +144,23 @@ export class UpdateEventDto {
   status?: number;
 
   @ApiPropertyOptional({
-    description: 'Event image files (multiple images supported)',
+    description: 'Event image files (multiple images supported) or existing image URLs',
     type: 'string',
     format: 'binary',
     isArray: true,
   })
   @IsOptional()
   eventImages?: any;
+
+  @ApiPropertyOptional({
+    description: 'Array of image IDs to remove from the event',
+    example: [1, 2, 3],
+    type: [Number],
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({}, { each: true, message: 'Each image ID must be a number' })
+  imagesToRemove?: number[];
 }
 
 export class CreateEventImageDto {

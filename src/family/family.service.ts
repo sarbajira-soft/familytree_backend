@@ -41,6 +41,12 @@ export class FamilyService {
       throw new BadRequestException('Family code already exists');
     }
 
+    // Update user role to 2 (admin) when creating family
+    await this.userModel.update(
+      { role: 2 },
+      { where: { id: createdBy } }
+    );
+
     // Create family
     const created = await this.familyModel.create({
       ...dto,

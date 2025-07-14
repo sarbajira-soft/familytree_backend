@@ -128,7 +128,7 @@ export class UserController {
     const targetUserId = Number(id);
   
     // Always allow admin
-    if (loggedInUser.role === 2) {
+    if (loggedInUser.role === 2 || loggedInUser.role === 3 ) {
       const userdata = await this.userService.getUserProfile(id);
       return {
         message: 'Profile fetched successfully',

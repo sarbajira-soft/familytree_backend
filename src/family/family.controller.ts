@@ -202,6 +202,8 @@ export class FamilyController {
           person[field] = body[key] !== undefined ? body[key] : null;
         }
       }
+      // Add relationshipCode from payload
+      person.relationshipCode = body[`${prefix}relationshipCode`] || '';
       // Optionally, split comma-separated fields into arrays
       ['parents', 'children', 'spouses', 'siblings'].forEach(rel => {
         if (typeof person[rel] === 'string' && person[rel]) {

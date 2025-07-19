@@ -16,6 +16,49 @@ export class Relationship extends Model {
   })
   description: string;
 
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  description_en: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  description_ta: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  description_hi: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  description_ma: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  description_ka: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  description_te: string;
+
+  @Column({
+    type: DataType.BOOLEAN,
+    allowNull: true,
+    defaultValue: false,
+  })
+  is_auto_generated: boolean;
+
   @HasMany(() => RelationshipTranslation)
   translations: RelationshipTranslation[];
 }

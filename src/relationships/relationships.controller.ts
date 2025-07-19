@@ -8,7 +8,7 @@ import {
   Body,
   Query,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiParam } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBody } from '@nestjs/swagger';
 import { RelationshipsService } from './relationships.service';
 import { Relationship } from './entities/relationship.model';
 import { CreateRelationshipDto } from './dto/create-relationship.dto';
@@ -88,6 +88,34 @@ export class RelationshipsController {
     @Body() updateDto: UpdateRelationshipDto,
   ) {
     return this.relationshipsService.updateRelationship(id, updateDto);
+  }
+
+  @Put('edit/:code')
+  @ApiOperation({ summary: 'Edit a relationship label and mark as curated' })
+  @ApiBody({
+    schema: {
+      type: 'object',
+      properties: {
+        description: { type: 'string', example: 'Universal relationship label (optional)' },
+        labels: {
+          type: 'object',
+          properties: {
+            description_en: { type: 'string', example: 'New English Label' },
+            description_ta: { type: 'string', example: 'புதிய தமிழ் பெயர்' },
+            description_hi: { type: 'string', example: 'नया हिंदी नाम' },
+            description_ma: { type: 'string', example: 'പുതിയ മലയാളം പേര്' },
+            description_ka: { type: 'string', example: 'ಹೊಸ ಕನ್ನಡ ಹೆಸರು' },
+            description_te: { type: 'string', example: 'కొత్త తెలుగు పేరు' }
+          }
+        }
+      }
+    }
+  })
+  async updateRelationshipLabel(
+    @Param('code') code: string,
+    @Body() body: { description: string, labels?: any }
+  ) {
+    return this.relationshipsService.updateRelationshipLabel(code, body.description, body.labels);
   }
 
   @Delete(':id')

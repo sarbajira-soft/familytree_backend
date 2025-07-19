@@ -58,6 +58,33 @@ export class RelationshipsService {
     return this.relationshipModel.update(updateDto as any, { where: { id } });
   }
 
+  async updateRelationshipLabel(code: string, newDescription: string, newLabels: any) {
+    const relationship = await this.relationshipModel.findOne({ where: { key: code } });
+    if (!relationship) throw new Error('Relationship code not found');
+
+    let changed = false;
+
+    if (newDescription !== undefined && newDescription !== null && relationship.description !== newDescription) {
+      relationship.description = newDescription;
+      changed = true;
+    }
+    if (newLabels) {
+      for (const [key, value] of Object.entries(newLabels)) {
+        if (relationship[key] !== value) {
+          relationship[key] = value;
+          changed = true;
+        }
+      }
+    }
+
+    // Do NOT touch is_auto_generated at all!
+    if (changed) {
+      await relationship.save();
+    }
+
+    return relationship;
+  }
+
   async deleteRelationship(id: number): Promise<void> {
     await this.relationshipModel.destroy({ where: { id } });
   }

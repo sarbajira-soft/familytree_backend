@@ -45,6 +45,13 @@ async function bootstrap() {
   // });
   // console.log('Database synchronization successful.');
 
+  const sequelize = app.get(Sequelize);
+  await sequelize.sync({
+    force: false,
+    alter: true
+  });
+  console.log('Database synchronization successful.');
+
   // Swagger
   setupSwagger(app);
 

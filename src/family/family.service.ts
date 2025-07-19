@@ -16,6 +16,8 @@ import { CreateFamilyDto } from './dto/create-family.dto';
 import { CreateFamilyTreeDto, FamilyTreeMemberDto } from './dto/family-tree.dto';
 import { NotificationService } from '../notification/notification.service';
 import { saveBase64Image } from '../utils/upload.utils';
+import { Relationship } from '../relationships/entities/relationship.model';
+import { Sequelize } from 'sequelize-typescript';
 
 @Injectable()
 export class FamilyService {
@@ -203,7 +205,6 @@ export class FamilyService {
     for (const member of members) {
       let userId = member.memberId; // Use memberId as userId
 
-
       // If user doesn't exist (no memberId), create new user and profile
       if (!userId) {
         // Generate a temporary email
@@ -211,12 +212,18 @@ export class FamilyService {
         // Generate a temporary mobile number
         const tempMobile = `99999${Math.floor(100000 + Math.random() * 899999)}`;
         // Create new user
-        const newUser = await this.userModel.create({
-          email: tempEmail,
-          mobile: tempMobile,
-          status: 1, // Active
-          role: 1, // Member
-        });
+        let newUser;
+        try {
+          newUser = await this.userModel.create({
+            email: tempEmail,
+            mobile: tempMobile,
+            status: 1, // Active
+            role: 1, // Member
+          });
+        } catch (err) {
+          console.error('Error creating User:', err, { email: tempEmail, mobile: tempMobile });
+          throw err;
+        }
 
         // Handle profile image if provided
         let profileImage = null;
@@ -229,51 +236,96 @@ export class FamilyService {
         }
 
         // Create user profile
-        await this.userProfileModel.create({
-          userId: newUser.id,
-          firstName: member.name,
-          gender: member.gender,
-          age: typeof member.age === 'string' ? parseInt(member.age) : member.age,
-          profile: profileImage, // Use extracted filename
-          familyCode: familyCode,
-        });
+        try {
+          await this.userProfileModel.create({
+            userId: newUser.id,
+            firstName: member.name,
+            gender: member.gender,
+            age: typeof member.age === 'string' ? parseInt(member.age) : member.age,
+            profile: profileImage, // Use extracted filename
+            familyCode: familyCode,
+          });
+        } catch (err) {
+          console.error('Error creating UserProfile:', err, { userId: newUser.id, firstName: member.name, gender: member.gender, age: member.age, profile: profileImage, familyCode });
+          throw err;
+        }
 
         // Add new user to family member table as approved member
-        await this.familyMemberModel.create({
-          memberId: newUser.id,
-          familyCode: familyCode,
-          creatorId: null,
-          approveStatus: 'approved'
-        });
+        try {
+          await this.familyMemberModel.create({
+            memberId: newUser.id,
+            familyCode: familyCode,
+            creatorId: null,
+            approveStatus: 'approved'
+          });
+        } catch (err) {
+          console.error('Error creating FamilyMember:', err, { memberId: newUser.id, familyCode });
+          throw err;
+        }
 
         userId = newUser.id;
       }
 
       //Create family tree entry
-      const familyTreeEntry = await this.familyTreeModel.create({
-        familyCode,
-        userId,
-        personId: member.id, // Store the position ID (person_X_id)
-        generation: member.generation,
-        parents: member.parents,
-        children: member.children,
-        spouses: member.spouses,
-        siblings: member.siblings,
-      });
-
-      createdMembers.push({
-        id: familyTreeEntry.id,
-        userId,
-        personId: member.id, // Include position ID in response
-        name: member.name,
-        generation: member.generation,
-        parents: member.parents,
-        children: member.children,
-        spouses: member.spouses,
-        siblings: member.siblings,
-      });
+      try {
+        const familyTreeEntry = await this.familyTreeModel.create({
+          familyCode,
+          userId,
+          personId: member.id, // Store the position ID (person_X_id)
+          generation: member.generation,
+          parents: Array.isArray(member.parents) ? member.parents : Array.from(member.parents || []).map(Number),
+          children: Array.isArray(member.children) ? member.children : Array.from(member.children || []).map(Number),
+          spouses: Array.isArray(member.spouses) ? member.spouses : Array.from(member.spouses || []).map(Number),
+          siblings: Array.isArray(member.siblings) ? member.siblings : Array.from(member.siblings || []).map(Number),
+        });
+        createdMembers.push({
+          id: familyTreeEntry.id,
+          userId,
+          personId: member.id, // Include position ID in response
+          name: member.name,
+          generation: member.generation,
+          parents: familyTreeEntry.parents,
+          children: familyTreeEntry.children,
+          spouses: familyTreeEntry.spouses,
+          siblings: familyTreeEntry.siblings,
+        });
+      } catch (err) {
+        console.error('Error creating FamilyTree entry:', err, {
+          familyCode,
+          userId,
+          personId: member.id,
+          generation: member.generation,
+          parents: member.parents,
+          children: member.children,
+          spouses: member.spouses,
+          siblings: member.siblings,
+        });
+        throw err;
+      }
       console.log(member);
-      
+    }
+
+    // After creating all family tree entries, batch check and insert missing relationship codes
+    const allCodes = new Set<string>();
+    for (const member of members) {
+      if (member.relationshipCode) {
+        allCodes.add(member.relationshipCode);
+      }
+    }
+    const codesArray = Array.from(allCodes);
+    if (codesArray.length > 0) {
+      const existing = await Relationship.findAll({ where: { key: codesArray } });
+      const existingKeys = new Set(existing.map(r => r.key));
+      const missingCodes = codesArray.filter(code => !existingKeys.has(code));
+      if (missingCodes.length > 0) {
+        await Relationship.bulkCreate(
+          missingCodes.map(code => ({
+            key: code,
+            description: code,
+            is_auto_generated: true,
+          }))
+        );
+      }
     }
 
     return {
@@ -341,6 +393,17 @@ export class FamilyService {
     };
   }
 
+  async ensureRelationshipCodeExists(universalCode: string) {
+    // Check if the code exists
+    const exists = await Relationship.findOne({ where: { key: universalCode } });
+    if (!exists) {
+      await Relationship.create({
+        key: universalCode,
+        description: universalCode,
+        is_auto_generated: true,
+      });
+    }
+  }
 
 
 }

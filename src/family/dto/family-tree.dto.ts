@@ -46,6 +46,10 @@ export class FamilyTreeMemberDto {
   @IsOptional()
   @IsNumber()
   memberId?: number; // For existing users
+
+  @IsOptional()
+  @IsString()
+  relationshipCode?: string;
 }
 
 export class CreateFamilyTreeDto {

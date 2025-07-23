@@ -84,7 +84,23 @@ export class RelationshipCustomLabelsService {
     return relationshipKey;
   }
 
-  async upsertCustomLabel({ relationshipKey, language, custom_label, creatorId, familyCode, scope }: { relationshipKey: string, language: string, custom_label: string, creatorId: number, familyCode?: string, scope: string }) {
+  async upsertCustomLabel({
+    relationshipKey,
+    language,
+    custom_label,
+    creatorId,
+    familyCode,
+    scope,
+    gender
+  }: {
+    relationshipKey: string,
+    language: string,
+    custom_label: string,
+    creatorId: number,
+    familyCode?: string,
+    scope: string,
+    gender?: string
+  }) {
     language = this.mapLanguage(language);
     // Find relationshipId by key
     const relationship = await this.relationshipModel.findOne({ where: { key: relationshipKey } });
@@ -110,7 +126,10 @@ export class RelationshipCustomLabelsService {
     }
 
     // Also update the main relationship label and set is_auto_generated to false
-    const labelField = `description_${language}`;
+    let labelField = `description_${language}_f`; // default to female
+    if (gender?.toLowerCase() === 'male') {
+      labelField = `description_${language}_m`;
+    }
     await this.relationshipsService.updateRelationshipLabel(
       relationshipKey,
       undefined, // don't update main description
@@ -121,7 +140,7 @@ export class RelationshipCustomLabelsService {
     return label;
   }
 
-  async getAllLabels({ language, creatorId, familyCode }: { language: string, creatorId?: string, familyCode?: string }) {
+  async getAllLabels({ language, creatorId, familyCode, gender }: { language: string, creatorId?: string, familyCode?: string, gender?: string }) {
     language = this.mapLanguage(language);
     // 1. Get all relationships
     const relationships = await this.relationshipModel.findAll();
@@ -135,17 +154,26 @@ export class RelationshipCustomLabelsService {
     }
     const where: any = { language, creatorId };
     if (familyId) where.familyId = familyId;
+    // gender is available here if you want to use it in the future
     const customLabels = await this.customLabelModel.findAll({ where });
     // 4. Build a map: { code: label }
     const labelMap: Record<string, string> = {};
     for (const rel of relationships) {
-      // Priority: custom label > translation > description (language-specific) > description (default) > key
+      // Priority: custom label > translation > gender-specific description > default description > key
       const custom = customLabels.find(c => c.relationshipId === rel.id);
       const translation = translations.find(t => t.relationshipId === rel.id);
+
+      // Determine gender suffix. Default to '_f' because 'description_ta' was renamed to 'description_ta_f'.
+      let genderSuffix = '_f';
+      if (gender?.toLowerCase() === 'male') {
+        genderSuffix = '_m';
+      }
+
       labelMap[rel.key] =
         custom?.custom_label ||
         translation?.label ||
-        rel[`description_${language}`] ||
+        rel[`description_${language}${genderSuffix}`] || // Tries description_ta_m or description_ta_f
+        rel[`description_${language}_f`] || // Fallback to female if the male one doesn't exist
         rel.description ||
         rel.key;
     }

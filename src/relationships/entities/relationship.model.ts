@@ -20,37 +20,74 @@ export class Relationship extends Model {
     type: DataType.STRING,
     allowNull: true,
   })
-  description_en: string;
+  description_en_f: string;
 
   @Column({
     type: DataType.STRING,
     allowNull: true,
   })
-  description_ta: string;
+  description_en_m: string;
+
 
   @Column({
     type: DataType.STRING,
     allowNull: true,
   })
-  description_hi: string;
+  description_ta_f: string;
 
   @Column({
     type: DataType.STRING,
     allowNull: true,
   })
-  description_ma: string;
+  description_ta_m:string;
 
   @Column({
     type: DataType.STRING,
     allowNull: true,
   })
-  description_ka: string;
+  description_hi_f: string;
 
   @Column({
     type: DataType.STRING,
     allowNull: true,
   })
-  description_te: string;
+  description_hi_m: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  description_ma_f: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  description_ma_m: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  description_ka_f: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  description_ka_m: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  description_te_f: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  description_te_m: string;
 
   @Column({
     type: DataType.BOOLEAN,

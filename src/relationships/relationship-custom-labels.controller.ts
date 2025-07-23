@@ -28,6 +28,12 @@ class UpsertCustomLabelDto {
   @ApiProperty()
   @IsString()
   scope: string;
+
+   // ADD THESE LINES BELOW
+   @ApiProperty({ required: false })
+   @IsOptional()
+   @IsString()
+   gender?: string;
 }
 
 @ApiTags('Custom Labels')
@@ -59,15 +65,16 @@ export class RelationshipCustomLabelsController {
     @Query('language') language: string,
     @Query('creatorId') creatorId?: string,
     @Query('familyCode') familyCode?: string,
+    @Query('gender') gender?: string,
   ) {
-    return this.service.getAllLabels({ language, creatorId, familyCode });
+    return this.service.getAllLabels({ language, creatorId, familyCode, gender });
   }
 
   @Post()
   @ApiOperation({ summary: 'Create or update a custom label' })
   @ApiResponse({ status: 201, description: 'Custom label upserted' })
   @ApiBody({ type: UpsertCustomLabelDto })
-  async upsertCustomLabel(@Body() body: UpsertCustomLabelDto) {
+  async upsertCustomLabel(@Body() body: any) {
     if (!body || !body.relationshipKey || !body.language || !body.custom_label || !body.creatorId || !body.scope) {
       throw new BadRequestException('Missing required fields in request body');
     }

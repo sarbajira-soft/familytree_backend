@@ -175,6 +175,7 @@ export class UserService {
         lastName: userProfile.lastName,
         role: user.role,
         status: user.status,
+        gender: userProfile.gender,
       },
     };
   }
@@ -240,6 +241,7 @@ export class UserService {
         mobile: user.mobile,
         role: user.role,
         status: user.status,
+        gender: userProfile.gender,
       },
     };
   }

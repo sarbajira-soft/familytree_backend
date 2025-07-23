@@ -6,7 +6,9 @@ import {
   PrimaryKey,
   AutoIncrement,
   CreatedAt,
+  HasMany,
 } from 'sequelize-typescript';
+import { NotificationRecipient } from './notification-recipients.model';
 
 @Table({ tableName: 'ft_notifications' })
 export class Notification extends Model<Notification> {
@@ -35,6 +37,9 @@ export class Notification extends Model<Notification> {
 
   @Column(DataType.INTEGER)
   referenceId: number;
+
+  @HasMany(() => NotificationRecipient, 'notificationId')
+  recipients: NotificationRecipient[];
 
   @CreatedAt
   @Column(DataType.DATE)

@@ -63,6 +63,12 @@ export class FamilyService {
       approveStatus: "approved"
     });
 
+    // Update user's UserProfile with familyCode
+    await this.userProfileModel.update(
+      { familyCode: created.familyCode },
+      { where: { userId: createdBy } }
+    );
+
     return {
       message: 'Family created successfully',
       data: created,

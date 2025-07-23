@@ -568,5 +568,96 @@ export class FamilyMemberService {
     };
   }
 
+  async suggestFamilyByProfile(userId: number) {
+    // 1. Get user profile
+    const profile = await this.userProfileModel.findOne({ where: { userId } });
+    if (!profile) throw new NotFoundException('User profile not found');
+
+    // 2. Collect all names to search
+    const names: string[] = [];
+    if (profile.fatherName) names.push(profile.fatherName);
+    if (profile.motherName) names.push(profile.motherName);
+    if (profile.spouseName) names.push(profile.spouseName);
+    if (profile.childrenNames) {
+      try {
+        const children = Array.isArray(profile.childrenNames)
+          ? profile.childrenNames
+          : JSON.parse(profile.childrenNames);
+        if (Array.isArray(children)) names.push(...children);
+      } catch {
+        names.push(profile.childrenNames);
+      }
+    }
+
+    // Remove falsy and duplicate names
+    const uniqueNames = Array.from(new Set(names.filter(Boolean)));
+    if (uniqueNames.length === 0) return { message: 'No names to search', data: [] };
+
+    // 3. For each name, find all userProfiles with partial match (case-insensitive)
+    const Op = require('sequelize').Op;
+    const allMatches = await this.userProfileModel.findAll({
+      where: {
+        [Op.or]: uniqueNames.map(name => ({ firstName: { [Op.iLike]: `%${name}%` } })),
+      },
+      attributes: ['userId', 'firstName', 'familyCode'],
+    });
+
+    // 4. Build a map: familyCode -> Set of matched profile names
+    const familyMatchMap: Record<string, Set<string>> = {};
+    for (const match of allMatches) {
+      const famCode = match.familyCode;
+      if (!famCode) continue;
+      // Find which profile name(s) this match corresponds to
+      for (const name of uniqueNames) {
+        if (
+          typeof match.firstName === 'string' &&
+          match.firstName.toLowerCase().includes(name.toLowerCase())
+        ) {
+          if (!familyMatchMap[famCode]) familyMatchMap[famCode] = new Set();
+          familyMatchMap[famCode].add(name);
+        }
+      }
+    }
+
+    // 5. Filter to only valid families (status=1)
+    const familyCodes = Object.keys(familyMatchMap);
+    if (familyCodes.length === 0) return { message: 'No matching families found', data: [] };
+    const validFamilies = await this.familyModel.findAll({
+      where: { familyCode: familyCodes, status: 1 },
+      attributes: ['familyCode'],
+    });
+    const validFamilyCodes = validFamilies.map(f => f.familyCode);
+
+    // 6. Prepare families with match count
+    const familiesWithMatchCount = validFamilyCodes.map(code => ({
+      familyCode: code,
+      matchCount: familyMatchMap[code]?.size || 0,
+      matchedNames: Array.from(familyMatchMap[code] || []),
+    }));
+
+    // 7. Sort: first families matching all names, then by matchCount desc
+    familiesWithMatchCount.sort((a, b) => {
+      if (b.matchCount === uniqueNames.length && a.matchCount !== uniqueNames.length) return 1;
+      if (a.matchCount === uniqueNames.length && b.matchCount !== uniqueNames.length) return -1;
+      return b.matchCount - a.matchCount;
+    });
+
+    // 8. For each family, get all members and familyName
+    const families = [];
+    for (const fam of familiesWithMatchCount) {
+      const members = await this.getAllFamilyMembers(fam.familyCode);
+      // Fetch familyName
+      const familyObj = await this.familyModel.findOne({ where: { familyCode: fam.familyCode }, attributes: ['familyName'] });
+      families.push({
+        familyCode: fam.familyCode,
+        familyName: familyObj?.familyName || null,
+        matchCount: fam.matchCount,
+        matchedNames: fam.matchedNames,
+        members: members.data,
+      });
+    }
+
+    return { message: 'Matching families found', data: families };
+  }
   
 }

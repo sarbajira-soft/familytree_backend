@@ -20,6 +20,7 @@ import { NotificationService } from '../notification/notification.service';
 import { Religion } from '../religion/model/religion.model';
 import { Language } from '../language/model/language.model';
 import { Gothram } from '../gothram/model/gothram.model';
+import { Notification } from '../notification/model/notification.model';
 
 @Injectable()
 export class UserService {
@@ -40,6 +41,8 @@ export class UserService {
     private languageModel: typeof Language,
     @InjectModel(Gothram)
     private gothramModel: typeof Gothram,
+    @InjectModel(Notification)
+    private notificationModel: typeof Notification,
     private mailService: MailService,
 
     private readonly notificationService: NotificationService,
@@ -579,4 +582,41 @@ export class UserService {
     return { message: 'User deleted successfully' };
   }
 
+  async mergeUserData(existingUserId: number, currentUserId: number, notificationId?: number) {
+    // 1. Fetch users and profiles
+    const existingUser = await this.userModel.findByPk(existingUserId);
+    const currentUser = await this.userModel.findByPk(currentUserId);
+    const existingProfile = await this.userProfileModel.findOne({ where: { userId: existingUserId } });
+    const currentProfile = await this.userProfileModel.findOne({ where: { userId: currentUserId } });
+
+    if (!existingUser || !currentUser || !existingProfile || !currentProfile) {
+      throw new BadRequestException('User or profile not found');
+    }
+
+    // 2. Overwrite all fields except id/userId and familyCode
+    Object.assign(existingUser, currentUser.toJSON(), { id: existingUser.id });
+    Object.assign(
+      existingProfile,
+      currentProfile.toJSON(),
+      { id: existingProfile.id, userId: existingUserId, familyCode: existingProfile.familyCode }
+    );
+
+    // 3. Delete current user and profile
+    await currentProfile.destroy();
+    await currentUser.destroy();
+
+    // 4. Save the updated existing user and profile
+    await existingUser.save();
+    await existingProfile.save();
+
+    // 5. Update notification type if notificationId is provided
+    if (notificationId) {
+      await this.notificationModel.update(
+        { type: 'FAMILY_MEMBER_JOINED' },
+        { where: { id: notificationId } }
+      );
+    }
+
+    return { message: 'User data swapped, current user deleted, and notification updated', userId: existingUserId };
+  }
 }

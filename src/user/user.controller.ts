@@ -32,6 +32,7 @@ import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ApiConsumes, ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiBody, ApiSecurity } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { generateFileName, imageFileFilter } from '../utils/upload.utils';
+import { MergeUserDto } from './dto/merge-user.dto';
 
 
 @ApiTags('User Module')
@@ -95,6 +96,20 @@ export class UserController {
   @ApiBody({ type: ResetPasswordDto })
   async resetPassword(@Body() resetPasswordDto: ResetPasswordDto) {
     return this.userService.resetPassword(resetPasswordDto);
+  }
+
+  @Post('merge')
+  @ApiOperation({ summary: 'Merge current user data into existing user and delete current user' })
+  @ApiBody({ type: MergeUserDto })
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  async mergeUserData(@Req() req, @Body() body: MergeUserDto) {
+    const { existingId, currentId, notificationId } = body;
+    const loggedInUser = req.user;
+    if (!loggedInUser || (loggedInUser.role !== 2 && loggedInUser.role !== 3)) {
+      throw new ForbiddenException('Only admin users can perform this action');
+    }
+    return this.userService.mergeUserData(existingId, currentId, notificationId);
   }
 
   @UseGuards(JwtAuthGuard)

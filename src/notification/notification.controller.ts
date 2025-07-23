@@ -62,4 +62,18 @@ export class NotificationController {
     return this.notificationService.markAllAsRead(req.user.userId);
   }
 
+  @Get(':familyCode/admins')
+  @ApiOperation({ summary: 'Get admin user IDs for a family' })
+  async getAdminsForFamily(@Param('familyCode') familyCode: string) {
+    const adminUserIds = await this.notificationService.getAdminsForFamily(familyCode);
+    return { message: 'Admin user IDs fetched successfully', data: adminUserIds };
+  }
+
+  @Get(':familyCode/join-requests')
+  @ApiOperation({ summary: 'Get FAMILY_JOIN_REQUEST notifications for a family by familyCode' })
+  async getFamilyJoinRequestNotifications(@Param('familyCode') familyCode: string) {
+    const data = await this.notificationService.getFamilyJoinRequestNotifications(familyCode);
+    return { message: 'FAMILY_JOIN_REQUEST notifications fetched successfully', data };
+  }
+
 }

@@ -237,4 +237,13 @@ export class NotificationService {
     return { message: 'All notifications marked as read' };
   }
 
+  async getFamilyJoinRequestNotifications(familyCode: string) {
+    return this.notificationModel.findAll({
+      where: {
+        familyCode,
+        type: 'FAMILY_JOIN_REQUEST',
+      },
+      order: [['createdAt', 'DESC']],
+    });
+  }
 }

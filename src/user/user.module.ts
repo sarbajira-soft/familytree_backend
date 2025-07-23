@@ -14,6 +14,7 @@ import { Gothram } from '../gothram/model/gothram.model';
 import { MailService } from '../utils/mail.service';
 
 import { NotificationModule } from '../notification/notification.module';
+import { Notification } from '../notification/model/notification.model';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { NotificationModule } from '../notification/notification.module';
       Religion,
       Language,
       Gothram,
+      Notification,
     ]),
     NotificationModule,
   ],

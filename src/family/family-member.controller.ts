@@ -140,6 +140,12 @@ export class FamilyMemberController {
     return this.familyMemberService.getMemberById(memberId);
   }
 
+  @Get('suggest-family/:userId')
+  @ApiOperation({ summary: 'Suggest existing families based on profile details' })
+  async suggestFamily(@Param('userId') userId: number) {
+    return this.familyMemberService.suggestFamilyByProfile(userId);
+  }
+
   @Get(':familyCode/stats')
   async getStats(@Param('familyCode') familyCode: string) {
     const stats = await this.familyMemberService.getFamilyStatsByCode(familyCode);

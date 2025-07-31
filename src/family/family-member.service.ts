@@ -591,9 +591,9 @@ export class FamilyMemberService {
 
     // Remove falsy and duplicate names
     const uniqueNames = Array.from(new Set(names.filter(Boolean)));
-    if (uniqueNames.length === 0) return { message: 'No names to search', data: [] };
+    if (uniqueNames.length < 1) return { message: 'At least 1 name required to suggest families', data: [] };
 
-    // 3. For each name, find all userProfiles with partial match (case-insensitive)
+    // 3. Search for all families that have any matching names
     const Op = require('sequelize').Op;
     const allMatches = await this.userProfileModel.findAll({
       where: {
@@ -602,62 +602,117 @@ export class FamilyMemberService {
       attributes: ['userId', 'firstName', 'familyCode'],
     });
 
-    // 4. Build a map: familyCode -> Set of matched profile names
-    const familyMatchMap: Record<string, Set<string>> = {};
+    // 4. Build family match map with scores
+    const familyMatchMap: Record<string, { names: Set<string>, scores: Map<string, number> }> = {};
+    
     for (const match of allMatches) {
       const famCode = match.familyCode;
       if (!famCode) continue;
-      // Find which profile name(s) this match corresponds to
+      
       for (const name of uniqueNames) {
-        if (
-          typeof match.firstName === 'string' &&
-          match.firstName.toLowerCase().includes(name.toLowerCase())
+        const matchFirstName = match.firstName?.toLowerCase() || '';
+        const searchName = name.toLowerCase();
+        
+        let matchScore = 0;
+        let isMatch = false;
+        
+        // Calculate match score based on quality
+        if (matchFirstName === searchName) {
+          matchScore = 100; // Exact match - highest score
+          isMatch = true;
+        } else if (matchFirstName.startsWith(searchName + ' ') || matchFirstName.endsWith(' ' + searchName)) {
+          matchScore = 80; // Starts/ends with search name + space
+          isMatch = true;
+        } else if (matchFirstName.includes(' ' + searchName + ' ')) {
+          matchScore = 70; // Contains space + search name + space
+          isMatch = true;
+        } else if (matchFirstName.startsWith(searchName) && matchFirstName.length <= searchName.length + 3) {
+          matchScore = 60; // Starts with and close length
+          isMatch = true;
+        } else if (matchFirstName.endsWith(searchName) && matchFirstName.length <= searchName.length + 3) {
+          matchScore = 50; // Ends with and close length
+          isMatch = true;
+        } else if (
+          (matchFirstName.includes(searchName) || searchName.includes(matchFirstName)) &&
+          Math.abs(matchFirstName.length - searchName.length) <= 5
         ) {
-          if (!familyMatchMap[famCode]) familyMatchMap[famCode] = new Set();
-          familyMatchMap[famCode].add(name);
+          matchScore = 30; // Contains (either direction) but with reasonable length difference
+          isMatch = true;
+        }
+        
+        if (isMatch) {
+          if (!familyMatchMap[famCode]) {
+            familyMatchMap[famCode] = { names: new Set(), scores: new Map() };
+          }
+          familyMatchMap[famCode].names.add(name);
+          familyMatchMap[famCode].scores.set(name, matchScore);
         }
       }
     }
 
-    // 5. Filter to only valid families (status=1)
-    const familyCodes = Object.keys(familyMatchMap);
-    if (familyCodes.length === 0) return { message: 'No matching families found', data: [] };
+    // 5. Get valid families and calculate scores
+    const familyCodes = Object.keys(familyMatchMap).filter(
+      code => familyMatchMap[code].names.size >= 1
+    );
+
+    if (familyCodes.length === 0) {
+      return { message: 'No matching families found', data: [] };
+    }
+
     const validFamilies = await this.familyModel.findAll({
       where: { familyCode: familyCodes, status: 1 },
-      attributes: ['familyCode'],
-    });
-    const validFamilyCodes = validFamilies.map(f => f.familyCode);
-
-    // 6. Prepare families with match count
-    const familiesWithMatchCount = validFamilyCodes.map(code => ({
-      familyCode: code,
-      matchCount: familyMatchMap[code]?.size || 0,
-      matchedNames: Array.from(familyMatchMap[code] || []),
-    }));
-
-    // 7. Sort: first families matching all names, then by matchCount desc
-    familiesWithMatchCount.sort((a, b) => {
-      if (b.matchCount === uniqueNames.length && a.matchCount !== uniqueNames.length) return 1;
-      if (a.matchCount === uniqueNames.length && b.matchCount !== uniqueNames.length) return -1;
-      return b.matchCount - a.matchCount;
+      attributes: ['familyCode', 'familyName'],
     });
 
-    // 8. For each family, get all members and familyName
-    const families = [];
-    for (const fam of familiesWithMatchCount) {
-      const members = await this.getAllFamilyMembers(fam.familyCode);
-      // Fetch familyName
-      const familyObj = await this.familyModel.findOne({ where: { familyCode: fam.familyCode }, attributes: ['familyName'] });
-      families.push({
+    const foundFamilies = [];
+    for (const fam of validFamilies) {
+      const familyMatch = familyMatchMap[fam.familyCode];
+      const totalScore = Array.from(familyMatch.scores.values()).reduce((sum, score) => sum + score, 0);
+      
+      foundFamilies.push({
         familyCode: fam.familyCode,
-        familyName: familyObj?.familyName || null,
-        matchCount: fam.matchCount,
-        matchedNames: fam.matchedNames,
+        familyName: fam.familyName || null,
+        matchCount: familyMatch.names.size,
+        matchedNames: Array.from(familyMatch.names),
+        totalScore: totalScore,
+      });
+    }
+
+    // 6. Get all members for each family
+    const families = [];
+    for (const fam of foundFamilies) {
+      const members = await this.getAllFamilyMembers(fam.familyCode);
+      families.push({
+        ...fam,
         members: members.data,
       });
     }
 
-    return { message: 'Matching families found', data: families };
+    // 7. Sort by total score (best matches first), then by match count, then by family name
+    families.sort((a, b) => {
+      // First sort by total score (highest first)
+      if (b.totalScore !== a.totalScore) {
+        return b.totalScore - a.totalScore;
+      }
+      // Then by match count (highest first)
+      if (b.matchCount !== a.matchCount) {
+        return b.matchCount - a.matchCount;
+      }
+      // Finally by family name
+      return (a.familyName || '').localeCompare(b.familyName || '');
+    });
+
+    // Debug log to help verify results
+    console.log('User search names:', uniqueNames);
+    console.log('Found families:', families.map(f => ({
+      familyCode: f.familyCode,
+      familyName: f.familyName,
+      matchCount: f.matchCount,
+      totalScore: f.totalScore,
+      matchedNames: f.matchedNames
+    })));
+
+    return { message: `Matching families found`, data: families };
   }
   
 }

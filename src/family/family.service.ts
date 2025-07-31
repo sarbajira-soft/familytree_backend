@@ -194,6 +194,7 @@ export class FamilyService {
     });
   }
 
+  // ✅ FIXED METHOD: createFamilyTree with sync logic
   async createFamilyTree(dto: CreateFamilyTreeDto) {
     const { familyCode, members } = dto;
 
@@ -205,6 +206,41 @@ export class FamilyService {
 
     // Remove existing family tree data for this family
     await this.familyTreeModel.destroy({ where: { familyCode } });
+
+    // ✅ SYNC FIX: Sync family_member table with tree data
+    // Get all member IDs that should remain (existing members in the tree)
+    const memberIdsInTree = members
+      .filter(member => member.memberId && member.memberId !== null)
+      .map(member => Number(member.memberId));
+
+    console.log('✅ Members in tree:', memberIdsInTree);
+
+    // Remove family members who are not in the new tree
+    if (memberIdsInTree.length > 0) {
+      const deletedMembers = await this.familyMemberModel.destroy({
+        where: {
+          familyCode,
+          memberId: { [Op.notIn]: memberIdsInTree }
+        }
+      });
+      console.log(`✅ Removed ${deletedMembers} members from family_member table who are not in tree`);
+    } else {
+      // If no existing members in tree, remove all members except creator
+      const familyCreator = await this.familyModel.findOne({ 
+        where: { familyCode },
+        attributes: ['createdBy']
+      });
+      
+      if (familyCreator) {
+        const deletedMembers = await this.familyMemberModel.destroy({
+          where: {
+            familyCode,
+            memberId: { [Op.ne]: familyCreator.createdBy }
+          }
+        });
+        console.log(`✅ Removed ${deletedMembers} members from family_member table (keeping only creator)`);
+      }
+    }
 
     const createdMembers = [];
 
@@ -256,7 +292,7 @@ export class FamilyService {
           throw err;
         }
 
-        // Add new user to family member table as approved member
+        // ✅ SYNC FIX: Add new user to family member table as approved member
         try {
           await this.familyMemberModel.create({
             memberId: newUser.id,
@@ -264,6 +300,7 @@ export class FamilyService {
             creatorId: null,
             approveStatus: 'approved'
           });
+          console.log(`✅ Added new user ${newUser.id} to family_member table`);
         } catch (err) {
           console.error('Error creating FamilyMember:', err, { memberId: newUser.id, familyCode });
           throw err;
@@ -334,6 +371,8 @@ export class FamilyService {
       }
     }
 
+    console.log(`✅ Family tree sync completed successfully! Tree entries: ${createdMembers.length}`);
+
     return {
       message: 'Family tree created successfully',
       data: createdMembers,
@@ -341,6 +380,13 @@ export class FamilyService {
   }
 
   async getFamilyTree(familyCode: string) {
+    // First check if family exists
+    const family = await this.familyModel.findOne({ where: { familyCode } });
+    if (!family) {
+      throw new NotFoundException('Family not found');
+    }
+
+    // Check if family tree exists
     const familyTree = await this.familyTreeModel.findAll({
       where: { familyCode },
       include: [
@@ -357,11 +403,70 @@ export class FamilyService {
       ],
     });
 
+    // If family tree doesn't exist, get family members instead
     if (!familyTree.length) {
-      throw new NotFoundException('Family tree not found');
+      const familyMembers = await this.familyMemberModel.findAll({
+        where: { 
+          familyCode,
+          approveStatus: 'approved'
+        },
+        include: [
+          {
+            model: this.userModel,
+            as: 'user',
+            include: [
+              {
+                model: this.userProfileModel,
+                as: 'userProfile',
+              },
+            ],
+          },
+        ],
+      });
+
+      if (!familyMembers.length) {
+        throw new NotFoundException('No approved family members found');
+      }
+
+      // Transform family members to tree format
+      const baseUrl = process.env.BASE_URL || '';
+      const profilePhotoPath = process.env.PROFILE_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
+
+      const people = familyMembers.map((member: any, index) => {
+        const userProfile = member.user?.userProfile;
+        
+        // Build full image URL if profile image exists
+        let img = null;
+        if (userProfile?.profile) {
+          if (userProfile.profile.startsWith('http')) {
+            img = userProfile.profile; // Already a full URL
+          } else {
+            img = `${baseUrl}/${profilePhotoPath}/${userProfile.profile}`;
+          }
+        }
+
+        return {
+          id: index + 1, // Use index as id since no personId
+          memberId: member.memberId,
+          name: userProfile ? `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim() : 'Unknown',
+          gender: userProfile?.gender || 'unknown',
+          age: userProfile?.age || null,
+          generation: 1, // Default generation
+          parents: [],
+          children: [],
+          spouses: [],
+          siblings: [],
+          img: img
+        };
+      });
+
+      return {
+        message: 'Family members retrieved successfully (family tree not created yet)',
+        people: people
+      };
     }
 
-    // Transform data to the required format
+    // Transform family tree data to the required format
     const baseUrl = process.env.BASE_URL || '';
     const profilePhotoPath = process.env.PROFILE_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
 
@@ -410,6 +515,4 @@ export class FamilyService {
       });
     }
   }
-
-
 }

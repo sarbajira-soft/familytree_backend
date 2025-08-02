@@ -18,6 +18,7 @@ import { NotificationService } from '../notification/notification.service';
 import { saveBase64Image } from '../utils/upload.utils';
 import { Relationship } from '../relationships/entities/relationship.model';
 import { Sequelize } from 'sequelize-typescript';
+import { RelationshipEdgeService } from './relationship-edge.service';
 
 @Injectable()
 export class FamilyService {
@@ -33,8 +34,8 @@ export class FamilyService {
     @InjectModel(FamilyTree)
     private familyTreeModel: typeof FamilyTree,
     private mailService: MailService,
-
     private readonly notificationService: NotificationService,
+    private readonly relationshipEdgeService: RelationshipEdgeService,
   ) {}
 
   async createFamily(dto: CreateFamilyDto, createdBy: number) {
@@ -348,6 +349,9 @@ export class FamilyService {
       console.log(member);
     }
 
+    // NEW: Create relationship edges for all relationships in the family tree
+    await this.createRelationshipEdgesFromFamilyTree(members, familyCode);
+
     // After creating all family tree entries, batch check and insert missing relationship codes
     const allCodes = new Set<string>();
     for (const member of members) {
@@ -379,24 +383,69 @@ export class FamilyService {
     };
   }
 
-  async getFamilyTree(familyCode: string) {
-    // First check if family exists
-    const family = await this.familyModel.findOne({ where: { familyCode } });
-    if (!family) {
-      throw new NotFoundException('Family not found');
-    }
+  /**
+   * Clean up invalid userId data in the database
+   * This method should be called once to fix data integrity issues
+   */
+  async cleanupInvalidUserIdData() {
+    try {
+      // Find userId values that don't exist in the users table
+      const invalidUserIds = await this.familyTreeModel.findAll({
+        include: [
+          {
+            model: this.userModel,
+            as: 'user',
+            required: false,
+          }
+        ],
+        where: {
+          userId: { [Op.ne]: null } // Only check non-null userIds
+        }
+      });
 
-    // Check if family tree exists
+      // Filter out records where the user doesn't exist
+      const recordsToFix = invalidUserIds.filter(record => !record.user);
+      
+      if (recordsToFix.length > 0) {
+        const userIdsToFix = recordsToFix.map(record => record.userId);
+        
+        // Update invalid userId references to NULL
+        const result = await this.familyTreeModel.update(
+          { userId: null },
+          { 
+            where: { 
+              userId: { [Op.in]: userIdsToFix }
+            } 
+          }
+        );
+        
+        console.log(`Cleaned up ${result[0]} records with invalid userId references`);
+        return result[0];
+      }
+      
+      console.log('No invalid userId data found to clean up');
+      return 0;
+    } catch (error) {
+      console.error('Error cleaning up userId data:', error);
+      throw error;
+    }
+  }
+
+  async getFamilyTree(familyCode: string) {
+    // First, let's clean up any invalid data
+    await this.cleanupInvalidUserIdData();
+    
     const familyTree = await this.familyTreeModel.findAll({
       where: { familyCode },
       include: [
         {
           model: this.userModel,
           as: 'user',
+          required: false, // Make it a LEFT JOIN instead of INNER JOIN
           include: [
             {
               model: this.userProfileModel,
-              as: 'userProfile', // Use the correct alias
+              as: 'userProfile',
             },
           ],
         },
@@ -470,9 +519,25 @@ export class FamilyService {
     const baseUrl = process.env.BASE_URL || '';
     const profilePhotoPath = process.env.PROFILE_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
 
-    const people = familyTree.map(entry => {
+    const people = await Promise.all(familyTree.map(async entry => {
+      // If userId is undefined/null, skip this person or handle gracefully
+      if (!entry.userId) {
+        return {
+          id: entry.personId,
+          memberId: null,
+          name: 'Unknown',
+          gender: 'unknown',
+          age: null,
+          generation: entry.generation,
+          parents: entry.parents || [],
+          children: entry.children || [],
+          spouses: entry.spouses || [],
+          siblings: entry.siblings || [],
+          img: null,
+          associatedFamilyCodes: [],
+        };
+      }
       const userProfile = entry.user?.userProfile;
-      
       // Build full image URL if profile image exists
       let img = null;
       if (userProfile?.profile) {
@@ -482,7 +547,11 @@ export class FamilyService {
           img = `${baseUrl}/${profilePhotoPath}/${userProfile.profile}`;
         }
       }
-
+      // Get associatedFamilyCodes if available
+      let associatedFamilyCodes = [];
+      if (userProfile && userProfile.associatedFamilyCodes) {
+        associatedFamilyCodes = userProfile.associatedFamilyCodes;
+      }
       return {
         id: entry.personId, // Use personId as id
         memberId: entry.userId, // Include userId as memberId
@@ -494,15 +563,18 @@ export class FamilyService {
         children: entry.children || [],
         spouses: entry.spouses || [],
         siblings: entry.siblings || [],
-        img: img
+        img: img,
+        associatedFamilyCodes: associatedFamilyCodes,
       };
-    });
+    }));
 
     return {
       message: 'Family tree retrieved successfully',
       people: people
     };
   }
+
+
 
   async ensureRelationshipCodeExists(universalCode: string) {
     // Check if the code exists
@@ -515,4 +587,482 @@ export class FamilyService {
       });
     }
   }
+
+  /**
+   * Get all family codes a user is associated with
+   */
+  async getUserFamilyCodes(userId: number) {
+    return this.relationshipEdgeService.getUserFamilyCodes(userId);
+  }
+
+  /**
+   * Get all relationships for a user
+   */
+  async getUserRelationships(userId: number) {
+    const relationships = await this.relationshipEdgeService.getUserRelationships(userId);
+    
+    // Transform relationships to include user details
+    const transformedRelationships = await Promise.all(
+      relationships.map(async (rel) => {
+        const user1Profile = await this.userProfileModel.findOne({
+          where: { userId: rel.user1Id },
+        });
+        const user2Profile = await this.userProfileModel.findOne({
+          where: { userId: rel.user2Id },
+        });
+
+        return {
+          id: rel.id,
+          user1: {
+            id: rel.user1Id,
+            name: user1Profile ? `${user1Profile.firstName} ${user1Profile.lastName}`.trim() : 'Unknown',
+          },
+          user2: {
+            id: rel.user2Id,
+            name: user2Profile ? `${user2Profile.firstName} ${user2Profile.lastName}`.trim() : 'Unknown',
+          },
+          relationshipType: rel.relationshipType,
+          generatedFamilyCode: rel.generatedFamilyCode,
+          createdAt: rel.createdAt,
+        };
+      })
+    );
+
+    return {
+      message: 'User relationships retrieved successfully',
+      relationships: transformedRelationships,
+    };
+  }
+
+  /**
+   * Get associated family tree by userId - traverses all family codes the user is connected to
+   */
+  async getAssociatedFamilyTreeByUserId(userId: number) {
+    await this.cleanupInvalidUserIdData();
+
+    // Get user's main and associated family codes
+    const userProfile = await this.userProfileModel.findOne({
+      where: { userId },
+      include: [{ model: this.userModel, as: 'user' }]
+    });
+
+    if (!userProfile) {
+      throw new NotFoundException('User profile not found');
+    }
+
+    const allFamilyCodes = new Set<string>();
+    
+    // Add main family code
+    if (userProfile.familyCode) {
+      allFamilyCodes.add(userProfile.familyCode);
+    }
+
+    // Add associated family codes
+    if (userProfile.associatedFamilyCodes && Array.isArray(userProfile.associatedFamilyCodes)) {
+      userProfile.associatedFamilyCodes.forEach(code => {
+        if (code && !code.startsWith('REL_')) { // Skip relationship-generated codes
+          allFamilyCodes.add(code);
+        }
+      });
+    }
+
+    // Get relationships and their family codes
+    const relationships = await this.relationshipEdgeService.getUserRelationships(userId);
+    for (const rel of relationships) {
+      if (rel.generatedFamilyCode && !rel.generatedFamilyCode.startsWith('REL_')) {
+        allFamilyCodes.add(rel.generatedFamilyCode);
+      }
+    }
+
+    if (allFamilyCodes.size === 0) {
+      throw new NotFoundException('No associated family trees found for this user');
+    }
+
+    // Fetch all people from all associated family codes
+    const allPeople = new Map();
+    const familyTreeEntries = await this.familyTreeModel.findAll({
+      where: { 
+        familyCode: { [Op.in]: Array.from(allFamilyCodes) }
+      },
+      include: [
+        {
+          model: this.userModel,
+          as: 'user',
+          required: false,
+          include: [
+            {
+              model: this.userProfileModel,
+              as: 'userProfile',
+            },
+          ],
+        },
+      ],
+    });
+
+    const baseUrl = process.env.BASE_URL || '';
+    const profilePhotoPath = process.env.PROFILE_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
+
+    // Process each entry and build unified tree
+    for (const entry of familyTreeEntries) {
+      const personKey = entry.userId || `unknown_${entry.personId}`;
+      
+      if (!allPeople.has(personKey)) {
+        let personData;
+        
+        if (!entry.userId) {
+          personData = {
+            id: entry.personId,
+            memberId: null,
+            name: 'Unknown',
+            gender: 'unknown',
+            age: null,
+            generation: entry.generation,
+            parents: new Set(entry.parents || []),
+            children: new Set(entry.children || []),
+            spouses: new Set(entry.spouses || []),
+            siblings: new Set(entry.siblings || []),
+            img: null,
+            associatedFamilyCodes: [],
+            familyCode: entry.familyCode,
+            isManual: false
+          };
+        } else {
+          const userProfile = entry.user?.userProfile;
+          let img = null;
+          if (userProfile?.profile) {
+            if (userProfile.profile.startsWith('http')) {
+              img = userProfile.profile;
+            } else {
+              img = `${baseUrl}/${profilePhotoPath}/${userProfile.profile}`;
+            }
+          }
+          
+          personData = {
+            id: entry.personId,
+            memberId: entry.userId,
+            name: userProfile ? `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim() : 'Unknown',
+            gender: userProfile?.gender || 'unknown',
+            age: userProfile?.age || null,
+            generation: entry.generation,
+            parents: new Set(entry.parents || []),
+            children: new Set(entry.children || []),
+            spouses: new Set(entry.spouses || []),
+            siblings: new Set(entry.siblings || []),
+            img: img,
+            associatedFamilyCodes: userProfile?.associatedFamilyCodes || [],
+            familyCode: entry.familyCode,
+            isManual: false
+          };
+        }
+        
+        allPeople.set(personKey, personData);
+      } else {
+        // Merge relationships from multiple trees
+        const existing = allPeople.get(personKey);
+        existing.parents = new Set([...existing.parents, ...(entry.parents || [])]);
+        existing.children = new Set([...existing.children, ...(entry.children || [])]);
+        existing.spouses = new Set([...existing.spouses, ...(entry.spouses || [])]);
+        existing.siblings = new Set([...existing.siblings, ...(entry.siblings || [])]);
+      }
+    }
+
+    // Add relationship edges as connections
+    for (const rel of relationships) {
+      const person1Key = rel.user1Id;
+      const person2Key = rel.user2Id;
+      
+      if (allPeople.has(person1Key) && allPeople.has(person2Key)) {
+        const person1 = allPeople.get(person1Key);
+        const person2 = allPeople.get(person2Key);
+        
+        // Add relationship based on type
+        if (rel.relationshipType === 'spouse') {
+          person1.spouses.add(person2.id);
+          person2.spouses.add(person1.id);
+        } else if (rel.relationshipType === 'parent-child') {
+          person1.children.add(person2.id);
+          person2.parents.add(person1.id);
+        } else if (rel.relationshipType === 'sibling') {
+          person1.siblings.add(person2.id);
+          person2.siblings.add(person1.id);
+        }
+      }
+    }
+
+    // Convert sets back to arrays for JSON serialization
+    const people = Array.from(allPeople.values()).map(person => ({
+      ...person,
+      parents: Array.from(person.parents),
+      children: Array.from(person.children),
+      spouses: Array.from(person.spouses),
+      siblings: Array.from(person.siblings)
+    }));
+
+    return {
+      message: 'Associated family tree retrieved successfully',
+      rootUserId: userId,
+      familyCodes: Array.from(allFamilyCodes),
+      people,
+      totalConnections: relationships.length
+    };
+  }
+
+  /**
+   * Get associated family tree by family code (legacy method - now calls userId-based method)
+   */
+  async getAssociatedFamilyTree(familyCode: string) {
+    // Find any user in this family code and use userId-based method
+    const familyEntry = await this.familyTreeModel.findOne({
+      where: { familyCode, userId: { [Op.not]: null } }
+    });
+
+    if (!familyEntry || !familyEntry.userId) {
+      throw new NotFoundException('No valid user found in this family tree');
+    }
+
+    return this.getAssociatedFamilyTreeByUserId(familyEntry.userId);
+  }
+
+  /**
+   * Sync person data across all family trees they appear in
+   */
+  async syncPersonAcrossAllTrees(userId: number, updates: any) {
+    const transaction = await this.familyTreeModel.sequelize.transaction();
+    
+    try {
+      // Update user profile
+      await this.userProfileModel.update(updates, {
+        where: { userId },
+        transaction
+      });
+
+      // Find all family tree entries for this user
+      const allEntries = await this.familyTreeModel.findAll({
+        where: { userId },
+        transaction
+      });
+
+      // Update each entry if needed (e.g., generation changes)
+      for (const entry of allEntries) {
+        if (updates.generation !== undefined) {
+          await entry.update({ generation: updates.generation }, { transaction });
+        }
+      }
+
+      await transaction.commit();
+      
+      return {
+        message: 'Person data synced across all trees',
+        updatedTrees: allEntries.length
+      };
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+  }
+
+  /**
+   * Create manual associated tree for a user
+   */
+  async createManualAssociatedTree(userId: number, familyCode: string, basicInfo: any) {
+    const transaction = await this.familyTreeModel.sequelize.transaction();
+    
+    try {
+      // Create family entry
+      await this.familyModel.create({
+        familyCode,
+        familyName: basicInfo.familyName || `${basicInfo.name}'s Family`,
+        createdBy: userId
+      }, { transaction });
+
+      // Add person to family tree
+      await this.familyTreeModel.create({
+        familyCode,
+        userId,
+        personId: 1, // Root person in this tree
+        generation: 0
+      }, { transaction });
+
+      // Update user's associated family codes
+      await this.relationshipEdgeService.updateAssociatedFamilyCodes(
+        userId, 
+        familyCode, 
+        transaction
+      );
+
+      await transaction.commit();
+      
+      return {
+        message: 'Manual associated tree created successfully',
+        familyCode,
+        isManual: true
+      };
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+  }
+
+  /**
+   * Replace manual tree with auto-generated complete tree
+   */
+  async replaceManualTreeWithComplete(oldFamilyCode: string, newCompleteTreeData: any) {
+    const transaction = await this.familyTreeModel.sequelize.transaction();
+    
+    try {
+      // Get all users who had the old family code in their associated codes
+      const affectedUsers = await this.userProfileModel.findAll({
+        where: {
+          associatedFamilyCodes: { [Op.contains]: [oldFamilyCode] }
+        },
+        transaction
+      });
+
+      // Create new complete tree
+      const newFamilyCode = newCompleteTreeData.familyCode;
+      
+      // Update all affected users' associated codes
+      for (const user of affectedUsers) {
+        const updatedCodes = user.associatedFamilyCodes.map(code => 
+          code === oldFamilyCode ? newFamilyCode : code
+        );
+        
+        await user.update({
+          associatedFamilyCodes: updatedCodes
+        }, { transaction });
+      }
+
+      // Delete old manual tree
+      await this.familyTreeModel.destroy({
+        where: { familyCode: oldFamilyCode },
+        transaction
+      });
+      
+      await this.familyModel.destroy({
+        where: { familyCode: oldFamilyCode },
+        transaction
+      });
+
+      await transaction.commit();
+      
+      return {
+        message: 'Manual tree replaced with complete tree successfully',
+        oldFamilyCode,
+        newFamilyCode,
+        affectedUsers: affectedUsers.length
+      };
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+  }
+
+  async addSpouseRelationship(yourUserId: number, spouseUserId: number) {
+    // Fetch spouse profile
+    const spouseProfile = await this.userProfileModel.findOne({ where: { userId: spouseUserId } });
+    const spouseHasFamilyCode = spouseProfile && spouseProfile.familyCode ? true : false;
+
+    // Create relationship edge
+    const { generatedFamilyCode } = await this.relationshipEdgeService.createRelationshipEdge(
+      yourUserId,
+      spouseUserId,
+      'spouse'
+    );
+
+    // Add REL_... code to both users
+    await this.relationshipEdgeService.updateAssociatedFamilyCodes(yourUserId, generatedFamilyCode);
+    await this.relationshipEdgeService.updateAssociatedFamilyCodes(spouseUserId, generatedFamilyCode);
+
+    // If spouse has a family code, add it to your associated codes
+    if (spouseHasFamilyCode) {
+      await this.relationshipEdgeService.updateAssociatedFamilyCodes(yourUserId, spouseProfile.familyCode);
+    }
+
+    // Optionally, add your family code to spouse's associated codes
+    const yourProfile = await this.userProfileModel.findOne({ where: { userId: yourUserId } });
+    if (yourProfile && yourProfile.familyCode) {
+      await this.relationshipEdgeService.updateAssociatedFamilyCodes(spouseUserId, yourProfile.familyCode);
+    }
+
+    // Sync spouse data across all their trees
+    await this.syncPersonAcrossAllTrees(spouseUserId, { maritalStatus: 'married' });
+    await this.syncPersonAcrossAllTrees(yourUserId, { maritalStatus: 'married' });
+
+    return {
+      message: 'Spouse relationship created and associated codes updated',
+      generatedFamilyCode,
+      yourUserId,
+      spouseUserId,
+    };
+  }
+
+  private async createRelationshipEdgesFromFamilyTree(members: FamilyTreeMemberDto[], familyCode: string) {
+    // Create a map of personId to userId for easy lookup
+    const personIdToUserIdMap = new Map<number, number>();
+    members.forEach(member => {
+      if (member.memberId) {
+        personIdToUserIdMap.set(member.id, member.memberId);
+      }
+    });
+
+    for (const member of members) {
+      const userId = member.memberId;
+      if (!userId) continue; // Skip if no userId
+
+      // Create spouse relationships
+      if (member.spouses && member.spouses.length > 0) {
+        for (const spousePersonId of member.spouses) {
+          const spouseUserId = personIdToUserIdMap.get(spousePersonId);
+          if (spouseUserId && spouseUserId !== userId) {
+            try {
+              await this.relationshipEdgeService.createRelationshipEdge(
+                userId,
+                spouseUserId,
+                'spouse'
+              );
+            } catch (error) {
+              console.error(`Error creating spouse relationship: ${userId} -> ${spouseUserId}`, error);
+            }
+          }
+        }
+      }
+
+      // Create parent-child relationships
+      if (member.children && member.children.length > 0) {
+        for (const childPersonId of member.children) {
+          const childUserId = personIdToUserIdMap.get(childPersonId);
+          if (childUserId && childUserId !== userId) {
+            try {
+              await this.relationshipEdgeService.createRelationshipEdge(
+                userId,
+                childUserId,
+                'parent-child'
+              );
+            } catch (error) {
+              console.error(`Error creating parent-child relationship: ${userId} -> ${childUserId}`, error);
+            }
+          }
+        }
+      }
+
+      // Create sibling relationships
+      if (member.siblings && member.siblings.length > 0) {
+        for (const siblingPersonId of member.siblings) {
+          const siblingUserId = personIdToUserIdMap.get(siblingPersonId);
+          if (siblingUserId && siblingUserId !== userId) {
+            try {
+              await this.relationshipEdgeService.createRelationshipEdge(
+                userId,
+                siblingUserId,
+                'sibling'
+              );
+            } catch (error) {
+              console.error(`Error creating sibling relationship: ${userId} -> ${siblingUserId}`, error);
+            }
+          }
+        }
+      }
+    }
+  }
+
 }

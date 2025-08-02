@@ -16,6 +16,7 @@ import { PostModule } from './post/post.module';
 import { NotificationModule } from './notification/notification.module';
 import { ProductModule } from './product/product.module';
 import { EventModule } from './event/event.module';
+import { InviteModule } from './invite/invite.module';
 
 @Module({
   imports: [
@@ -49,6 +50,7 @@ import { EventModule } from './event/event.module';
     RelationshipsModule,
     ProductModule,
     EventModule,
+    InviteModule,
   ],
   // providers: [RelationshipSeeder],
 })

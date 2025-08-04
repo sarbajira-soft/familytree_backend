@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { SequelizeModule } from '@nestjs/sequelize';
 import { UserController } from './user.controller';
+import { UserLookupController } from './user-lookup.controller';
 import { UserService } from './user.service';
 
 import { User } from './model/user.model';
@@ -31,7 +32,7 @@ import { Notification } from '../notification/model/notification.model';
     ]),
     NotificationModule,
   ],
-  controllers: [UserController],
+  controllers: [UserController, UserLookupController],
   providers: [UserService, MailService],
   exports: [UserService],
 })

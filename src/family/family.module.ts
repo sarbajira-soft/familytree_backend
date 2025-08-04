@@ -7,10 +7,12 @@ import { FamilyMemberService } from './family-member.service';
 import { Family } from './model/family.model';
 import { FamilyMember } from './model/family-member.model';
 import { FamilyTree } from './model/family-tree.model';
+import { UserRelationship } from './model/user-relationship.model';
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { MailService } from '../utils/mail.service';
 import { NotificationModule } from '../notification/notification.module';
+import { RelationshipEdgeService } from './relationship-edge.service';
 
 @Module({
   imports: [
@@ -20,11 +22,12 @@ import { NotificationModule } from '../notification/notification.module';
       FamilyMember,
       UserProfile,
       FamilyTree,
+      UserRelationship,
     ]),
     NotificationModule,
   ],
   controllers: [FamilyController, FamilyMemberController],
-  providers: [FamilyService, MailService, FamilyMemberService],
-  exports: [FamilyService],
+  providers: [FamilyService, MailService, FamilyMemberService, RelationshipEdgeService],
+  exports: [FamilyService, RelationshipEdgeService],
 })
 export class FamilyModule {}

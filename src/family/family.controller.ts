@@ -242,5 +242,84 @@ export class FamilyController {
     return this.familyService.getFamilyTree(familyCode);
   }
 
+  @Get('user/:userId/families')
+  @ApiOperation({ summary: 'Get all family codes a user is associated with' })
+  @ApiResponse({ status: 200, description: 'User family codes retrieved successfully' })
+  async getUserFamilyCodes(@Param('userId') userId: number) {
+    return this.familyService.getUserFamilyCodes(userId);
+  }
+
+  @Get('user/:userId/relationships')
+  @ApiOperation({ summary: 'Get all relationships for a user' })
+  @ApiResponse({ status: 200, description: 'User relationships retrieved successfully' })
+  async getUserRelationships(@Param('userId') userId: number) {
+    return this.familyService.getUserRelationships(userId);
+  }
+
+  @Get('associated/:familyCode')
+  @ApiOperation({ summary: 'Get associated family tree by family code (legacy - redirects to userId-based method)' })
+  @ApiResponse({ status: 200, description: 'Associated family tree retrieved successfully' })
+  async getAssociatedFamilyTree(@Param('familyCode') familyCode: string) {
+    return this.familyService.getAssociatedFamilyTree(familyCode);
+  }
+
+  @Get('associated-by-user/:userId')
+  @ApiOperation({ summary: 'Get associated family tree by userId - traverses all connected family codes' })
+  @ApiResponse({ status: 200, description: 'Associated family tree retrieved successfully' })
+  async getAssociatedFamilyTreeByUserId(@Param('userId', ParseIntPipe) userId: number) {
+    return this.familyService.getAssociatedFamilyTreeByUserId(userId);
+  }
+
+  @Post('sync-person/:userId')
+  @ApiOperation({ summary: 'Sync person data across all family trees they appear in' })
+  @ApiResponse({ status: 200, description: 'Person data synced successfully' })
+  async syncPersonAcrossAllTrees(
+    @Param('userId', ParseIntPipe) userId: number,
+    @Body() updates: any
+  ) {
+    return this.familyService.syncPersonAcrossAllTrees(userId, updates);
+  }
+
+  @Post('create-manual-tree/:userId')
+  @ApiOperation({ summary: 'Create manual associated tree for a user' })
+  @ApiResponse({ status: 201, description: 'Manual associated tree created successfully' })
+  async createManualAssociatedTree(
+    @Param('userId', ParseIntPipe) userId: number,
+    @Body() data: { familyCode: string; basicInfo: any }
+  ) {
+    return this.familyService.createManualAssociatedTree(userId, data.familyCode, data.basicInfo);
+  }
+
+  @Post('replace-manual-tree')
+  @ApiOperation({ summary: 'Replace manual tree with auto-generated complete tree' })
+  @ApiResponse({ status: 200, description: 'Manual tree replaced successfully' })
+  async replaceManualTreeWithComplete(
+    @Body() data: { oldFamilyCode: string; newCompleteTreeData: any }
+  ) {
+    return this.familyService.replaceManualTreeWithComplete(data.oldFamilyCode, data.newCompleteTreeData);
+  }
+
+  @Post('user/:userId/add-spouse')
+  @ApiOperation({ summary: 'Add spouse relationship and update associated family codes' })
+  @ApiResponse({ status: 201, description: 'Spouse relationship created and associated codes updated' })
+  async addSpouseRelationship(
+    @Param('userId') userId: number,
+    @Body('spouseUserId') spouseUserId: number
+  ) {
+    return this.familyService.addSpouseRelationship(userId, spouseUserId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('cleanup-userid-data')
+  @ApiOperation({ summary: 'Clean up invalid userId data in database' })
+  @ApiResponse({ status: 200, description: 'Data cleanup completed' })
+  async cleanupUserIdData() {
+    const cleanedCount = await this.familyService.cleanupInvalidUserIdData();
+    return {
+      message: 'Data cleanup completed successfully',
+      cleanedRecords: cleanedCount
+    };
+  }
+
 
 }

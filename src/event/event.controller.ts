@@ -16,6 +16,15 @@ import {
 import { FilesInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import * as fs from 'fs';
+import { Request } from 'express';
+
+declare global {
+  namespace Express {
+    interface Request {
+      user?: any; // You might want to replace 'any' with a proper user type
+    }
+  }
+}
 import { EventService } from '../event/event.service';
 import { CreateEventDto, UpdateEventDto, CreateEventImageDto } from './dto/event.dto';
 import {
@@ -65,7 +74,7 @@ export class EventController {
   @ApiResponse({ status: 201, description: 'Event created successfully' })
   @HttpCode(HttpStatus.CREATED)
   async createEvent(
-    @Req() req,
+    @Req() req: Request,
     @UploadedFiles() files: Express.Multer.File[],
     @Body() body: CreateEventDto,
   ) {
@@ -183,7 +192,7 @@ export class EventController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Update event by ID' })
   async updateEvent(
-    @Req() req,
+    @Req() req: Request,
     @Param('id') id: number,
     @UploadedFiles() files: Express.Multer.File[],
     @Body() body: UpdateEventDto,
@@ -271,7 +280,7 @@ export class EventController {
     },
   })
   async addEventImages(
-    @Req() req,
+    @Req() req: Request,
     @Param('id') id: number,
     @UploadedFiles() files: Express.Multer.File[],
   ) {

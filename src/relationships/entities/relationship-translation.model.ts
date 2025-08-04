@@ -21,7 +21,7 @@ export class RelationshipTranslation extends Model {
   relationship: Relationship;
 
   @Column({
-    type: DataType.ENUM('en', 'ta', 'hi', 'ma', 'ka'),
+    type: DataType.ENUM('en', 'ta', 'hi', 'ma', 'ka', 'te'),
     allowNull: false,
   })
   language: string;

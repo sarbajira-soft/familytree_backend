@@ -37,6 +37,35 @@ export class FamilyService {
     private readonly notificationService: NotificationService,
   ) {}
 
+  // Helper function to generate JWT access token
+  private generateAccessToken(user: User): string {
+    return jwt.sign(
+      { id: user.id, email: user.email, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: '1d' },
+    );
+  }
+
+  // Helper function to split full name into first and last names
+  private splitName(fullName: string): { firstName: string; lastName: string | null } {
+    if (!fullName || typeof fullName !== 'string') {
+      return { firstName: '', lastName: null };
+    }
+    
+    const nameParts = fullName.trim().split(/\s+/);
+    
+    if (nameParts.length === 0) {
+      return { firstName: '', lastName: null };
+    } else if (nameParts.length === 1) {
+      return { firstName: nameParts[0], lastName: null };
+    } else {
+      // First part is firstName, rest combined as lastName
+      const firstName = nameParts[0];
+      const lastNamePart = nameParts.slice(1).join(' ');
+      return { firstName, lastName: lastNamePart };
+    }
+  }
+
   async createFamily(dto: CreateFamilyDto, createdBy: number) {
     const existing = await this.familyModel.findOne({ where: { familyCode: dto.familyCode } });
     if (existing) {
@@ -69,9 +98,27 @@ export class FamilyService {
       { where: { userId: createdBy } }
     );
 
+    // Get the updated user with new role to generate fresh token
+    const updatedUser = await this.userModel.findByPk(createdBy);
+    if (!updatedUser) {
+      throw new NotFoundException('User not found after role update');
+    }
+
+    // Generate new access token with updated role
+    const newAccessToken = this.generateAccessToken(updatedUser);
+
+    // Update user's access token in database
+    await updatedUser.update({ accessToken: newAccessToken });
+
     return {
       message: 'Family created successfully',
       data: created,
+      accessToken: newAccessToken, // Return new token with admin role
+      user: {
+        id: updatedUser.id,
+        email: updatedUser.email,
+        role: updatedUser.role, // Now role = 2 (admin)
+      }
     };
   }
 
@@ -194,7 +241,7 @@ export class FamilyService {
     });
   }
 
-  // ✅ FIXED METHOD: createFamilyTree with sync logic
+  // ✅ FIXED METHOD: createFamilyTree with sync logic AND existing user profile updates
   async createFamilyTree(dto: CreateFamilyTreeDto) {
     const { familyCode, members } = dto;
 
@@ -247,7 +294,80 @@ export class FamilyService {
     for (const member of members) {
       let userId = member.memberId; // Use memberId as userId
 
-      // If user doesn't exist (no memberId), create new user and profile
+      // ✅ NEW FIX: Check if user exists and update their profile if they do
+      if (userId) {
+        // Try to find existing user
+        const existingUser = await this.userModel.findByPk(userId);
+        if (existingUser) {
+          console.log(`✅ Updating existing user profile for userId: ${userId}`);
+          
+          // Handle profile image if provided
+          let profileImage = null;
+          if (member.img && member.img.startsWith('data:image/')) {
+            const uploadPath = process.env.PROFILE_PHOTO_UPLOAD_PATH || './uploads/profile';
+            profileImage = await saveBase64Image(member.img, uploadPath);
+          } else if (member.img && typeof member.img === 'string') {
+            // If it's already a URL or filename, use as is
+            profileImage = member.img;
+          }
+
+          // Update existing user profile
+          const userProfile = await this.userProfileModel.findOne({ 
+            where: { userId: userId } 
+          });
+          
+          if (userProfile) {
+            const { firstName, lastName } = this.splitName(member.name);
+            const updateData: any = {
+              firstName: firstName,
+              lastName: lastName,
+              gender: member.gender,
+              age: typeof member.age === 'string' ? parseInt(member.age) : member.age,
+            };
+            
+            // Only update profile image if a new one is provided
+            if (profileImage) {
+              updateData.profile = profileImage;
+            }
+            
+            await userProfile.update(updateData);
+            console.log(`✅ Updated profile for user ${userId}: name=${member.name}, gender=${member.gender}, age=${member.age}`);
+          } else {
+            // Create profile if it doesn't exist
+            const { firstName, lastName } = this.splitName(member.name);
+            await this.userProfileModel.create({
+              userId: userId,
+              firstName: firstName,
+              lastName: lastName,
+              gender: member.gender,
+              age: typeof member.age === 'string' ? parseInt(member.age) : member.age,
+              profile: profileImage,
+              familyCode: familyCode,
+            });
+            console.log(`✅ Created new profile for existing user ${userId}`);
+          }
+
+          // Ensure user is in family_member table
+          const existingMember = await this.familyMemberModel.findOne({
+            where: { memberId: userId, familyCode }
+          });
+          
+          if (!existingMember) {
+            await this.familyMemberModel.create({
+              memberId: userId,
+              familyCode: familyCode,
+              creatorId: null,
+              approveStatus: 'approved'
+            });
+            console.log(`✅ Added existing user ${userId} to family_member table`);
+          }
+        } else {
+          // User doesn't exist, set userId to null to create new user
+          userId = null;
+        }
+      }
+
+      // If user doesn't exist (no memberId or user not found), create new user and profile
       if (!userId) {
         // Generate a temporary email
         const tempEmail = `familytree_${Date.now()}_${Math.floor(Math.random() * 10000)}@example.com`;
@@ -279,9 +399,11 @@ export class FamilyService {
 
         // Create user profile
         try {
+          const { firstName, lastName } = this.splitName(member.name);
           await this.userProfileModel.create({
             userId: newUser.id,
-            firstName: member.name,
+            firstName: firstName,
+            lastName: lastName,
             gender: member.gender,
             age: typeof member.age === 'string' ? parseInt(member.age) : member.age,
             profile: profileImage, // Use extracted filename
@@ -448,7 +570,7 @@ export class FamilyService {
         return {
           id: index + 1, // Use index as id since no personId
           memberId: member.memberId,
-          name: userProfile ? `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim() : 'Unknown',
+          name: userProfile ? [userProfile.firstName, userProfile.lastName].filter(Boolean).join(' ') || 'Unknown' : 'Unknown',
           gender: userProfile?.gender || 'unknown',
           age: userProfile?.age || null,
           generation: 1, // Default generation
@@ -486,7 +608,7 @@ export class FamilyService {
       return {
         id: entry.personId, // Use personId as id
         memberId: entry.userId, // Include userId as memberId
-        name: userProfile ? `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim() : 'Unknown',
+        name: userProfile ? [userProfile.firstName, userProfile.lastName].filter(Boolean).join(' ') || 'Unknown' : 'Unknown',
         gender: userProfile?.gender || 'unknown',
         age: userProfile?.age || null,
         generation: entry.generation,

@@ -22,7 +22,7 @@ jobs:
         run: npm ci
 
       - name: Build project
-        run: npm nest build
+        run: npx nest build
 
       - name: Zip files for Lambda
         run: zip -r nest-lambda.zip dist node_modules package.json

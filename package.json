@@ -2,7 +2,7 @@
   "name": "family-tree-api",
   "version": "1.0.0",
   "description": "Family Tree API",
-  "main": "dist/main.js",
+  "main": "dist/lambda.handler",
   "author": "",
   "private": true,
   "license": "UNLICENSED",

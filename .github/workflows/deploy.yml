@@ -10,41 +10,44 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      # 1. Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v3
 
+      # 2. Setup Node.js (adjust version if needed)
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '18'
+          node-version: 18
 
+      # 3. Install dependencies
       - name: Install dependencies
         run: npm ci
 
-      - name: Build project
-        run: npx nest build
+      # 4. Build NestJS project
+      - name: Build NestJS project
+        run: npm run build
 
-      - name: Zip files for Lambda
-        run: zip -r nest-lambda.zip dist node_modules package.json
+      # 5. Zip required files (adjust if your handler is in a different location)
+      - name: Zip Lambda package
+        run: zip -r lambda.zip dist node_modules package.json
 
+      # 6. Upload to S3
       - name: Upload ZIP to S3
-        uses: jakejarvis/s3-sync-action@v0.5.1
-        with:
-          args: --acl private --exact-timestamps
+        run: aws s3 cp lambda.zip s3://familytreebackend/lambda-deploys/lambda.zip
         env:
-          AWS_S3_BUCKET: ${{ secrets.S3_BUCKET }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
-          SOURCE_DIR: .
-          DEST_DIR: lambda-deploy
+          AWS_REGION: eu-north-1
 
+      # 7. Deploy to AWS Lambda from S3
       - name: Deploy Lambda from S3
-        uses: appleboy/lambda-action@master
-        with:
-          aws_access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws_secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws_region: ${{ secrets.AWS_REGION }}
-          function_name: familytreebackend 
-          s3_bucket: ${{ secrets.S3_BUCKET }}
-          s3_key: lambda-deploy/nest-lambda.zip
+        run: |
+          aws lambda update-function-code \
+            --function-name familytreebackend \
+            --s3-bucket familytreebackend \
+            --s3-key lambda-deploys/lambda.zip
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: eu-north-1

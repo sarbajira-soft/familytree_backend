@@ -1,4 +1,4 @@
-name: Deploy to AWS Lambda
+name: Deploy NestJS to AWS Lambda via S3
 
 on:
   push:
@@ -8,8 +8,9 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout Repo
+      - name: Checkout code
         uses: actions/checkout@v3
 
       - name: Setup Node.js
@@ -17,20 +18,33 @@ jobs:
         with:
           node-version: '18'
 
-      - name: Install Dependencies
-        run: npm ci
+      - name: Install dependencies
+        run: npm ci --omit=dev
 
-      - name: Build Project
+      - name: Build project
         run: npm run build
 
-      - name: Zip Files
+      - name: Zip files for Lambda
         run: zip -r nest-lambda.zip dist node_modules package.json
 
-      - name: Deploy to Lambda
+      - name: Upload ZIP to S3
+        uses: jakejarvis/s3-sync-action@v0.5.1
+        with:
+          args: --acl private --exact-timestamps
+        env:
+          AWS_S3_BUCKET: ${{ secrets.S3_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION }}
+          SOURCE_DIR: .
+          DEST_DIR: lambda-deploy
+
+      - name: Deploy Lambda from S3
         uses: appleboy/lambda-action@master
         with:
           aws_access_key_id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws_secret_access_key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws_region: eu-north-1
-          function_name: familytreebackend
-          zip_file: nest-lambda.zip
+          aws_region: ${{ secrets.AWS_REGION }}
+          function_name: familytreebackend 
+          s3_bucket: ${{ secrets.S3_BUCKET }}
+          s3_key: lambda-deploy/nest-lambda.zip

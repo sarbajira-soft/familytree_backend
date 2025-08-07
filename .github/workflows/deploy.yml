@@ -19,10 +19,10 @@ jobs:
           node-version: '18'
 
       - name: Install dependencies
-        run: npm ci --omit=dev
+        run: npm ci
 
       - name: Build project
-        run: npm run build
+        run: npm nest build
 
       - name: Zip files for Lambda
         run: zip -r nest-lambda.zip dist node_modules package.json

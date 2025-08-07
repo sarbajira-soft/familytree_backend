@@ -35,10 +35,10 @@ jobs:
       # 6. Create ZIP with only production files
       - name: Zip Lambda package
         run: |
-          mkdir -p lambda
-          cp -r dist node_modules package.json lambda/
-          cd lambda
-          zip -r ../lambda.zip ./*
+            mkdir -p lambda
+            cp -r dist/* node_modules package.json lambda/
+            cd lambda
+            zip -r ../lambda.zip ./*
         shell: bash
 
       # 7. Upload to S3

@@ -1,23 +1,21 @@
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { INestApplication } from '@nestjs/common';
 
-export function setupSwagger(app: INestApplication) {
+export function setupSwagger(app: INestApplication, swaggerPath: string = '/api') {
   const config = new DocumentBuilder()
     .setTitle('Family Tree API')
     .setDescription('The API for Family Tree MVP')
     .setVersion('1.0')
     .addBearerAuth()
-    .build();  
+    .addServer(swaggerPath) // 👈 dynamic server path for Swagger
+    .build();
 
   const document = SwaggerModule.createDocument(app, config);
-  
-  // Organize by modules in Swagger UI
-  const options = {
+
+  SwaggerModule.setup(swaggerPath.replace(/^\//, ''), app, document, {
     swaggerOptions: {
       tagsSorter: 'alpha',
       operationsSorter: 'alpha',
     },
-  };
-  
-  SwaggerModule.setup('api', app, document, options);
+  });
 }

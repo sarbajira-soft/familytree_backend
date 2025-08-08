@@ -13,7 +13,7 @@ import {
   UploadedFiles,
 } from '@nestjs/common';
 import { FileInterceptor, FilesInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
+import { diskStorage, memoryStorage } from 'multer';
 import * as fs from 'fs';
 import { ProductService } from './product.service';
 import { CreateProductDto } from './dto/create-product.dto';
@@ -26,11 +26,15 @@ import {
   ApiBody,
 } from '@nestjs/swagger';
 import { generateFileName, imageFileFilter } from '../utils/upload.utils';
+import { UploadService } from '../uploads/upload.service';
 
 @ApiTags('Product Module')
 @Controller('product')
 export class ProductController {
-  constructor(private readonly productService: ProductService) {}
+  constructor(
+    private readonly productService: ProductService,
+    private readonly uploadService: UploadService,
+  ) {}
 
   @Post('create')
   @UseInterceptors(

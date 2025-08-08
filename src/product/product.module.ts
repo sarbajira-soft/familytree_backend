@@ -13,9 +13,12 @@ import { CategoryController } from './category.controller';
 import { OrderService } from './order.service'; // <-- Import OrderService
 import { OrderController } from './order.controller'; // <-- Import OrderController
 
+import { UploadModule } from '../uploads/upload.module';
+
 @Module({
   imports: [
     SequelizeModule.forFeature([Product, Category, Order, ProductImage]),
+    UploadModule
   ],
   providers: [
     ProductService,

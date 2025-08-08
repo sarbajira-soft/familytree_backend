@@ -31,5 +31,5 @@ export class CreatePostDto {
     format: 'binary',
   })
   @IsOptional()
-  postImage?: Express.Multer.File;
+  postImage?: string;
 }

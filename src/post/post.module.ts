@@ -8,6 +8,7 @@ import { PostComment } from './model/post-comment.model';
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { NotificationModule } from '../notification/notification.module';
+import { UploadModule } from '../uploads/upload.module';
 
 @Module({
   imports: [
@@ -18,7 +19,8 @@ import { NotificationModule } from '../notification/notification.module';
       User,
       UserProfile,
     ]),
-    NotificationModule
+    NotificationModule,
+    UploadModule
   ],
   controllers: [PostController],
   providers: [PostService],

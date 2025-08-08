@@ -15,7 +15,7 @@ import {
   Put,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
+import { diskStorage, memoryStorage  } from 'multer';
 import * as fs from 'fs';
 import { extname } from 'path';
 import { PostService } from './post.service';
@@ -23,6 +23,7 @@ import { PostService } from './post.service';
 import { CreatePostDto } from './dto/createpost.dto';
 import { GetPostByOptionsDto } from './dto/post-options.dto';
 import { AddPostCommentDto } from './dto/post-comment.dto';
+import { UploadService } from '../uploads/upload.service';
 
 import {
   ApiBearerAuth,
@@ -38,47 +39,34 @@ import { generateFileName, imageFileFilter } from '../utils/upload.utils';
 @ApiTags('Post Module')
 @Controller('post')
 export class PostController {
-  constructor(private readonly postService: PostService) {}
+  constructor(
+    private readonly postService: PostService,
+    private readonly uploadService: UploadService,
+  ) {}
 
   @UseGuards(JwtAuthGuard)
   @Post('create')
   @UseInterceptors(
     FileInterceptor('postImage', {
-      storage: diskStorage({
-        destination: (req, file, cb) => {
-          const uploadPath = process.env.POST_PHOTO_UPLOAD_PATH || './uploads/posts';
-          if (!fs.existsSync(uploadPath)) {
-            fs.mkdirSync(uploadPath, { recursive: true });
-          }
-          cb(null, uploadPath);
-        },
-        filename: (req, file, cb) => {
-          const filename = generateFileName(file.originalname);
-          cb(null, filename);
-        },
-      }),
+      storage: memoryStorage(),
       fileFilter: imageFileFilter,
-      limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
+      limits: { fileSize: 5 * 1024 * 1024 },
     }),
   )
-  @ApiConsumes('multipart/form-data')
-  @ApiBearerAuth()
-  @ApiOperation({ summary: 'Create a new post' })
-  @ApiResponse({ status: 201, description: 'Post created successfully' })
-  @HttpCode(HttpStatus.CREATED)
-  async createPost(
-    @Req() req,
+  async create(
     @UploadedFile() file: Express.Multer.File,
-    @Body() body: CreatePostDto,
+    @Body() dto: CreatePostDto,
+    @Req() req,
   ) {
-    const loggedInUser = req.user;
+    const createdBy = req.user.id;
 
     if (file) {
-      body.postImage = file.filename as any;
+      dto.postImage = await this.uploadService.uploadFile(file, 'posts');
     }
 
-    return this.postService.createPost(body, loggedInUser.userId);
+    return this.postService.createPost(dto, createdBy);
   }
+  
 
   @UseGuards(JwtAuthGuard)
   @Put('edit/:id')

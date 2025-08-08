@@ -7,7 +7,7 @@ export function setupSwagger(app: INestApplication, swaggerPath: string = '/api'
     .setDescription('The API for Family Tree MVP')
     .setVersion('1.0')
     .addBearerAuth()
-    .addServer(swaggerPath) // 👈 dynamic server path for Swagger
+    .addServer(swaggerPath) // dynamic server path for Swagger
     .build();
 
   const document = SwaggerModule.createDocument(app, config);

@@ -30,6 +30,6 @@ export class CreatePostDto {
     type: 'string',
     format: 'binary',
   })
-  @IsOptional()
-  postImage?: Express.Multer.File;
+  @ApiPropertyOptional({ type: String, description: 'S3 file URL' })
+  postImage?: string;
 }

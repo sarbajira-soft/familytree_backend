@@ -35,24 +35,19 @@ async function bootstrap() {
     prefix: '/uploads/',
   });
 
-  const sequelize = app.get(Sequelize);
-  await sequelize.sync({ force: false, alter: true });
-  console.log('Database synchronization successful.');
+  // const sequelize = app.get(Sequelize);
+  // await sequelize.sync({ force: false, alter: true });
+  // console.log('Database synchronization successful.');
 
-  // Detect if running on AWS Lambda
-  const isLambda = !!process.env.AWS_LAMBDA_FUNCTION_NAME;
+  const swaggerPath = '/api';
+  setupSwagger(app, swaggerPath);
 
-  //  Only use /api prefix locally
-  if (!isLambda) {
-    app.setGlobalPrefix('api');
-  }
+  const port = process.env.PORT || 3000;
+  await app.listen(port);
 
-  // Set Swagger UI to '/' on Lambda, '/api' on local
-  setupSwagger(app, isLambda ? '/' : '/api');
-
-  await app.listen(process.env.PORT || 3000);
-  console.log(`Application is running on: ${await app.getUrl()}`);
-  console.log(`Swagger UI is available on: ${await app.getUrl()}${isLambda ? '/' : '/api'}`);
+  const baseUrl = await app.getUrl();
+  console.log(`Application is running on: ${baseUrl}`);
+  console.log(`Swagger UI is available on: ${baseUrl}${swaggerPath}`);
 }
 
 bootstrap();

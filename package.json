@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-lambda": "^3.862.0",
+    "@aws-sdk/client-s3": "^3.863.0",
     "@aws-sdk/credential-provider-node": "^3.862.0",
     "@nestjs/common": "^10.4.20",
     "@nestjs/config": "^4.0.2",
@@ -45,6 +46,7 @@
     "dayjs": "^1.11.13",
     "dotenv": "^16.0.0",
     "jsonwebtoken": "^9.0.0",
+    "multer-s3": "^3.0.1",
     "nodemailer": "^7.0.5",
     "passport": "^0.6.0",
     "passport-jwt": "^4.0.0",

@@ -35,9 +35,9 @@ async function bootstrap() {
     prefix: '/uploads/',
   });
 
-  const sequelize = app.get(Sequelize);
-  await sequelize.sync({ force: false, alter: true });
-  console.log('Database synchronization successful.');
+  // const sequelize = app.get(Sequelize);
+  // await sequelize.sync({ force: false, alter: true });
+  // console.log('Database synchronization successful.');
 
   // Detect if running on AWS Lambda
   const isLambda = !!process.env.AWS_LAMBDA_FUNCTION_NAME;

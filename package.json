@@ -23,6 +23,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-lambda": "^3.862.0",
+    "@aws-sdk/client-s3": "^3.863.0",
     "@aws-sdk/credential-provider-node": "^3.862.0",
     "@nestjs/common": "^10.4.20",
     "@nestjs/config": "^4.0.2",

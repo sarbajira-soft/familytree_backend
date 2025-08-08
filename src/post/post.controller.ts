@@ -15,11 +15,7 @@ import {
   Put,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-<<<<<<< HEAD
-import { diskStorage, memoryStorage  } from 'multer';
-=======
 import { diskStorage } from 'multer';
->>>>>>> fa20b5721992d820e302d3d2fc2499aeea5908fb
 import * as fs from 'fs';
 import { extname } from 'path';
 import { PostService } from './post.service';
@@ -27,10 +23,6 @@ import { PostService } from './post.service';
 import { CreatePostDto } from './dto/createpost.dto';
 import { GetPostByOptionsDto } from './dto/post-options.dto';
 import { AddPostCommentDto } from './dto/post-comment.dto';
-<<<<<<< HEAD
-import { UploadService } from '../uploads/upload.service';
-=======
->>>>>>> fa20b5721992d820e302d3d2fc2499aeea5908fb
 
 import {
   ApiBearerAuth,
@@ -46,40 +38,12 @@ import { generateFileName, imageFileFilter } from '../utils/upload.utils';
 @ApiTags('Post Module')
 @Controller('post')
 export class PostController {
-<<<<<<< HEAD
-  constructor(
-    private readonly postService: PostService,
-    private readonly uploadService: UploadService,
-  ) {}
-=======
   constructor(private readonly postService: PostService) {}
->>>>>>> fa20b5721992d820e302d3d2fc2499aeea5908fb
 
   @UseGuards(JwtAuthGuard)
   @Post('create')
   @UseInterceptors(
     FileInterceptor('postImage', {
-<<<<<<< HEAD
-      storage: memoryStorage(),
-      fileFilter: imageFileFilter,
-      limits: { fileSize: 5 * 1024 * 1024 },
-    }),
-  )
-  async create(
-    @UploadedFile() file: Express.Multer.File,
-    @Body() dto: CreatePostDto,
-    @Req() req,
-  ) {
-    const createdBy = req.user.id;
-
-    if (file) {
-      dto.postImage = await this.uploadService.uploadFile(file, 'posts');
-    }
-
-    return this.postService.createPost(dto, createdBy);
-  }
-  
-=======
       storage: diskStorage({
         destination: (req, file, cb) => {
           const uploadPath = process.env.POST_PHOTO_UPLOAD_PATH || './uploads/posts';
@@ -115,7 +79,6 @@ export class PostController {
 
     return this.postService.createPost(body, loggedInUser.userId);
   }
->>>>>>> fa20b5721992d820e302d3d2fc2499aeea5908fb
 
   @UseGuards(JwtAuthGuard)
   @Put('edit/:id')

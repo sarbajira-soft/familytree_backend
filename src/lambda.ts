@@ -1,5 +1,5 @@
 import { Context, Callback, APIGatewayProxyEvent } from 'aws-lambda';
-const serverlessExpress = require('@vendia/serverless-express');
+import createServer from '@vendia/serverless-express';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication, ExpressAdapter } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
@@ -23,13 +23,11 @@ async function bootstrapServer() {
   app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
   app.use(cookieParser());
 
-  app.useGlobalPipes(
-    new ValidationPipe({
-      transform: true,
-      whitelist: true,
-      forbidNonWhitelisted: true,
-    }),
-  );
+  app.useGlobalPipes(new ValidationPipe({
+    transform: true,
+    whitelist: true,
+    forbidNonWhitelisted: true,
+  }));
 
   app.enableCors({
     origin: true,
@@ -48,8 +46,7 @@ async function bootstrapServer() {
 
   await app.init();
 
-  // Pass an object with app property as per latest @vendia/serverless-express v4+
-  return serverlessExpress.createServer({ app: expressApp });
+  return createServer({ app: expressApp });
 }
 
 export const handler = async (

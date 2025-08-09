@@ -1,5 +1,5 @@
 import { Context, Callback, APIGatewayProxyEvent } from 'aws-lambda';
-import createServer from '@vendia/serverless-express';
+const serverlessExpress = require('@vendia/serverless-express');
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication, ExpressAdapter } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
@@ -49,7 +49,7 @@ async function bootstrapServer() {
   await app.init();
 
   // Pass an object with app property as per latest @vendia/serverless-express v4+
-  return createServer({ app: expressApp });
+  return serverlessExpress.createServer({ app: expressApp });
 }
 
 export const handler = async (

@@ -11,7 +11,7 @@ import { setupSwagger } from './config/swagger';
 import { ValidationPipe } from '@nestjs/common';
 import { Sequelize } from 'sequelize-typescript';
 
-let server: any;
+let server: ReturnType<typeof createServer>;
 
 async function bootstrapServer() {
   const expressApp = express();
@@ -23,11 +23,13 @@ async function bootstrapServer() {
   app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
   app.use(cookieParser());
 
-  app.useGlobalPipes(new ValidationPipe({
-    transform: true,
-    whitelist: true,
-    forbidNonWhitelisted: true,
-  }));
+  app.useGlobalPipes(
+    new ValidationPipe({
+      transform: true,
+      whitelist: true,
+      forbidNonWhitelisted: true,
+    }),
+  );
 
   app.enableCors({
     origin: true,

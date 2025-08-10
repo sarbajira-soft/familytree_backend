@@ -50,10 +50,10 @@ async function bootstrapServer() {
     });
 
     // Database sync - consider moving this to a separate Lambda or startup script
-    const sequelize = app.get(Sequelize);
-    await sequelize.sync({ alter: true }).catch(err => {
-      console.error('Database sync error:', err);
-    });
+    // const sequelize = app.get(Sequelize);
+    // await sequelize.sync({ alter: true }).catch(err => {
+    //   console.error('Database sync error:', err);
+    // });
 
     // Swagger setup
     setupSwagger(app, '/api');

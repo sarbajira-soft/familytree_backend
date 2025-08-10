@@ -37,7 +37,7 @@ async function bootstrapServer() {
       }),
     );
 
-    // CORS - configure properly for your needs
+    // CORS
     app.enableCors({
       origin: true,
       methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
@@ -49,21 +49,22 @@ async function bootstrapServer() {
       prefix: '/uploads/',
     });
 
-    // Database sync - consider moving this to a separate Lambda or startup script
-    // const sequelize = app.get(Sequelize);
-    // await sequelize.sync({ alter: true }).catch(err => {
-    //   console.error('Database sync error:', err);
-    // });
+    // Database sync (remove if not needed)
+    try {
+      const sequelize = app.get(Sequelize);
+      await sequelize.sync({ alter: true });
+    } catch (dbError) {
+      console.error('Database sync error:', dbError);
+    }
 
     // Swagger setup
     setupSwagger(app, '/api');
 
     await app.init();
 
-    // Return the serverless-express handler
     return serverlessExpress({ 
       app: expressApp,
-      resolutionMode: 'PROMISE' // Important for async handling
+      resolutionMode: 'PROMISE'
     });
   } catch (error) {
     console.error('Bootstrap server error:', error);
@@ -72,23 +73,47 @@ async function bootstrapServer() {
 }
 
 export const handler = async (
-  event: APIGatewayProxyEvent,
+  event: any,  // Changed to any to handle various event types
   context: Context,
   callback: Callback,
 ) => {
-  // Log incoming event for debugging
-  console.log('Incoming Lambda Event:', JSON.stringify(event, null, 2));
+  console.log('Incoming Event:', JSON.stringify(event, null, 2));
+
+  // Transform test events to proper API Gateway format
+  const processedEvent = {
+    ...event,
+    httpMethod: event.httpMethod || 'GET',
+    path: event.path || '/',
+    requestContext: event.requestContext || {
+      httpMethod: event.httpMethod || 'GET',
+      path: event.path || '/'
+    },
+    headers: event.headers || {
+      'Content-Type': 'application/json'
+    },
+    body: event.body || null,
+    queryStringParameters: event.queryStringParameters || null
+  };
 
   try {
     if (!cachedServer) {
       cachedServer = await bootstrapServer();
     }
-    return cachedServer(event, context, callback);
+    
+    const result = await cachedServer(processedEvent, context, callback);
+    return result;
   } catch (error) {
     console.error('Lambda handler error:', error);
     return {
       statusCode: 500,
-      body: JSON.stringify({ message: 'Internal Server Error' }),
+      body: JSON.stringify({ 
+        message: 'Internal Server Error',
+        error: error.message,
+        stack: process.env.NODE_ENV === 'production' ? undefined : error.stack
+      }),
+      headers: {
+        'Content-Type': 'application/json'
+      }
     };
   }
 };

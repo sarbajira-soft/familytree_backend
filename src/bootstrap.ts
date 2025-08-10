@@ -2,7 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication, ExpressAdapter } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
-import * as cookieParser from 'cookie-parser';
+const cookieParser = require('cookie-parser');
 import { join } from 'path';
 import * as bodyParser from 'body-parser';
 import { setupSwagger } from './config/swagger';

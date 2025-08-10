@@ -3,15 +3,15 @@ import createServer from '@vendia/serverless-express';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication, ExpressAdapter } from '@nestjs/platform-express';
 import { AppModule } from './app.module';
-import * as express from 'express';
-import * as cookieParser from 'cookie-parser';
-import * as bodyParser from 'body-parser';
+import express from 'express';
+import cookieParser from 'cookie-parser';
+import bodyParser from 'body-parser';
 import { join } from 'path';
 import { setupSwagger } from './config/swagger';
 import { ValidationPipe } from '@nestjs/common';
 import { Sequelize } from 'sequelize-typescript';
 
-let server: ReturnType<typeof createServer>;
+let server: any;
 
 async function bootstrapServer() {
   const expressApp = express();
@@ -48,6 +48,7 @@ async function bootstrapServer() {
 
   await app.init();
 
+  // ✅ v4 syntax: pass raw express app in an object
   return createServer({ app: expressApp });
 }
 

@@ -18,7 +18,7 @@ import {
   Delete
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
+import { diskStorage, memoryStorage } from 'multer';
 import { extname } from 'path';
 import * as fs from 'fs';
 import { UserService } from './user.service';
@@ -33,12 +33,16 @@ import { ApiConsumes, ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiBody
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { generateFileName, imageFileFilter } from '../utils/upload.utils';
 import { MergeUserDto } from './dto/merge-user.dto';
+import { UploadService } from '../uploads/upload.service';
 
 
 @ApiTags('User Module')
 @Controller('user')
 export class UserController {
-  constructor(private readonly userService: UserService) {}
+  constructor(
+    private readonly userService: UserService,
+    private readonly uploadService: UploadService
+  ) {}
 
   @Post('register')
   @ApiOperation({ summary: 'Register a new user' })
@@ -46,7 +50,21 @@ export class UserController {
   @ApiResponse({ status: 400, description: 'Bad request... Email or mobile number already registered.' })
   @ApiBody({ type: RegisterDto })
   async register(@Body() registerDto: RegisterDto) {
-    return this.userService.register(registerDto);
+    try {
+      const result = await this.userService.register(registerDto);
+      return result;
+    } catch (error) {
+      console.error('Registration error:', error);
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+      throw new BadRequestException({
+        statusCode: 400,
+        message: 'Registration failed. Please check your input data.',
+        error: error.message || 'Bad Request',
+        details: error.response?.message || undefined
+      });
+    }
   }
 
   @Post('verify-otp')
@@ -190,22 +208,14 @@ export class UserController {
   @Put('profile/update/:id')
   @UseInterceptors(
     FileInterceptor('profile', {
-      storage: diskStorage({
-        destination: (req, file, cb) => {
-          cb(null, process.env.PROFILE_UPLOAD_PATH || './uploads/profile');
-        },
-        filename: (req, file, cb) => {
-          const filename = generateFileName(file.originalname);
-          cb(null, filename);
-        },
-      }),
+      storage: memoryStorage(),
       fileFilter: imageFileFilter,
+      limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
     }),
   )
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Update user profile with optional image' })
   @ApiResponse({ status: 200, description: 'User profile updated successfully' })
-  @ApiResponse({ status: 400, description: 'Validation failed' })
   @ApiBearerAuth()
   @ApiSecurity('application-token')
   @ApiConsumes('multipart/form-data')
@@ -224,15 +234,18 @@ export class UserController {
     if (loggedInUser.role === 1 && loggedInUser.userId !== targetUserId) {
       throw new BadRequestException({message:'Access denied: Members can only update their own profile'});
     }
+    
+    // Clean up empty strings in the body
     Object.keys(body).forEach((key) => {
       if (body[key] === '') {
         body[key] = undefined;
       }
     });
 
-    // Store only filename in DB
+    // Handle file upload to S3 if file exists
     if (file) {
-      body.profile = file.filename;
+      // Upload to S3 and get the URL
+      body.profile = await this.uploadService.uploadFile(file, 'profile');
     }
     
     return this.userService.updateProfile(targetUserId, body);

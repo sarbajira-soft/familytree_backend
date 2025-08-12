@@ -21,6 +21,7 @@ import { extname } from 'path';
 import { PostService } from './post.service';
 
 import { CreatePostDto } from './dto/createpost.dto';
+import { EditPostDto } from './dto/edit-post.dto';
 import { GetPostByOptionsDto } from './dto/post-options.dto';
 import { AddPostCommentDto } from './dto/post-comment.dto';
 
@@ -58,7 +59,7 @@ export class PostController {
     @Body() dto: CreatePostDto,
     @Req() req,
   ) {
-    const createdBy = req.user.id;
+    const createdBy = req.user.userId;
 
     if (file) {
       // Upload to S3, store URL in DTO
@@ -73,18 +74,7 @@ export class PostController {
   @Put('edit/:id')
   @UseInterceptors(
     FileInterceptor('postImage', {
-      storage: diskStorage({
-        destination: (req, file, cb) => {
-          const uploadPath = process.env.POST_PHOTO_UPLOAD_PATH || './uploads/posts';
-          if (!fs.existsSync(uploadPath)) {
-            fs.mkdirSync(uploadPath, { recursive: true });
-          }
-          cb(null, uploadPath);
-        },
-        filename: (req, file, cb) => {
-          cb(null, `${Date.now()}-${file.originalname}`);
-        },
-      }),
+      storage: memoryStorage(),
       fileFilter: imageFileFilter,
       limits: { fileSize: 5 * 1024 * 1024 },
     }),
@@ -95,13 +85,21 @@ export class PostController {
   @ApiOperation({ summary: 'Edit post' })
   @ApiResponse({ status: 200, description: 'Post updated' })
   async editPost(
-    @Param('id') id: number,
-    @Req() req,
     @UploadedFile() file: Express.Multer.File,
-    @Body() body: CreatePostDto,
+    @Param('id') id: number,
+    @Body() dto: EditPostDto,
+    @Req() req,
   ) {
     const userId = req.user?.userId;
-    return this.postService.updatePost(+id, userId, body, file);
+    
+    // If there's a file, pass it to the service for upload
+    // If not, pass null and let the service handle the existing image
+    return this.postService.updatePost(
+      id, 
+      userId, 
+      dto, 
+      file || null
+    );
   }
 
   @UseGuards(JwtAuthGuard)

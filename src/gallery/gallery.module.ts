@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { SequelizeModule } from '@nestjs/sequelize';
 import { GalleryController } from './gallery.controller';
 import { GalleryService } from './gallery.service';
@@ -9,17 +9,20 @@ import { GalleryComment } from './model/gallery-comment.model';
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { NotificationModule } from '../notification/notification.module';
+import { UploadModule } from '../uploads/upload.module';
 
 @Module({
-  imports: [SequelizeModule.forFeature([
-    Gallery,
-    GalleryAlbum, 
-    GalleryLike, 
-    GalleryComment, 
-    User, 
-    UserProfile
-  ]),
-  NotificationModule
+  imports: [
+    SequelizeModule.forFeature([
+      Gallery,
+      GalleryAlbum, 
+      GalleryLike, 
+      GalleryComment, 
+      User, 
+      UserProfile
+    ]),
+    NotificationModule,
+    forwardRef(() => UploadModule)
   ],
   controllers: [GalleryController],
   providers: [GalleryService],

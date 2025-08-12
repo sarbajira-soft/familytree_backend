@@ -16,8 +16,9 @@ import {
   Put,
 } from '@nestjs/common';
 import { FilesInterceptor, FileFieldsInterceptor, AnyFilesInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
+import { diskStorage, memoryStorage } from 'multer';
 import * as fs from 'fs';
+import { BadRequestException } from '@nestjs/common';
 import { GalleryService } from './gallery.service';
 
 import { CreateGalleryDto } from './dto/gallery.dto';
@@ -61,19 +62,7 @@ export class GalleryController {
         { name: 'images', maxCount: 10 },
       ],
       {
-        storage: diskStorage({
-          destination: (req, file, cb) => {
-            const uploadPath = process.env.GALLERY_PHOTO_UPLOAD_PATH || './uploads/gallery';
-            if (!fs.existsSync(uploadPath)) {
-              fs.mkdirSync(uploadPath, { recursive: true });
-            }
-            cb(null, uploadPath);
-          },
-          filename: (req, file, cb) => {
-            const filename = generateFileName(file.originalname);
-            cb(null, filename);
-          },
-        }),
+        storage: memoryStorage(),
         fileFilter: imageFileFilter,
         limits: { fileSize: 5 * 1024 * 1024 }, // 5MB per file
       },
@@ -113,23 +102,31 @@ export class GalleryController {
   @HttpCode(HttpStatus.CREATED)
   async createGallery(
     @Req() req,
-    @UploadedFiles()
-    files: {
-      coverPhoto?: Express.Multer.File[];
-      images?: Express.Multer.File[];
-    },
-    @Body() body: CreateGalleryDto,
+    @UploadedFiles() files: { coverPhoto?: Express.Multer.File[], images?: Express.Multer.File[] },
+    @Body() dto: CreateGalleryDto,
   ) {
-    const loggedInUser = req.user;
-
-    const coverPhoto = files.coverPhoto?.[0];
+    const createdBy = req.user.userId;
     const albumImages = files.images || [];
-
-    if (coverPhoto) {
-      body.coverPhoto = coverPhoto.filename as any;
+    let coverPhotoFilename: string | undefined;
+    
+    // If cover photo is uploaded, handle it
+    if (files.coverPhoto?.[0]) {
+      try {
+        // Upload cover photo to S3 and get the filename
+        coverPhotoFilename = await this.galleryService.uploadGalleryFile(files.coverPhoto[0], 'cover');
+      } catch (error) {
+        console.error('Error uploading cover photo:', error);
+        throw new BadRequestException('Failed to upload cover photo');
+      }
     }
 
-    return this.galleryService.createGallery(body, loggedInUser.userId, albumImages);
+    // Create a new DTO with the cover photo filename if it was uploaded
+    const galleryData = {
+      ...dto,
+      ...(coverPhotoFilename && { coverPhoto: coverPhotoFilename })
+    };
+
+    return this.galleryService.createGallery(galleryData, createdBy, albumImages);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -149,33 +146,49 @@ export class GalleryController {
   @UseGuards(JwtAuthGuard)
   @Put(':id')
   @UseInterceptors(
-    AnyFilesInterceptor({
-      storage: diskStorage({
-        destination: (req, file, cb) => {
-          const uploadPath = process.env.GALLERY_PHOTO_UPLOAD_PATH || './uploads/gallery';
-          if (!fs.existsSync(uploadPath)) fs.mkdirSync(uploadPath, { recursive: true });
-          cb(null, uploadPath);
-        },
-        filename: (req, file, cb) => cb(null, generateFileName(file.originalname)),
-      }),
-      fileFilter: imageFileFilter,
-      limits: { fileSize: 5 * 1024 * 1024 },
-    }),
+    FileFieldsInterceptor(
+      [
+        { name: 'coverPhoto', maxCount: 1 },
+        { name: 'images', maxCount: 10 },
+      ],
+      {
+        storage: memoryStorage(),
+        fileFilter: imageFileFilter,
+        limits: { fileSize: 5 * 1024 * 1024 }, // 5MB per file
+      },
+    ),
   )
   @ApiConsumes('multipart/form-data')
   @HttpCode(HttpStatus.OK)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Edit a gallery' })
+  @ApiOperation({ summary: 'Update a gallery' })
   @ApiResponse({ status: 200, description: 'Gallery updated successfully' })
   async updateGallery(
     @Param('id') id: number,
-    @UploadedFiles() files: Express.Multer.File[],
-    @Body() body: CreateGalleryDto,
+    @UploadedFiles() files: { coverPhoto?: Express.Multer.File[], images?: Express.Multer.File[] } = {},
+    @Body() dto: CreateGalleryDto,
     @Req() req,
   ) {
-    const coverPhoto = files?.find((f) => f.fieldname === 'coverPhoto');
-    const albumImages = files?.filter((f) => f.fieldname === 'images');
-    return this.galleryService.updateGallery(+id, body, req.user.userId, coverPhoto, albumImages);
+    // Create a new DTO object to avoid mutating the original
+    const updateDto = { ...dto };
+    
+    // Handle cover photo upload if provided
+    if (files?.coverPhoto?.[0]) {
+      try {
+        const filename = await this.galleryService.uploadGalleryFile(files.coverPhoto[0], 'cover');
+        updateDto.coverPhoto = filename;
+      } catch (error) {
+        console.error('Error uploading cover photo:', error);
+        throw new BadRequestException('Failed to upload cover photo');
+      }
+    }
+
+    return this.galleryService.updateGallery(
+      +id, 
+      updateDto, 
+      req.user.userId, 
+      files?.images || []
+    );
   }
 
   @UseGuards(JwtAuthGuard)

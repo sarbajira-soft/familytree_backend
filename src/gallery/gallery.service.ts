@@ -14,10 +14,11 @@ import { GalleryLike } from './model/gallery-like.model';
 import { GalleryComment } from './model/gallery-comment.model';
 import { UserProfile } from '../user/model/user-profile.model';
 
-import { CreateGalleryDto } from './dto/gallery.dto';
+import { CreateGalleryDto, UpdateGalleryDto } from './dto/gallery.dto';
 import { CreateGalleryCommentDto } from './dto/gallery-comment.dto';
 
 import { NotificationService } from '../notification/notification.service';
+import { UploadService } from '../uploads/upload.service';
 
 @Injectable()
 export class GalleryService {
@@ -34,7 +35,121 @@ export class GalleryService {
     private readonly userProfileModel: typeof UserProfile,
 
     private readonly notificationService: NotificationService,
+    private readonly uploadService: UploadService,
   ) {}
+
+  private getGalleryImageFilenameFromUrl(url: string): string | null {
+    if (!url) return null;
+    
+    try {
+      const parsedUrl = new URL(url);
+      // Extract the filename from the path
+      return parsedUrl.pathname.split('/').pop() || null;
+    } catch (e) {
+      // If it's not a valid URL, return as is (might already be a filename)
+      return url;
+    }
+  }
+
+  private constructGalleryImageUrl(filename: string, subfolder?: string): string {
+    if (!filename) return null;
+    
+    // If it's already a full URL, return as is
+    if (filename.startsWith('http://') || filename.startsWith('https://')) {
+      // If it's a local URL, try to extract the filename
+      if (filename.includes('localhost') || filename.includes('127.0.0.1')) {
+        const url = new URL(filename);
+        filename = url.pathname.split('/').pop() || filename;
+      } else {
+        // For S3 URLs, check if it's a cover image and needs to be in the cover folder
+        if (subfolder === 'cover' && !filename.includes('/cover/')) {
+          // This is a cover image that's not in the cover folder yet
+          const url = new URL(filename);
+          const pathParts = url.pathname.split('/');
+          const existingFilename = pathParts.pop();
+          // Reconstruct the URL with the cover folder
+          return `${url.origin}/cover/${existingFilename}`;
+        }
+        return filename;
+      }
+    }
+
+    // If S3 is configured, construct S3 URL
+    if (process.env.AWS_S3_BUCKET_NAME && process.env.AWS_REGION) {
+      const s3BaseUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com`;
+      if (subfolder === 'cover') {
+        return `${s3BaseUrl}/gallery/cover/${filename}`;
+      } else if (subfolder) {
+        return `${s3BaseUrl}/${subfolder}/${filename}`;
+      }
+      return `${s3BaseUrl}/gallery/${filename}`;
+    }
+
+    // Fallback to local URL
+    const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
+    let uploadPath = 'uploads';
+    
+    if (subfolder) {
+      uploadPath = `uploads/${subfolder}`;
+    } else {
+      uploadPath = process.env.GALLERY_PHOTO_UPLOAD_PATH?.replace(/^\.?\/?/, '') || 'uploads/gallery';
+    }
+    
+    return `${baseUrl.replace(/\/$/, '')}/${uploadPath.replace(/\/$/, '')}/${filename}`;
+  }
+
+  /**
+   * Uploads a file to S3 and returns the filename
+   * @param file File to upload
+   * @param subfolder Optional subfolder in the gallery bucket
+   * @returns Promise<string> The filename of the uploaded file
+   */
+  async uploadGalleryFile(file: Express.Multer.File, subfolder?: string): Promise<string> {
+    try {
+      // For cover photos, use 'gallery/cover' folder
+      // For album images, use 'gallery' folder
+      let folder = 'gallery';
+      if (subfolder === 'cover') {
+        folder = 'gallery/cover';
+      } else if (subfolder) {
+        folder = `gallery/${subfolder}`;
+      }
+      
+      // Upload the file and get the full URL
+      const fileUrl = await this.uploadService.uploadFile(file, folder);
+      
+      // For S3, the uploadService.uploadFile returns just the filename when successful
+      // So we can use that directly instead of parsing it from a URL
+      const filename = fileUrl;
+      
+      if (!filename) {
+        throw new Error('Failed to get filename from upload service');
+      }
+      
+      const fullUrl = this.constructGalleryImageUrl(filename, subfolder);
+      
+      console.log('File uploaded successfully:', {
+        originalName: file.originalname,
+        uploadedAs: filename,
+        folder,
+        fullUrl: fullUrl,
+        'filenameType': typeof filename,
+        'isString': typeof filename === 'string',
+        'isURL': filename.startsWith ? filename.startsWith('http') : 'unknown'
+      });
+      
+      console.log('Constructed full URL from filename:', {
+        input: filename,
+        output: fullUrl,
+        subfolder: subfolder
+      });
+      
+      return filename;
+    } catch (error) {
+      console.error('Error uploading gallery file:', error);
+      throw new Error('Failed to upload file to gallery');
+    }
+  }
 
   async createGallery(
     dto: CreateGalleryDto,
@@ -51,76 +166,130 @@ export class GalleryService {
       throw new BadRequestException('familyCode is required for private privacy');
     }
 
+    const transaction = await this.galleryModel.sequelize.transaction();
+    
     try {
       // Step 1: Create Gallery
       const galleryData: any = {
         galleryTitle: dto.galleryTitle,
         galleryDescription: dto.galleryDescription,
-        createdBy,
+        privacy,
+        familyCode: privacy === 'private' ? dto.familyCode : '',
         status: dto.status ?? 1,
-        coverPhoto: dto.coverPhoto as any || null,
-        privacy: privacy,
+        createdBy,
       };
 
-      // Set familyCode - use empty string for public galleries if database requires it
-      if (dto.familyCode) {
-        galleryData.familyCode = dto.familyCode;
-      } else {
-        // For public galleries, use empty string if database doesn't allow null
-        galleryData.familyCode = '';
+      // Handle cover photo if provided
+      if (dto.coverPhoto) {
+        // If it's a file, upload it to S3
+        if (typeof dto.coverPhoto !== 'string') {
+          galleryData.coverPhoto = await this.uploadGalleryFile(dto.coverPhoto, 'cover');
+        } else {
+          // If it's already a string (filename), use it as is
+          galleryData.coverPhoto = dto.coverPhoto;
+        }
       }
 
-      const gallery = await this.galleryModel.create(galleryData);
+      // Create gallery within transaction
+      const gallery = await this.galleryModel.create(galleryData, { transaction });
+      const galleryId = gallery.id;
 
-      // Step 2: Save Album Images
-      const albumData = albumImages.map((file) => ({
-        galleryId: gallery.id,
-        album: file.filename,
-      }));
+      // Step 2: Upload album images to S3 and create gallery album entries
+      const albumData = [];
+      for (const image of albumImages) {
+        try {
+          const filename = await this.uploadGalleryFile(image);
+          albumData.push({
+            galleryId,
+            album: filename,
+          });
+        } catch (error) {
+          console.error('Error uploading gallery image:', error);
+          // Continue with other images even if one fails
+        }
+      }
+      
+      if (albumData.length === 0) {
+        // If no images were uploaded successfully, rollback and throw error
+        await transaction.rollback();
+        throw new BadRequestException('Failed to upload gallery images');
+      }
 
-      await this.galleryAlbumModel.bulkCreate(albumData);
+      // Create album entries within the same transaction
+      await this.galleryAlbumModel.bulkCreate(albumData, { transaction });
 
       // Step 3: Send notifications only for private galleries with familyCode
       if (privacy === 'private' && dto.familyCode) {
         try {
-          // Fetch approved family members from ft_family_members
-          const memberIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
+          // Find all users with this family code (excluding the creator)
+          const users = await this.userProfileModel.findAll({
+            where: {
+              familyCode: dto.familyCode,
+              userId: { [Op.ne]: createdBy },
+            },
+            transaction
+          });
 
-          // Extract memberIds excluding the creator
-          // Send notification to all approved members (excluding the creator)
-          if (memberIds.length > 0) {
-            await this.notificationService.createNotification(
-              {
-                type: 'FAMILY_GALLERY_CREATED',
-                title: 'New Gallery Added',
-                message: `${gallery.galleryTitle} has been added to the family gallery.`,
-                familyCode: dto.familyCode,
-                referenceId: gallery.id,
-                userIds: memberIds,
-              },
-              createdBy, // performedBy
-            );
-          }
-        } catch (notificationError) {
-          // Log notification error but don't fail the gallery creation
-          console.error('Failed to send notifications:', notificationError);
+          // Send notification to all users at once
+          const userIds = users.map(user => user.userId);
+          await this.notificationService.createNotification(
+            {
+              type: 'GALLERY_SHARED',
+              title: 'New Private Gallery',
+              message: `A new private gallery "${dto.galleryTitle}" has been shared with your family`,
+              familyCode: dto.familyCode,
+              referenceId: galleryId,
+              userIds,
+            },
+            createdBy
+          ).catch(error => {
+            console.error('Error sending gallery share notifications:', error);
+          });
+        } catch (error) {
+          console.error('Error in notification process:', error);
+          // Don't fail the gallery creation if notifications fail
         }
       }
 
-      // Step 4: Return Response
-      return {
+      // Commit the transaction if everything succeeded
+      await transaction.commit();
+
+      // Step 4: Return the created gallery with full URLs
+      const createdGallery = await this.galleryModel.findByPk(galleryId, {
+        include: [
+          {
+            model: this.galleryAlbumModel,
+            as: 'galleryAlbums',
+            attributes: ['id', 'album'],
+          },
+        ],
+      });
+
+      const response = {
         success: true,
         message: 'Gallery created successfully',
         data: {
-          id: gallery.id,
-          galleryTitle: gallery.galleryTitle,
-          coverPhoto: gallery.coverPhoto,
-          album: albumImages.map((img) => img.filename),
-          totalImages: albumImages.length,
-          privacy: privacy,
-          familyCode: dto.familyCode || null, // Return null in response even if empty string in DB
+          id: createdGallery.id,
+          galleryTitle: createdGallery.galleryTitle,
+          galleryDescription: createdGallery.galleryDescription,
+          coverPhoto: createdGallery.coverPhoto 
+            ? this.constructGalleryImageUrl(createdGallery.coverPhoto)
+            : null,
+          album: createdGallery.galleryAlbums.map(album => ({
+            id: album.id,
+            url: this.constructGalleryImageUrl(album.album)
+          })),
+          totalImages: createdGallery.galleryAlbums.length,
+          privacy: createdGallery.privacy,
+          familyCode: createdGallery.familyCode || null,
+          status: createdGallery.status,
+          createdBy: createdGallery.createdBy,
+          createdAt: createdGallery.createdAt,
+          updatedAt: createdGallery.updatedAt
         },
       };
+
+      return response;
     } catch (error) {
       // Enhanced error handling
       console.error('Gallery creation failed:', error);
@@ -180,24 +349,20 @@ export class GalleryService {
       order: [['createdAt', 'DESC']],
     });
 
-    const baseUrl = process.env.BASE_URL || '';
-    const uploadPath = process.env.GALLERY_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/gallery';
-    const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
-
     const formatted = await Promise.all(
       galleries.map(async (gallery) => {
         const galleryJson = gallery.toJSON() as any;
 
-        // Format album image URLs
+        // Format album image URLs using constructGalleryImageUrl
         const albumImages = (galleryJson.galleryAlbums || []).map((album) => ({
           ...album,
-          album: album.album ? `${baseUrl}/${uploadPath}/${album.album}` : null,
+          album: this.constructGalleryImageUrl(album.album),
         }));
 
-        // Set cover photo
+        // Set cover photo using constructGalleryImageUrl with 'cover' subfolder
         let coverImageUrl: string | null = null;
         if (galleryJson.coverPhoto) {
-          coverImageUrl = `${baseUrl}/${uploadPath}/${galleryJson.coverPhoto}`;
+          coverImageUrl = this.constructGalleryImageUrl(galleryJson.coverPhoto, 'cover');
         } else if (albumImages.length > 0) {
           coverImageUrl = albumImages[0].album;
         }
@@ -220,7 +385,7 @@ export class GalleryService {
         // Format user info
         const user = galleryJson.userProfile;
         const fullName = user ? `${user.firstName} ${user.lastName}` : null;
-        const profileImage = user?.profile ? `${baseUrl}/${profilePath}/${user.profile}` : null;
+        const profileImage = user?.profile ? this.constructGalleryImageUrl(user.profile, 'profile') : null;
 
         return {
           ...galleryJson,
@@ -239,116 +404,6 @@ export class GalleryService {
     );
 
     return formatted;
-  }
-
-  async updateGallery(
-    id: number,
-    dto: CreateGalleryDto,
-    updatedBy: number,
-    coverPhotoFile?: Express.Multer.File,
-    albumFiles?: Express.Multer.File[],
-  ) {
-    const gallery = await this.galleryModel.findByPk(id, {
-      include: [{ model: this.galleryAlbumModel, as: 'galleryAlbums' }],
-    });
-
-    if (!gallery) throw new NotFoundException('Gallery not found');
-
-    // Validate familyCode requirement based on privacy
-    const privacy = dto.privacy ?? gallery.privacy;
-    if (privacy === 'private' && !dto.familyCode) {
-      throw new BadRequestException('familyCode is required for private privacy');
-    }
-
-    const uploadPath = process.env.GALLERY_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/gallery';
-
-    // Delete old cover photo if new one uploaded
-    if (coverPhotoFile && gallery.coverPhoto) {
-      const oldCover = `${uploadPath}/${gallery.coverPhoto}`;
-      if (fs.existsSync(oldCover)) fs.unlinkSync(oldCover);
-      dto.coverPhoto = coverPhotoFile.filename as any;
-    }
-
-    // Delete old album images if new images uploaded
-    if (albumFiles && albumFiles.length > 0 && gallery.galleryAlbums?.length > 0) {
-      for (const album of gallery.galleryAlbums) {
-        const imgPath = `${uploadPath}/${album.album}`;
-        if (fs.existsSync(imgPath)) fs.unlinkSync(imgPath);
-        await album.destroy();
-      }
-
-      // Insert new album images
-      await Promise.all(
-        albumFiles.map((file) =>
-          this.galleryAlbumModel.create({ galleryId: id, album: file.filename }),
-        ),
-      );
-    }
-
-    // Update fields
-    const updateData = { ...dto as any };
-    if (privacy === 'public' && !dto.familyCode) {
-      updateData.familyCode = ''; // Use empty string instead of null for database compatibility
-    }
-    await gallery.update(updateData);
-
-    // Return updated gallery with full URLs
-    const baseUrl = process.env.BASE_URL || '';
-    const newGallery = await this.galleryModel.findByPk(id, {
-      include: [{ model: this.galleryAlbumModel, as: 'galleryAlbums' }],
-    });
-
-    const galleryJson = newGallery.toJSON();
-    const albumImages = galleryJson.galleryAlbums.map((album) => ({
-      ...album,
-      album: `${baseUrl}/${uploadPath}/${album.album}`,
-    }));
-
-    let coverImageUrl = galleryJson.coverPhoto
-      ? `${baseUrl}/${uploadPath}/${galleryJson.coverPhoto}`
-      : albumImages[0]?.album || null;
-
-    return {
-      message: 'Gallery updated successfully',
-      data: {
-        ...galleryJson,
-        coverPhoto: coverImageUrl,
-        galleryAlbums: albumImages,
-      },
-    };
-  }
-
-  async deleteGallery(id: number) {
-    const gallery = await this.galleryModel.findByPk(id, {
-      include: [{ model: this.galleryAlbumModel, as: 'galleryAlbums' }],
-    });
-
-    if (!gallery) {
-      throw new NotFoundException('Gallery not found');
-    }
-
-    const uploadPath =
-      process.env.GALLERY_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/gallery';
-
-    // 🧹 Delete album images (DB + files)
-    for (const album of gallery.galleryAlbums || []) {
-      const filePath = `${uploadPath}/${album.album}`;
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-      await album.destroy();
-    }
-
-    // Delete cover photo file
-    if (gallery.coverPhoto) {
-      const coverPath = `${uploadPath}/${gallery.coverPhoto}`;
-      if (fs.existsSync(coverPath)) fs.unlinkSync(coverPath);
-    }
-
-    // Delete gallery record
-    await gallery.destroy();
-
-    return {
-      message: 'Gallery and all related images deleted successfully',
-    };
   }
 
   async toggleLikeGallery(galleryId: number, userId: number) {
@@ -394,11 +449,335 @@ export class GalleryService {
     };
   }
 
+  async updateGallery(
+    galleryId: number,
+    dto: UpdateGalleryDto,
+    userId: number,
+    newAlbumImages: Express.Multer.File[] = [],
+  ) {
+    // Start a transaction for atomic updates
+    const transaction = await this.galleryModel.sequelize.transaction();
+    
+    try {
+      // Step 1: Find the existing gallery
+      const existingGallery = await this.galleryModel.findByPk(galleryId, {
+        include: [
+          {
+            model: this.galleryAlbumModel,
+            as: 'galleryAlbums',
+          },
+        ],
+        transaction,
+      });
+
+      if (!existingGallery) {
+        throw new NotFoundException('Gallery not found');
+      }
+
+      // Check if the user has permission to update this gallery
+      if (existingGallery.createdBy !== userId) {
+        throw new ForbiddenException('You do not have permission to update this gallery');
+      }
+
+      // Step 2: Prepare gallery update data
+      const updateData: Partial<Gallery> = {
+        galleryTitle: dto.galleryTitle,
+        galleryDescription: dto.galleryDescription,
+        privacy: dto.privacy,
+        status: dto.status ?? existingGallery.status,
+      };
+
+      // Handle privacy and family code updates
+      if (dto.privacy === 'private') {
+        if (!dto.familyCode) {
+          throw new BadRequestException('familyCode is required for private privacy');
+        }
+        updateData.familyCode = dto.familyCode;
+      } else {
+        updateData.familyCode = ''; // Clear family code for public galleries
+      }
+
+      // Handle cover photo update if provided
+      if (dto.coverPhoto) {
+        try {
+          // If it's a file, upload it to S3 in the cover subfolder
+          if (typeof dto.coverPhoto !== 'string') {
+            // Store the old cover photo before updating
+            const oldCoverPhoto = existingGallery.coverPhoto;
+            
+            // Upload new cover photo to gallery/cover folder
+            const newCoverPhoto = await this.uploadGalleryFile(dto.coverPhoto, 'cover');
+            console.log('New cover photo uploaded:', newCoverPhoto);
+            updateData.coverPhoto = newCoverPhoto;
+            
+            // Log current state before deletion
+            console.log('=== COVER PHOTO UPDATE DEBUG ===');
+            console.log('Current cover photo in DB (raw):', JSON.stringify(oldCoverPhoto));
+            console.log('New cover photo to be saved (raw):', JSON.stringify(newCoverPhoto));
+            
+            // Always attempt to delete old cover photo if it exists and is different from the new one
+            if (oldCoverPhoto) {
+              console.log('Proceeding with cover photo deletion...');
+              console.log('Attempting to delete old cover photo:', {
+                oldCover: oldCoverPhoto,
+                newCover: newCoverPhoto,
+                areDifferent: oldCoverPhoto !== newCoverPhoto
+              });
+              
+              try {
+                // Get the filename from the URL or use as is
+                let filenameToDelete = oldCoverPhoto;
+                
+                // If it's a full URL, extract just the filename
+                if (oldCoverPhoto.includes('amazonaws.com')) {
+                  // For S3 URLs, we need to extract the key properly
+                  const url = new URL(oldCoverPhoto);
+                  // The key is the path without the leading slash
+                  const key = url.pathname.substring(1);
+                  console.log('Deleting S3 object with key:', key);
+                  // Delete using the full S3 key
+                  const deleted = await this.uploadService.deleteFile(key);
+                  if (deleted) {
+                    console.log('Successfully deleted old cover photo from S3');
+                  } else {
+                    console.warn('Failed to delete cover photo from S3');
+                  }
+                } else {
+                  // For local files or direct filenames
+                  const cleanFilename = this.getGalleryImageFilenameFromUrl(oldCoverPhoto) || oldCoverPhoto;
+                  console.log('Deleting local file with filename:', cleanFilename);
+                  // Delete from the cover folder
+                  const deleted = await this.uploadService.deleteFile(cleanFilename, 'gallery/cover');
+                  if (deleted) {
+                    console.log('Successfully deleted old cover photo from local storage');
+                  } else {
+                    console.warn('Failed to delete cover photo from local storage');
+                  }
+                }
+              } catch (error) {
+                console.error('Error in cover photo cleanup:', error);
+                // Continue with the update even if cleanup fails
+              }
+            } else {
+              console.log('No need to delete old cover photo: No existing cover photo');
+            }
+          } else {
+            // If it's a string, extract filename if it's a URL
+            if (dto.coverPhoto.startsWith('http')) {
+              const url = new URL(dto.coverPhoto);
+              updateData.coverPhoto = url.pathname.split('/').pop() || dto.coverPhoto;
+            } else {
+              updateData.coverPhoto = dto.coverPhoto;
+            }
+          }
+        } catch (error) {
+          console.error('Error updating cover photo:', error);
+          throw new BadRequestException('Failed to update cover photo');
+        }
+      }
+
+      // Step 4: Update the gallery
+      await existingGallery.update(updateData, { transaction });
+
+      // Step 5: Handle album images if any new ones are provided
+      if (newAlbumImages && newAlbumImages.length > 0) {
+        const albumData = [];
+        
+        for (const image of newAlbumImages) {
+          try {
+            const filename = await this.uploadGalleryFile(image);
+            albumData.push({
+              galleryId,
+              album: filename,
+            });
+          } catch (error) {
+            console.error('Error uploading gallery image:', error);
+            // Continue with other images even if one fails
+          }
+        }
+
+        if (albumData.length > 0) {
+          await this.galleryAlbumModel.bulkCreate(albumData, { transaction });
+        }
+      }
+
+      // Step 6: Handle image deletions if specified in the DTO
+      if (dto.removedImageIds && Array.isArray(dto.removedImageIds) && dto.removedImageIds.length > 0) {
+        // Find the images to be deleted
+        const imagesToDelete = await this.galleryAlbumModel.findAll({
+          where: {
+            id: dto.removedImageIds,
+            galleryId,
+          },
+          transaction,
+        });
+
+        // Delete the files from S3
+        await Promise.all(
+          imagesToDelete.map(async (image) => {
+            try {
+              await this.uploadService.deleteFile(`gallery/${image.album}`);
+            } catch (error) {
+              console.error(`Error deleting image ${image.album}:`, error);
+              // Continue even if file deletion fails
+            }
+          })
+        );
+
+        // Delete the database records
+        await this.galleryAlbumModel.destroy({
+          where: {
+            id: dto.removedImageIds,
+            galleryId,
+          },
+          transaction,
+        });
+      }
+
+      // Commit the transaction if everything succeeded
+      await transaction.commit();
+
+      // Step 7: Return the updated gallery with full URLs
+      const updatedGallery = await this.galleryModel.findByPk(galleryId, {
+        include: [
+          {
+            model: this.galleryAlbumModel,
+            as: 'galleryAlbums',
+          },
+        ],
+      });
+
+      // Format the response with full URLs
+      const response = {
+        success: true,
+        message: 'Gallery updated successfully',
+        data: {
+          id: updatedGallery.id,
+          galleryTitle: updatedGallery.galleryTitle,
+          galleryDescription: updatedGallery.galleryDescription,
+          coverPhoto: updatedGallery.coverPhoto 
+            ? this.constructGalleryImageUrl(updatedGallery.coverPhoto)
+            : null,
+          album: updatedGallery.galleryAlbums.map(album => ({
+            id: album.id,
+            url: this.constructGalleryImageUrl(album.album)
+          })),
+          totalImages: updatedGallery.galleryAlbums.length,
+          privacy: updatedGallery.privacy,
+          familyCode: updatedGallery.familyCode || null,
+          status: updatedGallery.status,
+          createdBy: updatedGallery.createdBy,
+          updatedAt: updatedGallery.updatedAt
+        },
+      };
+
+      return response;
+    } catch (error) {
+      // Rollback the transaction on error
+      await transaction.rollback();
+      console.error('Gallery update failed:', error);
+      
+      // Handle specific error types
+      if (error instanceof BadRequestException || 
+          error instanceof NotFoundException ||
+          error instanceof ForbiddenException) {
+        throw error;
+      }
+      
+      throw new BadRequestException(
+        `Failed to update gallery: ${error.message || 'Unknown error occurred'}`
+      );
+    }
+  }
+
+  async deleteGallery(galleryId: number) {
+    const transaction = await this.galleryModel.sequelize.transaction();
+    
+    try {
+      // 1. Find the gallery with its album images
+      const gallery = await this.galleryModel.findByPk(galleryId, {
+        include: [
+          {
+            model: this.galleryAlbumModel,
+            as: 'galleryAlbums',
+          },
+        ],
+        transaction,
+      });
+
+      if (!gallery) {
+        throw new NotFoundException('Gallery not found');
+      }
+
+      // 2. Delete cover photo from S3 if it exists
+      if (gallery.coverPhoto) {
+        try {
+          await this.uploadService.deleteFile(`gallery/cover/${gallery.coverPhoto}`);
+        } catch (error) {
+          console.error(`Error deleting cover photo ${gallery.coverPhoto}:`, error);
+          // Continue with deletion even if file deletion fails
+        }
+      }
+
+      // 3. Delete all album images from S3
+      if (gallery.galleryAlbums && gallery.galleryAlbums.length > 0) {
+        await Promise.all(
+          gallery.galleryAlbums.map(async (album) => {
+            try {
+              await this.uploadService.deleteFile(`gallery/${album.album}`);
+            } catch (error) {
+              console.error(`Error deleting album image ${album.album}:`, error);
+              // Continue with other deletions even if one fails
+            }
+          })
+        );
+      }
+
+      // 4. Delete all related records (likes, comments, album entries)
+      await Promise.all([
+        this.galleryAlbumModel.destroy({
+          where: { galleryId },
+          transaction,
+        }),
+        this.galleryLikeModel.destroy({
+          where: { galleryId },
+          transaction,
+        }),
+        this.galleryCommentModel.destroy({
+          where: { galleryId },
+          transaction,
+        }),
+      ]);
+
+      // 5. Finally, delete the gallery itself
+      await gallery.destroy({ transaction });
+
+      // Commit the transaction
+      await transaction.commit();
+
+      return {
+        success: true,
+        message: 'Gallery and all associated data deleted successfully',
+        deletedGalleryId: galleryId,
+      };
+    } catch (error) {
+      // Rollback the transaction on error
+      await transaction.rollback();
+      console.error('Gallery deletion failed:', error);
+      
+      // Handle specific error types
+      if (error instanceof NotFoundException) {
+        throw error;
+      }
+      
+      throw new BadRequestException(
+        `Failed to delete gallery: ${error.message || 'Unknown error occurred'}`
+      );
+    }
+  }
+
   async getGalleryComments(galleryId: number, page = 1, limit = 10) {
     const offset = (page - 1) * limit;
-    const baseUrl = process.env.BASE_URL || '';
-    const profileUploadPath =
-      process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
 
     const { rows, count } = await this.galleryCommentModel.findAndCountAll({
       where: { galleryId },
@@ -426,9 +805,7 @@ export class GalleryService {
           ? {
               firstName: comment.userProfile.firstName,
               lastName: comment.userProfile.lastName,
-              profile: comment.userProfile.profile
-                ? `${baseUrl}/${profileUploadPath}/${comment.userProfile.profile}`
-                : null,
+              profile: this.constructGalleryImageUrl(comment.userProfile.profile, 'profile'),
             }
           : null,
       })),
@@ -468,23 +845,18 @@ export class GalleryService {
       throw new NotFoundException('Gallery not found');
     }
 
-    const baseUrl = process.env.BASE_URL || '';
-    const uploadPath =
-      process.env.GALLERY_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') ||
-      'uploads/gallery';
-
     const galleryJson = gallery.toJSON();
 
     // Format album image URLs
     const albumImages = (galleryJson.galleryAlbums || []).map((album) => ({
       ...album,
-      album: album.album ? `${baseUrl}/${uploadPath}/${album.album}` : null,
+      album: this.constructGalleryImageUrl(album.album),
     }));
 
-    // Set cover photo
+    // Set cover photo using constructGalleryImageUrl with 'cover' subfolder
     let coverImageUrl: string | null = null;
     if (galleryJson.coverPhoto) {
-      coverImageUrl = `${baseUrl}/${uploadPath}/${galleryJson.coverPhoto}`;
+      coverImageUrl = this.constructGalleryImageUrl(galleryJson.coverPhoto, 'cover');
     } else if (albumImages.length > 0) {
       coverImageUrl = albumImages[0].album;
     }

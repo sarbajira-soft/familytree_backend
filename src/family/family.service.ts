@@ -7,6 +7,7 @@ import { Family } from './model/family.model';
 import { FamilyMember } from './model/family-member.model';
 import { FamilyTree } from './model/family-tree.model';
 import { MailService } from '../utils/mail.service';
+import { UploadService } from '../uploads/upload.service';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 import * as fs from 'fs';
@@ -36,6 +37,7 @@ export class FamilyService {
     private mailService: MailService,
     private readonly notificationService: NotificationService,
     private readonly relationshipEdgeService: RelationshipEdgeService,
+    private readonly uploadService: UploadService,
   ) {}
 
   // Helper function to generate JWT access token
@@ -70,6 +72,14 @@ export class FamilyService {
   async createFamily(dto: CreateFamilyDto, createdBy: number) {
     const existing = await this.familyModel.findOne({ where: { familyCode: dto.familyCode } });
     if (existing) {
+      // If there's a file URL in the DTO but the family already exists, clean it up
+      if (dto.familyPhoto) {
+        try {
+          await this.uploadService.deleteFile(dto.familyPhoto, 'family');
+        } catch (error) {
+          console.error('Failed to clean up uploaded file:', error);
+        }
+      }
       throw new BadRequestException('Family code already exists');
     }
 
@@ -131,44 +141,39 @@ export class FamilyService {
     const family = await this.familyModel.findOne({ where: { familyCode: code } });
     if (!family) throw new NotFoundException('Family not found');
 
-    const baseUrl = process.env.BASE_URL || '';
-    const familyPhotoPath = process.env.FAMILY_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/family';
-
-    // If familyPhoto exists, prepend the full URL; otherwise keep null or empty
-    const familyPhotoUrl = family.familyPhoto
-      ? `${baseUrl}/${familyPhotoPath}${family.familyPhoto}`
+    // Get the full URL for the family photo if it exists
+    const familyPhotoUrl = family.familyPhoto 
+      ? this.uploadService.getFileUrl(family.familyPhoto, 'family')
       : null;
 
     // Return family details with full photo URL
     return {
-      ...family.get(), // get raw data values
+      ...family.get(),
       familyPhotoUrl,
     };
   }
 
   async update(id: number, dto: any, newFileName?: string, loggedId?: number) {
     const family = await this.familyModel.findByPk(id);
-    if (!family) throw new NotFoundException('Family not found');
-
-    // Delete old file if new file is uploaded
-    if (newFileName && family.familyPhoto) {
-      const oldFile = family.familyPhoto;
-      const uploadDir = process.env.FAMILY_PHOTO_UPLOAD_PATH || './uploads/family';
-
-      if (oldFile && oldFile !== newFileName) {
-        const uploadDir = process.env.FAMILY_PHOTO_UPLOAD_PATH || './uploads/family';
-        const oldFilePath = path.join(uploadDir, oldFile);
-
+    if (!family) {
+      // If there's a file URL in the DTO but family not found, clean it up
+      if (dto.familyPhoto) {
         try {
-          if (fs.existsSync(oldFilePath)) {
-            fs.unlinkSync(oldFilePath);
-            console.log('Old file deleted:', oldFilePath);
-          } else {
-            console.warn('Old file does not exist:', oldFilePath);
-          }
-        } catch (err) {
-          console.warn('Failed to delete old file:', err.message);
+          await this.uploadService.deleteFile(dto.familyPhoto, 'family');
+        } catch (error) {
+          console.error('Failed to clean up uploaded file:', error);
         }
+      }
+      throw new NotFoundException('Family not found');
+    }
+
+    // Delete old file from S3 if a new file is uploaded
+    if (newFileName && family.familyPhoto && family.familyPhoto !== newFileName) {
+      try {
+        await this.uploadService.deleteFile(family.familyPhoto, 'family');
+      } catch (error) {
+        console.error('Failed to delete old family photo from S3:', error);
+        // Continue with the update even if deletion fails
       }
     }
     dto.createdBy = loggedId;
@@ -180,6 +185,16 @@ export class FamilyService {
   async delete(familyId: number, userId: number) {
     const family = await this.familyModel.findByPk(familyId);
     if (!family) throw new NotFoundException('Family not found');
+
+    // Delete family photo from S3 if it exists
+    if (family.familyPhoto) {
+      try {
+        await this.uploadService.deleteFile(family.familyPhoto, 'family');
+      } catch (error) {
+        console.error('Failed to delete family photo from S3:', error);
+        // Continue with deletion even if file deletion fails
+      }
+    }
 
     const familyCode = family.familyCode;
 

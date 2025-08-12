@@ -8,7 +8,7 @@ import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { Op } from 'sequelize';
-import * as dayjs from 'dayjs';
+const dayjs = require('dayjs');
 
 @Injectable()
 export class NotificationService {

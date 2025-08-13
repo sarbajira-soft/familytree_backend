@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, ConflictException, ForbiddenException, Inject, forwardRef, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
 import { User } from './model/user.model';
@@ -6,7 +6,6 @@ import { FamilyMember } from '../family/model/family-member.model';
 import { UserProfile } from './model/user-profile.model';
 import { Invite } from './model/invite.model';
 import { MailService } from '../utils/mail.service';
-import { UploadService } from '../uploads/upload.service';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
 import * as fs from 'fs';
@@ -45,9 +44,8 @@ export class UserService {
     @InjectModel(Notification)
     private notificationModel: typeof Notification,
     private mailService: MailService,
-    private notificationService: NotificationService,
-    @Inject(forwardRef(() => UploadService))
-    private uploadService: UploadService,
+
+    private readonly notificationService: NotificationService,
   ) {}
 
   private generateOtp(): string {
@@ -55,6 +53,9 @@ export class UserService {
   }
 
   private generateAccessToken(user: User): string {
+    if (!process.env.JWT_SECRET) {
+      throw new Error('JWT_SECRET is not configured');
+    }
     return jwt.sign(
       { id: user.id, email: user.email, role: user.role },
       process.env.JWT_SECRET,
@@ -62,19 +63,8 @@ export class UserService {
     );
   }
 
-  async register(registerDto: RegisterDto) {
-    try {
-      // Input validation
-      if (!registerDto.email || !registerDto.password || !registerDto.firstName || 
-          !registerDto.lastName || !registerDto.countryCode || !registerDto.mobile) {
-        throw new BadRequestException({
-          statusCode: 400,
-          message: 'All required fields must be provided',
-          error: 'Bad Request',
-          requiredFields: ['email', 'password', 'firstName', 'lastName', 'countryCode', 'mobile']
-        });
-      }
-
+  async register(registerDto: RegisterDto){
+      
       // Check for existing verified users
       const existingVerifiedUser = await this.userModel.findOne({
         where: {
@@ -91,197 +81,109 @@ export class UserService {
 
       if (existingVerifiedUser) {
         throw new BadRequestException({
-          statusCode: 400,
           message: 'User with this email or mobile already exists',
-          error: 'Bad Request',
-          existingUser: {
-            email: existingVerifiedUser.email,
-            mobile: existingVerifiedUser.mobile,
-            status: existingVerifiedUser.status
-          }
         });
       }
 
-      // Check for existing unverified users with the same email
+      // Check for existing unverified users
       const existingUnverifiedUser = await this.userModel.findOne({
-        where: { 
-          [Op.or]: [
-            { email: registerDto.email, status: 0 },
-            { 
-              countryCode: registerDto.countryCode,
-              mobile: registerDto.mobile,
-              status: 0
-            }
-          ]
-        },
+        where: { email: registerDto.email, status: 0 },
       });
 
       const otp = this.generateOtp();
       const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
       const hashedPassword = await bcrypt.hash(registerDto.password, 10);
 
-      try {
-        if (existingUnverifiedUser) {
-          // Update existing unverified user
-          await existingUnverifiedUser.update({
-            ...registerDto,
-            password: hashedPassword,
-            otp,
-            otpExpiresAt,
-            role: registerDto.role || 1, // Default to member if not specified
-          });
-        } else {
-          // Create new user
-          const user = await this.userModel.create({
-            ...registerDto,
-            password: hashedPassword,
-            otp,
-            otpExpiresAt,
-            status: 0, // unverified
-            role: registerDto.role || 1, // Default to member
-          });
-          await this.userProfileModel.create({
-            userId: user.id,
-            firstName: registerDto.firstName,
-            lastName: registerDto.lastName
-          });
-        }
-        
-        // Send OTP email
-        await this.mailService.sendVerificationOtp(registerDto.email, otp);
-        
-        return { 
-          statusCode: 201,
-          message: 'OTP sent to email', 
-          email: registerDto.email, 
-          mobile: registerDto.countryCode + registerDto.mobile,
-          expiresIn: '15 minutes'
-        };
-      } catch (error) {
-        console.error('Error during user registration:', error);
-        throw new BadRequestException({
-          statusCode: 400,
-          message: 'Failed to register user',
-          error: 'Registration Error',
-          details: error.message
+      if (existingUnverifiedUser) {
+        // Update existing unverified user
+        await existingUnverifiedUser.update({
+          ...registerDto,
+          password: hashedPassword,
+          otp,
+          otpExpiresAt,
+          role: registerDto.role || 1, // Default to member if not specified
+        });
+      } else {
+        // Create new user
+        const user = await this.userModel.create({
+          ...registerDto,
+          password: hashedPassword,
+          otp,
+          otpExpiresAt,
+          status: 0, // unverified
+          role: registerDto.role || 1, // Default to member
+        });
+        await this.userProfileModel.create({
+          userId: user.id,
+          firstName: registerDto.firstName,
+          lastName: registerDto.lastName
         });
       }
-    } catch (error) {
-      console.error('Registration error:', error);
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-      throw new BadRequestException({
-        statusCode: 400,
-        message: 'Registration failed',
-        error: 'Registration Error',
-        details: error.message
-      });
-    }
+      
+      await this.mailService.sendVerificationOtp(registerDto.email, otp);
+      return { message: 'OTP sent to email', email: registerDto.email, mobile: registerDto.countryCode+registerDto.mobile };
+    
   }
 
   async verifyOtp(verifyOtpDto: { userName?: string; otp: string }) {
-    try {
-      const { userName, otp } = verifyOtpDto;
+    const { userName, otp } = verifyOtpDto;
 
-      if (!userName) {
-        throw new BadRequestException({
-          statusCode: 400,
-          message: 'Email or mobile must be provided',
-          error: 'Bad Request'
-        });
-      }
-
-      // Determine if the userName is an email or mobile
-      const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userName);
-      const whereClause: any = {};
-
-      if (isEmail) {
-        whereClause.email = userName;
-      } else {
-        // Handle mobile number (with or without country code)
-        whereClause.mobile = userName;
-      }
-
-      const user = await this.userModel.findOne({ where: whereClause });
-
-      if (!user) {
-        throw new BadRequestException({
-          statusCode: 400,
-          message: isEmail ? 'User with this email not found' : 'User with this mobile number not found',
-          error: 'Bad Request'
-        });
-      }
-
-      if (user.status === 1) {
-        throw new BadRequestException({
-          statusCode: 400,
-          message: 'Account already verified',
-          error: 'Bad Request'
-        });
-      }
-
-      if (!user.otp || user.otp !== otp) {
-        throw new BadRequestException({
-          statusCode: 400,
-          message: 'Invalid OTP',
-          error: 'Bad Request'
-        });
-      }
-
-      if (!user.otpExpiresAt || new Date(user.otpExpiresAt) < new Date()) {
-        throw new BadRequestException({
-          statusCode: 400,
-          message: 'OTP has expired',
-          error: 'Bad Request'
-        });
-      }
-
-      const accessToken = this.generateAccessToken(user);
-
-      await user.update({
-        status: 1,
-        otp: null,
-        otpExpiresAt: null,
-        verifiedAt: new Date(),
-        accessToken,
-      });
-
-      const userProfile = await this.userProfileModel.findOne({ 
-        where: { userId: user.id },
-        attributes: ['firstName', 'lastName', 'gender']
-      });
-
-      if (!userProfile) {
-        console.error(`User profile not found for user ID: ${user.id}`);
-        throw new Error('User profile not found');
-      }
-      
-      return {
-        message: 'Account verified successfully',
-        accessToken,
-        user: {
-          id: user.id,
-          email: user.email,
-          mobile: user.mobile,
-          firstName: userProfile.firstName,
-          lastName: userProfile.lastName,
-          role: user.role,
-          status: 1, // Explicitly set to 1 as we just verified
-          gender: userProfile.gender,
-        },
-      };
-    } catch (error) {
-      console.error('Error in verifyOtp:', error);
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
+    if (!userName) {
       throw new BadRequestException({
-        statusCode: 500,
-        message: 'An error occurred while verifying OTP',
-        error: 'Internal Server Error'
+        message:'Email or mobile must be provided'
       });
     }
+
+    // Determine if the userName is an email or mobile
+    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userName);
+    const whereClause: any = {};
+
+    if (isEmail) {
+      whereClause.email = userName;
+    } else {
+      // Optional: You could split countryCode from mobile if you're storing them separately
+      // For now, assuming full mobile number with country code is stored in `mobile` field
+      whereClause.mobile = userName;
+    }
+
+    const user = await this.userModel.findOne({ where: whereClause });
+
+    if (!user) {
+      throw new BadRequestException({
+        message: isEmail ? 'User with this email not found' : 'User with this mobile number not found'
+      });
+    }
+
+    if (user.status === 1) throw new BadRequestException({message:'Account already verified'});
+    if (user.otp !== verifyOtpDto.otp) throw new BadRequestException({message:'Invalid OTP'});
+    if (new Date(user.otpExpiresAt) < new Date()) throw new BadRequestException({message:'OTP expired'});
+
+    const accessToken = this.generateAccessToken(user);
+
+    await user.update({
+      status: 1,
+      otp: null,
+      otpExpiresAt: null,
+      verifiedAt: new Date(),
+      accessToken,
+    });
+
+    const userProfile = await this.userProfileModel.findOne({ where: { userId: user.id } });
+    
+    return {
+      message: 'Account verified successfully',
+      accessToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        mobile: user.mobile,
+        firstName: userProfile.firstName,
+        lastName: userProfile.lastName,
+        role: user.role,
+        status: user.status,
+        gender: userProfile.gender,
+      },
+    };
   }
 
   async login(loginDto: { username?: string; password: string }) {
@@ -325,15 +227,7 @@ export class UserService {
     if (!isPasswordValid) {
       throw new BadRequestException({message:'Invalid credentials'});
     }
-    return {
-      user: {
-        id: user.id,
-        email: user.email,
-        mobile: user.mobile,
-        role: user.role,
-        status: user.status,
-      },
-    };
+    
     // Generate new access token
     const accessToken = this.generateAccessToken(user);
 
@@ -489,153 +383,109 @@ export class UserService {
   }
 
   async getUserProfile(id: number | string) {
-    try {
-      const user = await this.userModel.findOne({
-        where: { id },
-        include: [
-          {
-            model: UserProfile,
-            as: 'userProfile',
-            include: [
-              {
-                model: FamilyMember,
-                as: 'familyMember',
-                attributes: ['familyCode', 'approveStatus'],
-              },
-              {
-                model: Religion,
-                as: 'religion',
-                attributes: ['id', 'name'],
-              },
-              {
-                model: Language,
-                as: 'language',
-                attributes: ['id', 'name', 'isoCode'],
-              },
-              {
-                model: Gothram,
-                as: 'gothram',
-                attributes: ['id', 'name'],
-              },
-            ],
-          },
-        ],
-      });
 
-      if (!user) throw new NotFoundException('User profile not found');
+    const user = await this.userModel.findOne({
+      where: { id },
+      include: [
+        {
+          model: UserProfile,
+          as: 'userProfile',
+          include: [
+            {
+              model: FamilyMember,
+              as: 'familyMember',
+              attributes: ['familyCode', 'approveStatus'],
+            },
+            {
+              model: Religion,
+              as: 'religion',
+              attributes: ['id', 'name'],
+            },
+            {
+              model: Language,
+              as: 'language',
+              attributes: ['id', 'name', 'isoCode'],
+            },
+            {
+              model: Gothram,
+              as: 'gothram',
+              attributes: ['id', 'name'],
+            },
+          ],
+        },
+      ],
+    });
 
-      // Convert profile filename to full URL if it exists and isn't already a URL
-      if (user.userProfile?.profile) {
-        user.userProfile.profile = this.uploadService.getFileUrl(user.userProfile.profile, 'profile');
-      }
+    if (!user) throw new NotFoundException('User profile not found');
 
-      return user;
-    } catch (error) {
-      console.error('Error in getUserProfile:', error);
-      throw new BadRequestException({
-        statusCode: 500,
-        message: 'Failed to fetch user profile',
-        error: 'Server Error',
-        details: error.message
-      });
+    const baseUrl = process.env.BASE_URL || '';
+    const basePath = process.env.UPLOAD_BASE_PATH || '/uploads';
+    const folderPath = process.env.PROFILE_FOLDER || '/profile';
+    const profile = user.userProfile?.profile;
+    
+    if (profile) {
+      user.userProfile.profile = `${baseUrl}/${basePath}/${folderPath}/${profile}`;
     }
+
+    return user;
   }
 
   async updateProfile(userId: number, dto: UpdateProfileDto) {
     try {
       // Fetch both user and user profile
-      const user = await this.userModel.findByPk(userId);
+      const user = await this.userModel.findByPk(userId); // main User table
       const userProfile = await this.userProfileModel.findOne({ where: { userId } });
 
-      if (!user || !userProfile) {
-        throw new BadRequestException({ message: 'User not found' });
-      }
-
-      // Store the original profile image to delete later if needed
-      const originalProfileImage = userProfile.profile;
-      
-      // If a new profile image is provided (not empty and different from current)
-      if (dto.profile && dto.profile !== '') {
-        // If there's an existing image, delete it from S3
-        if (originalProfileImage && originalProfileImage !== '') {
-          try {
-            console.log('Deleting old profile image from S3:', originalProfileImage);
-            const deleted = await this.uploadService.deleteFile(originalProfileImage, 'profile');
-            if (deleted) {
-              console.log('Successfully deleted old profile image');
-            } else {
-              console.warn('Failed to delete old profile image, but continuing with update');
-            }
-          } catch (error) {
-            console.error('Error deleting old profile image from S3:', error);
-            // Continue with the update even if deletion fails
-          }
-        }
-      }
-
-      const isNewImageUploaded = dto.profile && dto.profile !== originalProfileImage;
-      
-      // If a new profile image is provided and it's different from the current one
-      if (isNewImageUploaded && originalProfileImage) {
-        try {
-          // Delete the old image from S3
-          const oldImageUrl = this.uploadService.getFileUrl(originalProfileImage, 'profile');
-          await this.uploadService.deleteFile(oldImageUrl);
-        } catch (error) {
-          console.error('Error deleting old profile image from S3:', error);
-          // Continue with the update even if deletion fails
-        }
-      }
+      if (!user || !userProfile) throw new BadRequestException({ message: 'User not found' });
 
       // Validate family code
       if (dto.familyCode) {
-        const existingFamily = await this.familyModel.findOne({ 
-          where: { familyCode: dto.familyCode } 
-        });
+        const existingFamily = await this.familyModel.findOne({ where: { familyCode: dto.familyCode } });
         if (!existingFamily) {
-          throw new BadRequestException({ 
-            message: 'Invalid family code. Please enter a valid family code.' 
-          });
+          throw new BadRequestException({ message: 'Invalid family code. Please enter a valid family code.' });
         }
       }
 
       const { email, countryCode, mobile, role, status } = dto;
       
       // Handle email update - allow same email, but check for conflicts with other users
-      if (email !== undefined && email !== user.email) {
-        const emailExists = await this.userModel.findOne({
-          where: { 
-            email, 
-            id: { [Op.ne]: userId },
-            status: { [Op.ne]: 3 } // Exclude deleted users
-          },
-        });
-        if (emailExists) {
-          throw new BadRequestException({ 
-            message: 'Email already in use by another user' 
+      if (email !== undefined) {
+        if (email !== user.email) {
+          // Email is being changed, check for conflicts
+          const emailExists = await this.userModel.findOne({
+            where: { 
+              email, 
+              id: { [Op.ne]: userId },
+              status: { [Op.ne]: 3 } // Exclude deleted users
+            },
           });
+          if (emailExists) {
+            throw new BadRequestException({ message: 'Email already in use by another user' });
+          }
+          user.email = email;
         }
-        user.email = email;
+        // If email is the same, no need to update or check
       }
 
       // Handle mobile number update - allow same mobile, but check for conflicts with other users
-      if (mobile !== undefined && countryCode !== undefined && 
-          (mobile !== user.mobile || countryCode !== user.countryCode)) {
-        const mobileExists = await this.userModel.findOne({
-          where: {
-            mobile,
-            countryCode,
-            id: { [Op.ne]: userId },
-            status: { [Op.ne]: 3 } // Exclude deleted users
-          },
-        });
-        if (mobileExists) {
-          throw new BadRequestException({ 
-            message: 'Mobile number already in use by another user' 
+      if (mobile !== undefined && countryCode !== undefined) {
+        if (mobile !== user.mobile || countryCode !== user.countryCode) {
+          // Mobile is being changed, check for conflicts
+          const mobileExists = await this.userModel.findOne({
+            where: {
+              mobile,
+              countryCode,
+              id: { [Op.ne]: userId },
+              status: { [Op.ne]: 3 } // Exclude deleted users
+            },
           });
+          if (mobileExists) {
+            throw new BadRequestException({ message: 'Mobile number already in use by another user' });
+          }
+          user.mobile = mobile;
+          user.countryCode = countryCode;
         }
-        user.mobile = mobile;
-        user.countryCode = countryCode;
+        // If mobile is the same, no need to update or check
       }
 
       // Direct assignments (no uniqueness checks needed)
@@ -644,21 +494,20 @@ export class UserService {
 
       await user.save();
 
-      // Handle profile image cleanup - only if we're not using S3 URL
-      if (dto.profile && !dto.profile.startsWith('http')) {
+      // Handle profile image cleanup
+      if (dto.profile) {
         const newFile = path.basename(dto.profile);
         if (newFile && userProfile.profile && userProfile.profile !== newFile) {
           const uploadPath = process.env.UPLOAD_FOLDER_PATH || './uploads/profile';
           const oldImagePath = path.join(uploadPath, userProfile.profile);
           try {
-            if (fs.existsSync(oldImagePath)) {
-              fs.unlinkSync(oldImagePath);
-            }
+            if (fs.existsSync(oldImagePath)) fs.unlinkSync(oldImagePath);
           } catch (err) {
             console.warn(`Failed to remove old profile image: ${err.message}`);
           }
         }
       }
+
 
       // Handle family member update only if familyCode is present
       if (dto.familyCode) {
@@ -692,34 +541,14 @@ export class UserService {
       }
 
       // Update user profile table
-      userProfile.set(dto);
+      userProfile.set(dto as any);
       await userProfile.save();
-
-      // Get the updated user with profile
-      const updatedUser = await this.userModel.findByPk(userId, {
-        include: [
-          {
-            model: UserProfile,
-            as: 'userProfile',
-            include: [
-              { model: Religion, as: 'religion' },
-              { model: Language, as: 'language' },
-              { model: Gothram, as: 'gothram' },
-            ],
-          },
-        ],
-      });
-
-      // Convert profile filename to full URL for the response
-      if (updatedUser.userProfile?.profile) {
-        updatedUser.userProfile.profile = this.uploadService.getFileUrl(updatedUser.userProfile.profile, 'profile');
-      }
 
       return {
         message: 'Profile updated successfully',
         data: {
-          ...updatedUser.toJSON(),
-          userProfile: updatedUser.userProfile?.toJSON(),
+          ...user.toJSON(),
+          userProfile: userProfile.toJSON(),
         },
       };
     } catch (err) {
@@ -730,56 +559,30 @@ export class UserService {
           errors: err.errors.map((e) => e.message),
         });
       }
-      throw new BadRequestException({ 
-        message: err?.message || 'Something went wrong' 
-      });
+      throw new BadRequestException({ message: err?.message || 'Something went wrong' });
     }
   }
 
   async deleteUser(userId: number, requesterId: number) {
     const member = await this.familyMemberModel.findOne({ where: { memberId: userId } });
 
-    // Only check creatorId if member exists
-    if (member && member.creatorId !== requesterId) {
+    if (!member) {
+      throw new BadRequestException({ message: 'Family member record not found.' });
+    }
+
+    if (member.creatorId !== requesterId) {
       throw new ForbiddenException('You are not authorized to delete this member.');
     }
 
-    // Get user with profile using the correct association alias
-    const user = await this.userModel.findByPk(userId, {
-      include: [{
-        model: UserProfile,
-        as: 'userProfile'  // Specify the alias used in the association
-      }]
-    });
-    
+    // Soft delete user
+    const user = await this.userModel.findByPk(userId);
     if (!user) throw new BadRequestException({ message: 'User not found' });
 
-    // Delete profile image from S3 if it exists
-    if (user.userProfile?.profile) {
-      try {
-        console.log(`Deleting profile image for user ${userId}:`, user.userProfile.profile);
-        await this.uploadService.deleteFile(user.userProfile.profile, 'profile');
-        console.log(`Successfully deleted profile image for user ${userId}`);
-      } catch (error) {
-        console.error(`Error deleting profile image for user ${userId}:`, error);
-        // Continue with user deletion even if image deletion fails
-      }
-    }
-
-    // Soft delete user
     user.status = 3;
     await user.save();
 
-    // Remove from ft_family_members if the record exists
-    if (member) {
-      try {
-        await this.familyMemberModel.destroy({ where: { memberId: userId } });
-        console.log(`Removed user ${userId} from family members`);
-      } catch (error) {
-        console.error(`Error removing user ${userId} from family members:`, error);
-        // Continue even if this fails
-      }
-    }
+    // Remove from ft_family_members
+    await this.familyMemberModel.destroy({ where: { memberId: userId } });
 
     return { message: 'User deleted successfully' };
   }
@@ -795,50 +598,17 @@ export class UserService {
       throw new BadRequestException('User or profile not found');
     }
 
-    // Store the original profile image to delete later if needed
-    const existingProfileImage = existingProfile.profile;
-    const newProfileImage = currentProfile.profile;
-
     // 2. Overwrite all fields except id/userId and familyCode
     Object.assign(existingUser, currentUser.toJSON(), { id: existingUser.id });
     Object.assign(
       existingProfile,
       currentProfile.toJSON(),
-      { 
-        id: existingProfile.id, 
-        userId: existingUserId, 
-        familyCode: existingProfile.familyCode 
-      }
+      { id: existingProfile.id, userId: existingUserId, familyCode: existingProfile.familyCode }
     );
 
-    // If the current user has a different profile image, handle S3 cleanup
-    if (newProfileImage && newProfileImage !== existingProfileImage) {
-      try {
-        // Delete the old profile image from S3 if it exists
-        if (existingProfileImage) {
-          console.log(`Deleting old profile image for user ${existingUserId}:`, existingProfileImage);
-          await this.uploadService.deleteFile(existingProfileImage, 'profile');
-        }
-      } catch (error) {
-        console.error('Error deleting old profile image during merge:', error);
-        // Continue with merge even if image deletion fails
-      }
-    }
-
     // 3. Delete current user and profile
-    try {
-      // Delete the current user's profile image from S3 if it exists
-      if (newProfileImage && newProfileImage !== existingProfileImage) {
-        console.log(`Deleting current user's profile image:`, newProfileImage);
-        await this.uploadService.deleteFile(newProfileImage, 'profile');
-      }
-      
-      await currentProfile.destroy();
-      await currentUser.destroy();
-    } catch (error) {
-      console.error('Error during user deletion in merge:', error);
-      throw error; // Re-throw to ensure we don't leave data in an inconsistent state
-    }
+    await currentProfile.destroy();
+    await currentUser.destroy();
 
     // 4. Save the updated existing user and profile
     await existingUser.save();

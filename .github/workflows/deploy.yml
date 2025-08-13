@@ -59,11 +59,11 @@ jobs:
           PRODUCT_IMAGE_UPLOAD_PATH='./uploads/product/'
           EVENT_IMAGE_UPLOAD_PATH='./uploads/event/'
 
-          AWS_REGION=${{ secrets.AWS_REGION }}
-          AWS_ACCESS_KEY_ID=${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY=${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_S3_BUCKET_NAME=${{ secrets.AWS_S3_BUCKET_NAME }}
-          AWS_S3_BUCKET_URL=https://${{ secrets.AWS_S3_BUCKET_NAME }}.s3.${{ secrets.AWS_REGION }}.amazonaws.com
+          REGION=${{ secrets.REGION }}
+          ACCESS_KEY_ID=${{ secrets.ACCESS_KEY_ID }}
+          SECRET_ACCESS_KEY=${{ secrets.SECRET_ACCESS_KEY }}
+          S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }}
+          S3_BUCKET_URL=https://${{ secrets.S3_BUCKET_NAME }}.s3.${{ secrets.REGION }}.amazonaws.com
           EOF
 
       # 6. Remove devDependencies
@@ -81,20 +81,20 @@ jobs:
 
       # 8. Upload to S3
       - name: Upload ZIP to S3
-        run: aws s3 cp lambda.zip s3://${{ secrets.AWS_S3_BUCKET_NAME }}/lambda-deploys/lambda.zip
+        run: aws s3 cp lambda.zip s3://${{ secrets.S3_BUCKET_NAME }}/lambda-deploys/lambda.zip
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
+          ACCESS_KEY_ID: ${{ secrets.ACCESS_KEY_ID }}
+          SECRET_ACCESS_KEY: ${{ secrets.SECRET_ACCESS_KEY }}
+          REGION: ${{ secrets.REGION }}
 
       # 9. Deploy to AWS Lambda
       - name: Deploy Lambda from S3
         run: |
           aws lambda update-function-code \
             --function-name familytreebackend \
-            --s3-bucket ${{ secrets.AWS_S3_BUCKET_NAME }} \
+            --s3-bucket ${{ secrets.S3_BUCKET_NAME }} \
             --s3-key lambda-deploys/lambda.zip
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_REGION: ${{ secrets.AWS_REGION }}
+          ACCESS_KEY_ID: ${{ secrets.ACCESS_KEY_ID }}
+          SECRET_ACCESS_KEY: ${{ secrets.SECRET_ACCESS_KEY }}
+          REGION: ${{ secrets.REGION }}

@@ -83,9 +83,9 @@ jobs:
       - name: Upload ZIP to S3
         run: aws s3 cp lambda.zip s3://${{ secrets.S3_BUCKET_NAME }}/lambda-deploys/lambda.zip
         env:
-          ACCESS_KEY_ID: ${{ secrets.ACCESS_KEY_ID }}
-          SECRET_ACCESS_KEY: ${{ secrets.SECRET_ACCESS_KEY }}
-          REGION: ${{ secrets.REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.REGION }}
 
       # 9. Deploy to AWS Lambda
       - name: Deploy Lambda from S3

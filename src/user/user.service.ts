@@ -224,7 +224,15 @@ export class UserService {
     if (!isPasswordValid) {
       throw new BadRequestException({message:'Invalid credentials'});
     }
-
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        mobile: user.mobile,
+        role: user.role,
+        status: user.status,
+      },
+    };
     // Generate new access token
     const accessToken = this.generateAccessToken(user);
 

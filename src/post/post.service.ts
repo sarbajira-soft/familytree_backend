@@ -14,7 +14,9 @@ import { PostComment } from './model/post-comment.model';
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { CreatePostDto } from './dto/createpost.dto';
+import { EditPostDto } from './dto/edit-post.dto';
 import { NotificationService } from '../notification/notification.service';
+import { UploadService } from '../uploads/upload.service';
 
 @Injectable()
 export class PostService {
@@ -37,13 +39,25 @@ export class PostService {
     dto: CreatePostDto,
     createdBy: number,
   ) {
+    // Extract just the filename if it's a full URL
+    let postImage = dto.postImage;
+    if (postImage && postImage.startsWith('http')) {
+      try {
+        const url = new URL(postImage);
+        // Extract the filename from the path (remove the 'posts/' prefix if it exists)
+        postImage = url.pathname.split('/').pop() || null;
+      } catch (error) {
+        console.error('Error parsing image URL:', error);
+      }
+    }
+
     // Step 1: Create post
     const post = await this.postModel.create({
       caption: dto.caption,
       familyCode: dto.familyCode || null,
       createdBy,
       status: dto.status ?? 1,
-      postImage: dto.postImage as any || null,
+      postImage: postImage || null,
       privacy: dto.privacy ?? 'public',
     });
 
@@ -83,8 +97,8 @@ export class PostService {
   async updatePost(
     postId: number,
     userId: number,
-    dto: CreatePostDto,
-    newImage?: Express.Multer.File,
+    dto: CreatePostDto | EditPostDto,
+    newImage?: Express.Multer.File | string,
   ) {
     const post = await this.postModel.findOne({ where: { id: postId, createdBy: userId } });
 
@@ -93,33 +107,144 @@ export class PostService {
     }
 
     const oldImage = post.postImage;
+    let newImageFilename: string | null = null;
 
-    // If new image uploaded, set it
+    // If new image is uploaded, process it
     if (newImage) {
-      dto.postImage = newImage.filename as any;
-
-      // Delete old image file
+      const uploadService = new UploadService();
+      
+      // 1. Delete the old image if it exists
       if (oldImage) {
-        const uploadPath = process.env.POST_PHOTO_UPLOAD_PATH || './uploads/posts';
-        const fullPath = `${uploadPath}/${oldImage}`;
-        if (fs.existsSync(fullPath)) {
-          fs.unlinkSync(fullPath);
+        try {
+          const oldImageUrl = this.getPostImageUrl(oldImage);
+          if (oldImageUrl) {
+            // Delete the old image from S3 or local storage
+            if (oldImageUrl.includes('amazonaws.com')) {
+              // Delete from S3
+              await uploadService.deleteFile(oldImageUrl);
+            } else {
+              // Local file deletion
+              const uploadPath = process.env.POST_PHOTO_UPLOAD_PATH || './uploads/posts';
+              const imagePath = path.join(uploadPath, path.basename(oldImage));
+              
+              if (fs.existsSync(imagePath)) {
+                fs.unlinkSync(imagePath);
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Error deleting old image:', error);
+          // Continue with update even if old image deletion fails
+        }
+      }
+      
+      // 2. Check if newImage is a file (Multer.File) or a string (URL)
+      if (typeof newImage !== 'string') {
+        try {
+          // 3. Upload the new image to S3 if it's a file
+          const imageUrl = await uploadService.uploadFile(newImage, 'posts');
+          
+          // 4. Extract just the filename from the URL
+          try {
+            const url = new URL(imageUrl);
+            newImageFilename = url.pathname.split('/').pop() || null;
+          } catch (error) {
+            console.error('Error parsing image URL:', error);
+            // Fallback to storing the full URL if parsing fails
+            newImageFilename = imageUrl;
+          }
+        } catch (error) {
+          console.error('Error uploading new image:', error);
+          throw new Error('Failed to upload new image');
+        }
+      } else {
+        // If it's a string (URL), extract the filename
+        try {
+          const url = new URL(newImage);
+          newImageFilename = url.pathname.split('/').pop() || null;
+        } catch (e) {
+          // If it's not a valid URL, use as is
+          newImageFilename = newImage;
         }
       }
     }
 
-    await post.update({
+    // Prepare update data
+    const updateData: any = {
       caption: dto.caption ?? post.caption,
       privacy: dto.privacy ?? post.privacy,
-      familyCode: dto.familyCode || null,
+      familyCode: dto.familyCode ?? post.familyCode,
       status: dto.status ?? post.status,
-      postImage: dto.postImage ?? post.postImage as any,
-    });
+    };
+
+    // Only update postImage if we have a new image
+    if (newImageFilename !== null) {
+      updateData.postImage = newImageFilename;
+    }
+
+    // Update the post
+    await post.update(updateData);
+
+    // Get the updated post with the full image URL
+    const updatedPost = await this.postModel.findByPk(postId);
+    const postJson = updatedPost?.toJSON() as any;
+    
+    if (postJson) {
+      postJson.postImage = this.getPostImageUrl(postJson.postImage);
+    }
 
     return {
       message: 'Post updated successfully',
-      data: post,
+      data: postJson,
     };
+  }
+
+  private getPostImageUrl(filename: string | null): string | null {
+    if (!filename) return null;
+
+    // If the filename is already a full URL, return it as is
+    if (filename.startsWith('http://') || filename.startsWith('https://')) {
+      return filename;
+    }
+
+    // If S3 is configured, construct S3 URL
+    if (process.env.AWS_S3_BUCKET_NAME && process.env.AWS_REGION) {
+      return `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/posts/${filename}`;
+    }
+
+    // Fallback to local URL
+    const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
+    return `${baseUrl}/uploads/posts/${filename}`;
+  }
+
+  /**
+   * Checks if the new image is the same as the old one
+   * @param newImage The new image file
+   * @param oldImageFilename The filename of the old image
+   * @returns boolean indicating if the images are the same
+   */
+  private async isSameImage(newImage: Express.Multer.File, oldImageFilename: string | null): Promise<boolean> {
+    if (!oldImageFilename) return false;
+    
+    try {
+      // Extract just the filename without path if it's a full URL
+      let filename = oldImageFilename;
+      try {
+        const url = new URL(oldImageFilename);
+        filename = url.pathname.split('/').pop() || oldImageFilename;
+      } catch (e) {
+        // Not a URL, use as is
+      }
+
+      // Compare filenames (without timestamps if any)
+      const oldName = filename.split('_').pop()?.split('.')[0];
+      const newName = newImage.originalname.split('.')[0];
+      
+      return oldName === newName;
+    } catch (error) {
+      console.error('Error comparing images:', error);
+      return false; // If there's an error, assume they're different to be safe
+    }
   }
 
   async getPostByOptions(
@@ -167,15 +292,14 @@ export class PostService {
     });
 
     const baseUrl = process.env.BASE_URL || '';
-    const postPath = process.env.POST_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/posts';
     const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
 
     const formatted = await Promise.all(
       posts.map(async (post) => {
         const postJson = post.toJSON() as any;
 
-        // Post image URL
-        const postImageUrl = postJson.postImage ? `${baseUrl}/${postPath}/${postJson.postImage}` : null;
+        // Get full image URL from filename
+        const postImageUrl = this.getPostImageUrl(postJson.postImage);
 
         // Get like count and comment count
         const [likeCount, commentCount] = await Promise.all([
@@ -279,26 +403,25 @@ export class PostService {
   }
 
 async getPost(postId: number) {
-  const baseUrl = process.env.BASE_URL || '';
-  const postUploadPath = process.env.POST_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/posts';
-
   const post = await this.postModel.findOne({
-      where: { id: postId },
-    });
+    where: { id: postId },
+  });
 
-    if (!post) {
-      throw new Error(`Post with ID ${postId} not found`);
-    }
-
-    if(post.postImage){
-      post.postImage = `${baseUrl}/${postUploadPath}/${post.postImage}`;
-    }
-
-    return {
-      data: post,
-      imageUrl: `${baseUrl}/${postUploadPath}/${post.postImage || 'default.png'}`
-    };
+  if (!post) {
+    throw new Error(`Post with ID ${postId} not found`);
   }
+
+  const postJson = post.toJSON() as any;
+  const postImageUrl = this.getPostImageUrl(postJson.postImage);
+
+  return {
+    data: {
+      ...postJson,
+      postImage: postImageUrl
+    },
+    imageUrl: postImageUrl || this.getPostImageUrl('default.png')
+  };
+}
 
   async getCommentCount(postId: number) {
     const count = await this.postCommentModel.count({ where: { postId } });
@@ -326,11 +449,28 @@ async getPost(postId: number) {
     // Delete image file if exists
     const imageFilename = post.postImage;
     if (imageFilename) {
-      const uploadPath = process.env.POST_PHOTO_UPLOAD_PATH || './uploads/posts';
-      const imagePath = `${uploadPath}/${imageFilename}`;
-
-      if (fs.existsSync(imagePath)) {
-        fs.unlinkSync(imagePath);
+      try {
+        const uploadService = new UploadService();
+        const imageUrl = this.getPostImageUrl(imageFilename);
+        
+        if (imageUrl) {
+          // Check if it's an S3 URL or local file
+          if (imageUrl.includes('amazonaws.com')) {
+            // Delete from S3
+            await uploadService.deleteFile(imageUrl);
+          } else {
+            // Local file deletion
+            const uploadPath = process.env.POST_PHOTO_UPLOAD_PATH || './uploads/posts';
+            const imagePath = path.join(uploadPath, path.basename(imageFilename));
+            
+            if (fs.existsSync(imagePath)) {
+              fs.unlinkSync(imagePath);
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Error deleting post image:', error);
+        // Continue with post deletion even if image deletion fails
       }
     }
 

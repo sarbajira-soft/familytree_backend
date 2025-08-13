@@ -19,38 +19,27 @@ import {
   UseInterceptors,
   UploadedFiles,
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
-import { extname } from 'path';
-import * as fs from 'fs';
+import { FileInterceptor, FilesInterceptor, FileFieldsInterceptor, AnyFilesInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
+import { generateFileName } from '../utils/upload.utils';
 import { FamilyService } from './family.service';
 import { CreateFamilyDto } from './dto/create-family.dto';
 import { CreateFamilyTreeDto } from './dto/family-tree.dto';
-
+import { UploadService } from '../uploads/upload.service';
 import { ApiConsumes, ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiBody, ApiSecurity } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { generateFileName, imageFileFilter } from '../utils/upload.utils';
-import { AnyFilesInterceptor } from '@nestjs/platform-express';
-
+import { imageFileFilter } from '../utils/upload.utils';
 
 @ApiTags('Family')
 @Controller('family')
 export class FamilyController {
-  constructor(private readonly familyService: FamilyService) {}
+  constructor(private readonly familyService: FamilyService, private readonly uploadService: UploadService) {}
 
   @UseGuards(JwtAuthGuard)
   @Post('create')
   @UseInterceptors(FileInterceptor('familyPhoto', {
-    storage: diskStorage({
-      destination: (req, file, cb) => {
-        cb(null, process.env.FAMILY_PHOTO_UPLOAD_PATH || './uploads/family');
-      },
-      filename: (req, file, cb) => {
-        const filename = generateFileName(file.originalname);
-        cb(null, filename);
-      },
-    }),
     fileFilter: imageFileFilter,
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
   }))
   @ApiConsumes('multipart/form-data')
   @ApiBearerAuth()
@@ -63,8 +52,10 @@ export class FamilyController {
     @Body() body: CreateFamilyDto,
   ) {
     const loggedInUser = req.user;
+    
     if (file) {
-      body.familyPhoto = file.filename;
+      // Upload to S3 and get the file path
+      body.familyPhoto = await this.uploadService.uploadFile(file, 'family');
     }
 
     return this.familyService.createFamily(body, loggedInUser.userId);
@@ -87,19 +78,8 @@ export class FamilyController {
   @UseGuards(JwtAuthGuard)
   @Put(':id')
   @UseInterceptors(FileInterceptor('familyPhoto', {
-    storage: diskStorage({
-      destination: (req, file, cb) => {
-        const uploadPath = process.env.FAMILY_PHOTO_UPLOAD_PATH || './uploads/family';
-        if (!fs.existsSync(uploadPath)) {
-          fs.mkdirSync(uploadPath, { recursive: true });
-        }
-        cb(null, uploadPath);
-      },
-      filename: (req, file, cb) => {
-        cb(null, generateFileName(file.originalname));
-      }
-    }),
     fileFilter: imageFileFilter,
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
   }))
   @ApiConsumes('multipart/form-data')
   @ApiBearerAuth()
@@ -111,10 +91,15 @@ export class FamilyController {
     @Body() body: CreateFamilyDto
   ) {
     const loggedInUser = req.user;
+    let fileName: string | undefined;
+    
     if (file) {
-      body.familyPhoto = file.filename;
+      // Upload to S3 and get the file path
+      fileName = await this.uploadService.uploadFile(file, 'family');
+      body.familyPhoto = fileName;
     }
-    return this.familyService.update(id, body, file?.filename, loggedInUser.userId);
+    
+    return this.familyService.update(id, body, fileName, loggedInUser.userId);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -138,20 +123,11 @@ export class FamilyController {
   @UseGuards(JwtAuthGuard)
   @Post('tree/create')
   @UseInterceptors(AnyFilesInterceptor({
-    storage: diskStorage({
-      destination: (req, file, cb) => {
-        const uploadPath = process.env.PROFILE_PHOTO_UPLOAD_PATH || './uploads/profile';
-        if (!fs.existsSync(uploadPath)) {
-          fs.mkdirSync(uploadPath, { recursive: true });
-        }
-        cb(null, uploadPath);
-      },
-      filename: (req, file, cb) => {
-        const filename = generateFileName(file.originalname);
-        cb(null, filename);
-      },
-    }),
+    storage: memoryStorage(),
     fileFilter: imageFileFilter,
+    limits: {
+      fileSize: 5 * 1024 * 1024, // 5MB limit
+    },
   }))
   @ApiConsumes('multipart/form-data')
   @ApiBearerAuth()

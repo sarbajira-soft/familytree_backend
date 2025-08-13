@@ -14,6 +14,7 @@ import * as path from 'path';
 import { Op } from 'sequelize';
 import { EventImage } from './model/event-image.model';
 import { FamilyMember } from '../family/model/family-member.model';
+import { UploadService } from '../uploads/upload.service';
 
 @Injectable()
 export class EventService {
@@ -36,16 +37,35 @@ export class EventService {
     private readonly notificationService: NotificationService,
   ) {}
 
-  async createEvent(dto: CreateEventDto, imageFiles?: string[]) {
+  async createEvent(dto: CreateEventDto, imageFiles?: Express.Multer.File[]) {
     const event = await this.eventModel.create(dto);
+    const uploadService = new UploadService();
 
     // Save images if provided
     if (imageFiles && imageFiles.length > 0) {
-      await Promise.all(
-        imageFiles.map(imageUrl =>
-          this.eventImageModel.create({ eventId: event.id, imageUrl })
-        )
-      );
+      try {
+        // Upload files to S3 and get URLs
+        const uploadPromises = imageFiles.map(file => 
+          uploadService.uploadFile(file, 'events')
+        );
+        
+        const imageUrls = await Promise.all(uploadPromises);
+        
+        // Save image references to database
+        await Promise.all(
+          imageUrls.map(imageUrl => 
+            this.eventImageModel.create({ 
+              eventId: event.id, 
+              imageUrl: this.getEventImageFilenameFromUrl(imageUrl) || imageUrl 
+            })
+          )
+        );
+      } catch (error) {
+        console.error('Error uploading event images:', error);
+        // Clean up event if image upload fails
+        await event.destroy();
+        throw new Error('Failed to upload event images');
+      }
     }
 
     // Create notifications for all family members after event creation
@@ -70,9 +90,34 @@ export class EventService {
 
   private constructEventImageUrl(filename: string): string {
     if (!filename) return null;
+    
+    // If it's already a full URL, return as is
+    if (filename.startsWith('http://') || filename.startsWith('https://')) {
+      return filename;
+    }
+
+    // If S3 is configured, construct S3 URL
+    if (process.env.AWS_S3_BUCKET_NAME && process.env.AWS_REGION) {
+      return `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/events/${filename}`;
+    }
+
+    // Fallback to local URL
     const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
     const uploadPath = process.env.EVENT_IMAGE_UPLOAD_PATH?.replace(/^\.?\/?/, '') || 'uploads/events';
     return `${baseUrl.replace(/\/$/, '')}/${uploadPath.replace(/\/$/, '')}/${filename}`;
+  }
+
+  private getEventImageFilenameFromUrl(url: string): string | null {
+    if (!url) return null;
+    
+    try {
+      const parsedUrl = new URL(url);
+      // Extract the filename from the path
+      return parsedUrl.pathname.split('/').pop() || null;
+    } catch (e) {
+      // If it's not a valid URL, return as is (might already be a filename)
+      return url;
+    }
   }
 
   private constructProfileImageUrl(filename: string): string {
@@ -154,7 +199,13 @@ export class EventService {
     };
   }
 
-  async update(id: number, dto: any, imageFiles?: string[], imagesToRemove?: number[], loggedId?: number) {
+  async update(
+    id: number, 
+    dto: any, 
+    imageFiles?: Express.Multer.File[], 
+    imagesToRemove?: number[], 
+    loggedId?: number
+  ) {
     const event = await this.eventModel.findByPk(id, { include: [EventImage] });
     if (!event) throw new NotFoundException('Event not found');
 
@@ -207,21 +258,50 @@ export class EventService {
       });
 
       // Delete files and database records for removed images
+      const uploadService = new UploadService();
       for (const img of imagesToDelete) {
-        const imagePath = path.join(uploadDir, img.imageUrl);
-        if (fs.existsSync(imagePath)) {
-          fs.unlinkSync(imagePath);
+        try {
+          const imageUrl = this.constructEventImageUrl(img.imageUrl);
+          if (imageUrl.includes('amazonaws.com')) {
+            // Delete from S3
+            await uploadService.deleteFile(imageUrl);
+          } else {
+            // Local file deletion
+            const imagePath = path.join(uploadDir, img.imageUrl);
+            if (fs.existsSync(imagePath)) {
+              fs.unlinkSync(imagePath);
+            }
+          }
+          await img.destroy();
+        } catch (error) {
+          console.error('Error deleting event image:', error);
+          // Continue with other deletions even if one fails
         }
-        await img.destroy();
       }
 
       // Add new images from uploaded files
       if (imageFiles && imageFiles.length > 0) {
-        await Promise.all(
-          imageFiles.map(imageUrl =>
-            this.eventImageModel.create({ eventId: event.id, imageUrl })
-          )
-        );
+        try {
+          // Upload files to S3 and get URLs
+          const uploadPromises = imageFiles.map(file => 
+            uploadService.uploadFile(file, 'events')
+          );
+          
+          const imageUrls = await Promise.all(uploadPromises);
+          
+          // Save image references to database
+          await Promise.all(
+            imageUrls.map(imageUrl => 
+              this.eventImageModel.create({ 
+                eventId: event.id, 
+                imageUrl: this.getEventImageFilenameFromUrl(imageUrl) || imageUrl 
+              })
+            )
+          );
+        } catch (error) {
+          console.error('Error uploading new event images:', error);
+          throw new Error('Failed to upload new event images');
+        }
       }
     }
 
@@ -256,14 +336,28 @@ export class EventService {
       }
     }
 
-    // Delete event images and files
+    // Delete event images from S3 or local storage
+    const uploadService = new UploadService();
     const uploadDir = process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
+    
     for (const img of event.images || []) {
-      const imagePath = path.join(uploadDir, img.imageUrl);
-      if (fs.existsSync(imagePath)) {
-        fs.unlinkSync(imagePath);
+      try {
+        const imageUrl = this.constructEventImageUrl(img.imageUrl);
+        if (imageUrl.includes('amazonaws.com')) {
+          // Delete from S3
+          await uploadService.deleteFile(imageUrl);
+        } else {
+          // Local file deletion
+          const imagePath = path.join(uploadDir, img.imageUrl);
+          if (fs.existsSync(imagePath)) {
+            fs.unlinkSync(imagePath);
+          }
+        }
+        await img.destroy();
+      } catch (error) {
+        console.error('Error deleting event image:', error);
+        // Continue with other deletions even if one fails
       }
-      await img.destroy();
     }
 
     // Create cancellation notification before deleting

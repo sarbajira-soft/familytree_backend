@@ -13,6 +13,7 @@ import { UserProfile } from '../user/model/user-profile.model';
 import { MailService } from '../utils/mail.service';
 import { NotificationModule } from '../notification/notification.module';
 import { RelationshipEdgeService } from './relationship-edge.service';
+import { UploadModule } from '../uploads/upload.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { RelationshipEdgeService } from './relationship-edge.service';
       UserRelationship,
     ]),
     NotificationModule,
+    UploadModule,
   ],
   controllers: [FamilyController, FamilyMemberController],
   providers: [FamilyService, MailService, FamilyMemberService, RelationshipEdgeService],

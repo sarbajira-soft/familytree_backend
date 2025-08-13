@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { SequelizeModule } from '@nestjs/sequelize';
 import { UserController } from './user.controller';
 import { UserLookupController } from './user-lookup.controller';
@@ -16,9 +16,11 @@ import { MailService } from '../utils/mail.service';
 
 import { NotificationModule } from '../notification/notification.module';
 import { Notification } from '../notification/model/notification.model';
+import { UploadModule } from '../uploads/upload.module';
 
 @Module({
   imports: [
+    forwardRef(() => UploadModule),
     SequelizeModule.forFeature([
       User,
       UserProfile,
@@ -31,6 +33,7 @@ import { Notification } from '../notification/model/notification.model';
       Notification,
     ]),
     NotificationModule,
+    UploadModule,
   ],
   controllers: [UserController, UserLookupController],
   providers: [UserService, MailService],

@@ -14,7 +14,7 @@ import {
   Put,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
-import { diskStorage } from 'multer';
+import { diskStorage, memoryStorage } from 'multer';
 import * as fs from 'fs';
 import { Request } from 'express';
 
@@ -50,21 +50,9 @@ export class EventController {
   @Post('create')
   @UseInterceptors(
     FilesInterceptor('eventImages', 10, {
-      storage: diskStorage({
-        destination: (req, file, cb) => {
-          const uploadPath =
-            process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
-          if (!fs.existsSync(uploadPath)) {
-            fs.mkdirSync(uploadPath, { recursive: true });
-          }
-          cb(null, uploadPath);
-        },
-        filename: (req, file, cb) => {
-          const filename = generateFileName(file.originalname);
-          cb(null, filename);
-        },
-      }),
+      storage: memoryStorage(),
       fileFilter: imageFileFilter,
+      limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
     }),
   )
   @ApiConsumes('multipart/form-data')
@@ -90,13 +78,7 @@ export class EventController {
       body.createdBy = loggedInUser.userId;
     }
 
-    // Handle multiple image uploads
-    let imageNames: string[] = [];
-    if (files && files.length > 0) {
-      imageNames = files.map(file => file.filename);
-    }
-
-    return this.eventService.createEvent(body, imageNames);
+    return this.eventService.createEvent(body, files || []);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -169,28 +151,19 @@ export class EventController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Put(':id')
+  @Put('edit/:id')
   @UseInterceptors(
     FilesInterceptor('eventImages', 10, {
-      storage: diskStorage({
-        destination: (req, file, cb) => {
-          const uploadPath =
-            process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
-          if (!fs.existsSync(uploadPath)) {
-            fs.mkdirSync(uploadPath, { recursive: true });
-          }
-          cb(null, uploadPath);
-        },
-        filename: (req, file, cb) => {
-          cb(null, generateFileName(file.originalname));
-        },
-      }),
+      storage: memoryStorage(),
       fileFilter: imageFileFilter,
+      limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
     }),
   )
   @ApiConsumes('multipart/form-data')
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Update event by ID' })
+  @ApiOperation({ summary: 'Update an event' })
+  @ApiResponse({ status: 200, description: 'Event updated successfully' })
+  @HttpCode(HttpStatus.OK)
   async updateEvent(
     @Req() req: Request,
     @Param('id') id: number,
@@ -199,39 +172,23 @@ export class EventController {
   ) {
     const loggedInUser = req.user;
 
-    // Handle multiple image uploads
-    let imageNames: string[] = [];
-    if (files && files.length > 0) {
-      imageNames = files.map(file => file.filename);
-    }
-
-    // Handle images to remove (from request body)
+    // Parse imagesToRemove if provided
     let imagesToRemove: number[] = [];
     if (body.imagesToRemove) {
       try {
-        imagesToRemove = Array.isArray(body.imagesToRemove) 
-          ? body.imagesToRemove 
-          : JSON.parse(body.imagesToRemove);
-      } catch (error) {
-        console.error('Error parsing imagesToRemove:', error);
-        imagesToRemove = [];
+        imagesToRemove = JSON.parse(body.imagesToRemove as any);
+      } catch (e) {
+        console.error('Error parsing imagesToRemove:', e);
       }
     }
 
-    // Handle existing image URLs from the request body
-    // The frontend might send existing image URLs in the eventImages field
-    // along with new binary files
-    if (body.eventImages && typeof body.eventImages === 'string') {
-      try {
-        // If it's a JSON string, parse it
-        body.eventImages = JSON.parse(body.eventImages);
-      } catch (error) {
-        // If it's not JSON, treat it as a single string
-        body.eventImages = [body.eventImages];
-      }
-    }
-
-    return this.eventService.update(id, body, imageNames, imagesToRemove, loggedInUser.userId);
+    return this.eventService.update(
+      id,
+      body,
+      files || [],
+      imagesToRemove,
+      loggedInUser.userId
+    );
   }
 
   @UseGuards(JwtAuthGuard)

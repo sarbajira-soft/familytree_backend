@@ -26,12 +26,15 @@ export class CreateGalleryDto {
   galleryDescription?: string;
 
   @ApiPropertyOptional({
-    description: 'Cover photo for the gallery (single file)',
-    type: 'string',
-    format: 'binary',
+    description: 'Cover photo for the gallery (can be a file or a filename string)',
+    oneOf: [
+      { type: 'string', format: 'binary' },
+      { type: 'string' }
+    ]
   })
   @IsOptional()
-  coverPhoto?: Express.Multer.File;
+  @Type(() => String)
+  coverPhoto?: string | Express.Multer.File;
 
   @ApiPropertyOptional({
     example: 'FAM123456',
@@ -69,6 +72,40 @@ export class CreateGalleryDto {
   @Type(() => Number)
   @IsNumber()
   status?: number;
+
+  @ApiPropertyOptional({
+    description: 'Album images (multiple files)',
+    type: 'array',
+    items: {
+      type: 'string',
+      format: 'binary',
+    },
+  })
+  @IsOptional()
+  images?: Express.Multer.File[];
+
+  @ApiPropertyOptional({
+    description: 'Array of gallery album image IDs to be removed',
+    type: [Number],
+    example: [1, 2, 3],
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber({}, { each: true })
+  removedImageIds?: number[];
+}
+
+export class UpdateGalleryDto extends CreateGalleryDto {
+  @ApiPropertyOptional({
+    description: 'Cover photo for the gallery (can be a file or a filename string)',
+    oneOf: [
+      { type: 'string', format: 'binary' },
+      { type: 'string' }
+    ]
+  })
+  @IsOptional()
+  @Type(() => String)
+  coverPhoto?: string | Express.Multer.File;
 
   @ApiPropertyOptional({
     description: 'Album images (multiple files)',

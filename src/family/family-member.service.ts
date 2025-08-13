@@ -7,7 +7,8 @@ import { UserProfile } from '../user/model/user-profile.model';
 import { Family } from './model/family.model';
 import { FamilyMember } from './model/family-member.model';
 import { MailService } from '../utils/mail.service';
-import { NotificationService } from '../notification/notification.service'; // Import your notification service
+import { NotificationService } from '../notification/notification.service';
+import { UploadService } from '../uploads/upload.service';
 import { extractUserProfileFields } from '../utils/profile-mapper.util';
 import * as bcrypt from 'bcrypt';
 import * as path from 'path';
@@ -34,6 +35,8 @@ export class FamilyMemberService {
     private mailService: MailService,
 
     private notificationService: NotificationService,
+
+    private readonly uploadService: UploadService,
 
     private readonly sequelize: Sequelize,
   ) {}
@@ -377,7 +380,7 @@ export class FamilyMemberService {
             {
               model: this.userProfileModel,
               as: 'userProfile',
-              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', ],
+              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address'],
             },
           ],
         },
@@ -390,28 +393,35 @@ export class FamilyMemberService {
       order: [['createdAt', 'DESC']],
     });
 
-    const baseUrl = process.env.BASE_URL || '';
-    const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
-
-    const result = members.map((memberInstance: any) => {
+    const result = await Promise.all(members.map(async (memberInstance: any) => {
       const member = memberInstance.get({ plain: true });
-
       const user = member.user;
-      const profileImage = user?.userProfile?.profile
-        ? `${baseUrl.replace(/\/$/, '')}/${profilePath}/${user.userProfile.profile}`
-        : null;
+      
+      // Get S3 URL for profile image if it exists
+      let profileImage = null;
+      if (user?.userProfile?.profile) {
+        try {
+          profileImage = await this.uploadService.getFileUrl(user.userProfile.profile, 'profile');
+        } catch (error) {
+          console.error('Error getting S3 URL for profile image:', error);
+          // Fallback to the original profile path if S3 URL fetch fails
+          const baseUrl = process.env.BASE_URL || '';
+          const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
+          profileImage = `${baseUrl.replace(/\/$/, '')}/${profilePath}/${user.userProfile.profile}`;
+        }
+      }
 
       return {
         ...member,
         user: {
           ...user,
           fullName: user?.userProfile
-            ? `${user.userProfile.firstName} ${user.userProfile.lastName}`
+            ? `${user.userProfile.firstName} ${user.userProfile.lastName}`.trim()
             : null,
           profileImage,
         },
       };
-    });
+    }));
 
     return {
       message: `${result.length} approved family members found.`,

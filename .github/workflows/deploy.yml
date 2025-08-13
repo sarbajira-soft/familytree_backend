@@ -59,11 +59,11 @@ jobs:
           PRODUCT_IMAGE_UPLOAD_PATH='./uploads/product/'
           EVENT_IMAGE_UPLOAD_PATH='./uploads/event/'
 
-          REGION=${{ secrets.REGION }}
-          ACCESS_KEY_ID=${{ secrets.ACCESS_KEY_ID }}
-          SECRET_ACCESS_KEY=${{ secrets.SECRET_ACCESS_KEY }}
-          S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }}
-          S3_BUCKET_URL=https://${{ secrets.S3_BUCKET_NAME }}.s3.${{ secrets.REGION }}.amazonaws.com
+          AWS_REGION=${{ secrets.REGION }}
+          AWS_ACCESS_KEY_ID=${{ secrets.ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY=${{ secrets.SECRET_ACCESS_KEY }}
+          AWS_S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }}
+          AWS_S3_BUCKET_URL=https://${{ secrets.S3_BUCKET_NAME }}.s3.${{ secrets.REGION }}.amazonaws.com
           EOF
 
       # 6. Remove devDependencies
@@ -95,6 +95,6 @@ jobs:
             --s3-bucket ${{ secrets.S3_BUCKET_NAME }} \
             --s3-key lambda-deploys/lambda.zip
         env:
-          ACCESS_KEY_ID: ${{ secrets.ACCESS_KEY_ID }}
-          SECRET_ACCESS_KEY: ${{ secrets.SECRET_ACCESS_KEY }}
-          REGION: ${{ secrets.REGION }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.REGION }}

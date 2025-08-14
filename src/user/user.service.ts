@@ -520,7 +520,7 @@ export class UserService {
       if (user.userProfile?.profile) {
         user.userProfile.profile = this.uploadService.getFileUrl(user.userProfile.profile, 'profile');
       }
-
+ 
       return user;
     } catch (error) {
       console.error('Error in getUserProfile:', error);

@@ -6,4 +6,4 @@ export class AddPostCommentDto {
   @IsString()
   @IsNotEmpty()
   comment: string;
-}
+} 

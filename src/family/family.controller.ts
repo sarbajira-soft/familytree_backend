@@ -29,7 +29,7 @@ import { UploadService } from '../uploads/upload.service';
 import { ApiConsumes, ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiBody, ApiSecurity } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { imageFileFilter } from '../utils/upload.utils';
-
+ 
 @ApiTags('Family')
 @Controller('family')
 export class FamilyController {

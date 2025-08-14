@@ -9,7 +9,7 @@ import {
   HasMany,
 } from 'sequelize-typescript';
 import { GalleryAlbum } from './gallery-album.model'
-
+ 
 @Table({ tableName: 'ft_gallery' })
 export class Gallery extends Model<Gallery> {
   @PrimaryKey

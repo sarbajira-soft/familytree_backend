@@ -14,7 +14,7 @@ import { MailService } from '../utils/mail.service';
 import { NotificationModule } from '../notification/notification.module';
 import { RelationshipEdgeService } from './relationship-edge.service';
 import { UploadModule } from '../uploads/upload.module';
-
+ 
 @Module({
   imports: [
     SequelizeModule.forFeature([

@@ -13,7 +13,7 @@ import { GalleryAlbum } from './model/gallery-album.model';
 import { GalleryLike } from './model/gallery-like.model';
 import { GalleryComment } from './model/gallery-comment.model';
 import { UserProfile } from '../user/model/user-profile.model';
-
+ 
 import { CreateGalleryDto, UpdateGalleryDto } from './dto/gallery.dto';
 import { CreateGalleryCommentDto } from './dto/gallery-comment.dto';
 

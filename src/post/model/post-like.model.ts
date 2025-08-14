@@ -16,4 +16,4 @@ export class PostLike extends Model<PostLike> {
   @Default(DataType.NOW)
   @Column(DataType.DATE)
   createdAt: Date;
-}
+} 

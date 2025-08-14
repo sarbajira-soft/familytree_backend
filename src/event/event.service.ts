@@ -15,7 +15,7 @@ import { Op } from 'sequelize';
 import { EventImage } from './model/event-image.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { UploadService } from '../uploads/upload.service';
-
+ 
 @Injectable()
 export class EventService {
   constructor(

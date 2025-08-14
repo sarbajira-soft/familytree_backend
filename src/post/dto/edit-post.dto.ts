@@ -33,4 +33,4 @@ export class EditPostDto {
   })
   @IsOptional()
   postImage?: string;
-}
+} 

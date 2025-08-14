@@ -10,10 +10,10 @@ export class UploadService {
 
   constructor() {
     this.s3 = new S3Client({
-      region: process.env.AWS_REGION,
+      region: process.env.REGION,
       credentials: {
-        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
-        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+        accessKeyId: process.env.ACCESS_KEY_ID,
+        secretAccessKey: process.env.SECRET_ACCESS_KEY,
       },
     });
   }
@@ -27,12 +27,12 @@ export class UploadService {
       originalName: file.originalname,
       fileName,
       s3Key,
-      bucket: process.env.AWS_S3_BUCKET_NAME,
+      bucket: process.env.S3_BUCKET_NAME,
       folder
     });
 
     const uploadParams = {
-      Bucket: process.env.AWS_S3_BUCKET_NAME,
+      Bucket: process.env.S3_BUCKET_NAME,
       Key: s3Key, // Use the full path with folder for S3
       Body: file.buffer,
       ContentType: file.mimetype,
@@ -54,7 +54,7 @@ export class UploadService {
     // Add folder prefix if not already present
     const s3Key = fileName.includes('/') ? fileName : `${folder}/${fileName}`;
     // Construct the full URL
-    return `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/${s3Key}`;
+    return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/${s3Key}`;
   }
 
   async deleteFile(fileName: string, folder: string = 'profile'): Promise<boolean> {
@@ -83,12 +83,12 @@ export class UploadService {
         originalFileName: fileName,
         folder,
         finalKey: key,
-        bucket: process.env.AWS_S3_BUCKET_NAME,
+        bucket: process.env.S3_BUCKET_NAME,
         timestamp: new Date().toISOString()
       });
       
       const deleteParams = {
-        Bucket: process.env.AWS_S3_BUCKET_NAME,
+        Bucket: process.env.S3_BUCKET_NAME,
         Key: key,
       };
 

@@ -7,7 +7,7 @@ import {
   IsIn,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-
+ 
 export class CreateGalleryDto {
   @ApiProperty({
     example: 'Summer Vacation',

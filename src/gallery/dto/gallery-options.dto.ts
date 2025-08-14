@@ -12,7 +12,7 @@ export class GetGalleryByOptionsDto {
   @IsOptional()
   @IsString()
   familyCode?: string;
-  
+   
   @ApiPropertyOptional()
   @IsOptional()
   @IsNumber()

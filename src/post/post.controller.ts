@@ -170,4 +170,4 @@ export class PostController {
     return this.postService.deletePost(+id, userId);
   }
 
-}
+} 

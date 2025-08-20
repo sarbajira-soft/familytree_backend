@@ -11,6 +11,7 @@ import {
   HttpStatus,
   Patch,
   Query,
+  BadRequestException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { NotificationService } from './notification.service';
@@ -76,4 +77,25 @@ export class NotificationController {
     return { message: 'FAMILY_JOIN_REQUEST notifications fetched successfully', data };
   }
 
+  @Post('respond')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Respond to a notification (accept/reject)' })
+  async respondToNotification(
+    @Body() body: { notificationId: number; action: 'accept' | 'reject' },
+    @Req() req,
+  ) {
+    if (!body.notificationId || !body.action) {
+      throw new BadRequestException('notificationId and action are required');
+    }
+    
+    if (!['accept', 'reject'].includes(body.action)) {
+      throw new BadRequestException('Action must be either "accept" or "reject"');
+    }
+
+    return this.notificationService.respondToNotification(
+      body.notificationId,
+      body.action as 'accept' | 'reject',
+      req.user.userId,
+    );
+  }
 }

@@ -15,9 +15,11 @@ import {
   HttpStatus,
   ParseIntPipe,
   BadRequestException,
+  NotFoundException,
   UseGuards,
   UseInterceptors,
   UploadedFiles,
+  InternalServerErrorException
 } from '@nestjs/common';
 import { FileInterceptor, FilesInterceptor, FileFieldsInterceptor, AnyFilesInterceptor } from '@nestjs/platform-express';
 import { memoryStorage } from 'multer';
@@ -29,11 +31,16 @@ import { UploadService } from '../uploads/upload.service';
 import { ApiConsumes, ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiBody, ApiSecurity } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { imageFileFilter } from '../utils/upload.utils';
+import { NotificationService } from '../notification/notification.service';
 
 @ApiTags('Family')
 @Controller('family')
 export class FamilyController {
-  constructor(private readonly familyService: FamilyService, private readonly uploadService: UploadService) {}
+  constructor(
+    private readonly familyService: FamilyService,
+    private readonly uploadService: UploadService,
+    private readonly notificationService: NotificationService,
+  ) {}
 
   @UseGuards(JwtAuthGuard)
   @Post('create')
@@ -286,6 +293,60 @@ export class FamilyController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Post('request-association')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Request association between families (sends a notification to target user)' })
+  @ApiResponse({ status: 201, description: 'Association request notification sent' })
+  async requestAssociation(
+    @Req() req,
+    @Body() body: { targetUserId: number; requesterUserId?: number; familyCode?: string }
+  ) {
+    const loggedInUserId: number = req.user?.userId;
+    const targetUserId: number = Number(body?.targetUserId);
+    // Use the specific card's userId if provided, otherwise fall back to logged-in user
+    const requesterId: number = body?.requesterUserId ? Number(body.requesterUserId) : loggedInUserId;
+
+    if (!requesterId || !targetUserId) {
+      throw new BadRequestException('Missing requesterId or targetUserId');
+    }
+
+    // Get requester's family code from user profile instead of relying on token or body
+    const requesterProfile = await this.familyService.getFamilyByUserId(requesterId);
+    if (!requesterProfile || !requesterProfile.familyCode) {
+      throw new BadRequestException('Requester must have a family code to send association request');
+    }
+
+    // Get target user's family code for the notification
+    const targetProfile = await this.familyService.getFamilyByUserId(targetUserId);
+    if (!targetProfile || !targetProfile.familyCode) {
+      throw new BadRequestException('Target user must have a family code to receive association request');
+    }
+
+    // Get requester's name for better notification message
+    const requesterName = await this.familyService.getUserName(requesterId);
+
+    const dto = {
+      type: 'FAMILY_ASSOCIATION_REQUEST',
+      title: 'Family Association Request',
+      message: `${requesterName} wants to connect families`,
+      familyCode: targetProfile.familyCode,
+      referenceId: requesterId, // Use requesterId as reference
+      data: {
+        senderId: requesterId,
+        senderName: requesterName,
+        senderFamilyCode: requesterProfile.familyCode,
+        targetUserId: targetUserId,
+        targetFamilyCode: targetProfile.familyCode,
+        requestType: 'family_association_request'
+      },
+      userIds: [targetUserId],
+    } as const;
+
+    const result = await this.notificationService.createNotification(dto as any, requesterId);
+    return { message: 'Association request sent', ...result };
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Post('cleanup-userid-data')
   @ApiOperation({ summary: 'Clean up invalid userId data in database' })
   @ApiResponse({ status: 200, description: 'Data cleanup completed' })
@@ -298,4 +359,98 @@ export class FamilyController {
   }
 
 
+  // --- Association request responses (proxy endpoints) ---
+  @UseGuards(JwtAuthGuard)
+  @Post('accept-association')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Accept a family association request' })
+  @HttpCode(HttpStatus.OK)
+  @ApiResponse({ status: 200, description: 'Successfully accepted the association request' })
+  @ApiResponse({ status: 400, description: 'Invalid request or missing parameters' })
+  @ApiResponse({ status: 403, description: 'Not authorized to accept this request' })
+  @ApiResponse({ status: 404, description: 'Request not found' })
+  async acceptAssociation(
+    @Req() req,
+    @Body() body: { requestId: number }
+  ) {
+    const userId: number = req.user?.userId;
+    const requestId = Number(body?.requestId);
+    
+    if (!userId) {
+      throw new ForbiddenException('Unauthorized: missing user context');
+    }
+    if (!requestId || Number.isNaN(requestId) || requestId <= 0) {
+      throw new BadRequestException('requestId is required and must be a positive number');
+    }
+    
+    try {
+      const result = await this.notificationService.respondToNotification(
+        requestId,
+        'accept',
+        userId
+      );
+      
+      return { 
+        success: true, 
+        message: 'Association request accepted successfully',
+        data: result 
+      };
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('acceptAssociation error:', { userId, requestId, error });
+      if (error instanceof BadRequestException || 
+          error instanceof ForbiddenException || 
+          error instanceof NotFoundException) {
+        throw error;
+      }
+      throw new InternalServerErrorException('Failed to process association request');
+    }
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('reject-association')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Reject a family association request' })
+  @HttpCode(HttpStatus.OK)
+  @ApiResponse({ status: 200, description: 'Successfully rejected the association request' })
+  @ApiResponse({ status: 400, description: 'Invalid request or missing parameters' })
+  @ApiResponse({ status: 403, description: 'Not authorized to reject this request' })
+  @ApiResponse({ status: 404, description: 'Request not found' })
+  async rejectAssociation(
+    @Req() req,
+    @Body() body: { requestId: number }
+  ) {
+    const userId: number = req.user?.userId;
+    const requestId = Number(body?.requestId);
+    
+    if (!userId) {
+      throw new ForbiddenException('Unauthorized: missing user context');
+    }
+    if (!requestId || Number.isNaN(requestId) || requestId <= 0) {
+      throw new BadRequestException('requestId is required and must be a positive number');
+    }
+    
+    try {
+      const result = await this.notificationService.respondToNotification(
+        requestId,
+        'reject',
+        userId
+      );
+      
+      return { 
+        success: true, 
+        message: 'Association request rejected successfully',
+        data: result 
+      };
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('rejectAssociation error:', { userId, requestId, error });
+      if (error instanceof BadRequestException || 
+          error instanceof ForbiddenException || 
+          error instanceof NotFoundException) {
+        throw error;
+      }
+      throw new InternalServerErrorException('Failed to process association rejection');
+    }
+  }
 }

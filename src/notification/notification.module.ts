@@ -1,6 +1,7 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { SequelizeModule } from '@nestjs/sequelize';
-import { ScheduleModule } from '@nestjs/schedule'; //  Required for SchedulerRegistry
+import { Sequelize } from 'sequelize-typescript';
+import { ScheduleModule } from '@nestjs/schedule';
 
 import { NotificationController } from './notification.controller';
 import { NotificationService } from './notification.service';
@@ -12,6 +13,8 @@ import { UserProfile } from '../user/model/user-profile.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { Notification } from './model/notification.model';
 import { NotificationRecipient } from './model/notification-recipients.model';
+import { FamilyModule } from '../family/family.module';
+import { UserModule } from '../user/user.module';
 
 @Module({
   imports: [
@@ -23,9 +26,23 @@ import { NotificationRecipient } from './model/notification-recipients.model';
       FamilyMember,
     ]),
     ScheduleModule.forRoot(),
+    forwardRef(() => FamilyModule),
+    forwardRef(() => UserModule),
   ],
   controllers: [NotificationController],
-  providers: [NotificationService, NotificationScheduler, MailService],
-  exports: [NotificationService, MailService],
+  providers: [
+    NotificationService, 
+    NotificationScheduler, 
+    MailService,
+    {
+      provide: 'SEQUELIZE',
+      useExisting: Sequelize,
+    },
+  ],
+  exports: [
+    NotificationService, 
+    MailService,
+    SequelizeModule,
+  ],
 })
 export class NotificationModule {}

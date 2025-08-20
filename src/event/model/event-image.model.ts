@@ -9,7 +9,7 @@ import {
   BelongsTo,
 } from 'sequelize-typescript';
 import { Event } from './event.model';
-
+ 
 @Table({ tableName: 'ft_event_image' })
 export class EventImage extends Model<EventImage> {
   @PrimaryKey

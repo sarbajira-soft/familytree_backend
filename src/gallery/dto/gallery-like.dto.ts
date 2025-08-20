@@ -5,4 +5,4 @@ export class ToggleLikeDto {
   @ApiProperty({ example: 1, description: 'Gallery ID to like/unlike' })
   @IsNumber()
   galleryId: number;
-}
+} 

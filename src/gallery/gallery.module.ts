@@ -10,7 +10,7 @@ import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { NotificationModule } from '../notification/notification.module';
 import { UploadModule } from '../uploads/upload.module';
-
+ 
 @Module({
   imports: [
     SequelizeModule.forFeature([

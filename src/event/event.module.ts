@@ -8,7 +8,7 @@ import { UserProfile } from '../user/model/user-profile.model';
 import { NotificationModule } from '../notification/notification.module';
 import { EventImage } from './model/event-image.model';
 import { FamilyMember } from '../family/model/family-member.model';
-
+ 
 @Module({
   imports: [
     SequelizeModule.forFeature([Event, User, UserProfile, EventImage, FamilyMember]),

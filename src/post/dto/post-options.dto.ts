@@ -29,4 +29,4 @@ export class GetPostByOptionsDto {
   @IsOptional()
   @IsString()
   caption?: string;
-}
+} 

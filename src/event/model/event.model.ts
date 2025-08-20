@@ -12,7 +12,7 @@ import {
 } from 'sequelize-typescript';
 import { User } from '../../user/model/user.model';
 import { EventImage } from './event-image.model';
-
+ 
 @Table({ tableName: 'ft_event' })
 export class Event extends Model<Event> {
   @PrimaryKey

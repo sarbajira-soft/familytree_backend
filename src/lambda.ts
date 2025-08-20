@@ -15,6 +15,9 @@ let cachedServer: any;
 
 async function bootstrapServer() {
   try {
+    if (!process.env.JWT_SECRET) {
+      throw new Error('JWT_SECRET is not configured in environment variables');
+    }
     const expressApp = express();
     const adapter = new ExpressAdapter(expressApp);
     

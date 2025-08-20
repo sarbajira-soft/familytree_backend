@@ -35,7 +35,7 @@ import { generateFileName, imageFileFilter } from '../utils/upload.utils';
 import { MergeUserDto } from './dto/merge-user.dto';
 import { UploadService } from '../uploads/upload.service';
 
-
+ 
 @ApiTags('User Module')
 @Controller('user')
 export class UserController {

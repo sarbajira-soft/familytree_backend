@@ -13,7 +13,7 @@ import { Religion } from '../religion/model/religion.model';
 import { Language } from '../language/model/language.model';
 import { Gothram } from '../gothram/model/gothram.model';
 import { MailService } from '../utils/mail.service';
-
+ 
 import { NotificationModule } from '../notification/notification.module';
 import { Notification } from '../notification/model/notification.model';
 import { UploadModule } from '../uploads/upload.module';

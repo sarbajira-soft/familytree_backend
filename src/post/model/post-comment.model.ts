@@ -20,3 +20,4 @@ export class PostComment extends Model<PostComment> {
   @Column(DataType.DATE)
   createdAt: Date;
 }
+ 

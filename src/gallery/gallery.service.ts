@@ -13,7 +13,7 @@ import { GalleryAlbum } from './model/gallery-album.model';
 import { GalleryLike } from './model/gallery-like.model';
 import { GalleryComment } from './model/gallery-comment.model';
 import { UserProfile } from '../user/model/user-profile.model';
-
+ 
 import { CreateGalleryDto, UpdateGalleryDto } from './dto/gallery.dto';
 import { CreateGalleryCommentDto } from './dto/gallery-comment.dto';
 
@@ -75,8 +75,8 @@ export class GalleryService {
     }
 
     // If S3 is configured, construct S3 URL
-    if (process.env.AWS_S3_BUCKET_NAME && process.env.AWS_REGION) {
-      const s3BaseUrl = `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com`;
+    if (process.env.S3_BUCKET_NAME && process.env.REGION) {
+      const s3BaseUrl = `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com`;
       if (subfolder === 'cover') {
         return `${s3BaseUrl}/gallery/cover/${filename}`;
       } else if (subfolder) {

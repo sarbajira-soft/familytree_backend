@@ -17,7 +17,7 @@ import { CreatePostDto } from './dto/createpost.dto';
 import { EditPostDto } from './dto/edit-post.dto';
 import { NotificationService } from '../notification/notification.service';
 import { UploadService } from '../uploads/upload.service';
-
+ 
 @Injectable()
 export class PostService {
   constructor(
@@ -208,8 +208,8 @@ export class PostService {
     }
 
     // If S3 is configured, construct S3 URL
-    if (process.env.AWS_S3_BUCKET_NAME && process.env.AWS_REGION) {
-      return `https://${process.env.AWS_S3_BUCKET_NAME}.s3.${process.env.AWS_REGION}.amazonaws.com/posts/${filename}`;
+    if (process.env.S3_BUCKET_NAME && process.env.REGION) {
+      return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/posts/${filename}`;
     }
 
     // Fallback to local URL

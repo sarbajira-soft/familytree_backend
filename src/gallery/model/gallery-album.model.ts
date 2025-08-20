@@ -7,7 +7,7 @@ import {
   PrimaryKey,
   AutoIncrement,
 } from 'sequelize-typescript';
-
+ 
 @Table({ tableName: 'ft_gallery_album' })
 export class GalleryAlbum extends Model<GalleryAlbum> {
   @PrimaryKey

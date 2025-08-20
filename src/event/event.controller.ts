@@ -17,7 +17,7 @@ import { FilesInterceptor } from '@nestjs/platform-express';
 import { diskStorage, memoryStorage } from 'multer';
 import * as fs from 'fs';
 import { Request } from 'express';
-
+ 
 declare global {
   namespace Express {
     interface Request {

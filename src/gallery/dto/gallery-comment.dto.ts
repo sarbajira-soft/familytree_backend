@@ -10,4 +10,4 @@ export class CreateGalleryCommentDto {
   @IsString()
   @IsNotEmpty()
   comments: string;
-}
+} 

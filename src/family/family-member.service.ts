@@ -13,7 +13,7 @@ import { extractUserProfileFields } from '../utils/profile-mapper.util';
 import * as bcrypt from 'bcrypt';
 import * as path from 'path';
 import * as fs from 'fs';
-
+ 
 import { CreateFamilyMemberDto } from './dto/create-family-member.dto';
 import { CreateUserAndJoinFamilyDto } from './dto/create-user-and-join-family.dto';
 

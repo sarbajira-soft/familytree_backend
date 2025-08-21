@@ -7,4 +7,4 @@ import { UserModule } from '../user/user.module';
   providers: [UploadService],
   exports: [UploadService],
 })
-export class UploadModule {} 
+export class UploadModule {}

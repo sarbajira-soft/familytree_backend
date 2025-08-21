@@ -319,7 +319,19 @@ export class PostService {
         // Format user info
         const user = postJson.userProfile;
         const fullName = user ? `${user.firstName} ${user.lastName}` : null;
-        const profileImage = user?.profile ? `${baseUrl}/${profilePath}/${user.profile}` : null;
+        
+        // Get profile image URL - check if it's already a full URL
+        let profileImage = user?.profile || null;
+        if (profileImage) {
+          if (!profileImage.startsWith('http')) {
+            // If S3 is configured, construct S3 URL, otherwise use local URL
+            if (process.env.S3_BUCKET_NAME && process.env.REGION) {
+              profileImage = `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/profile/${profileImage}`;
+            } else {
+              profileImage = `${baseUrl}/${profilePath}/${profileImage}`;
+            }
+          }
+        }
 
         return {
           ...postJson,

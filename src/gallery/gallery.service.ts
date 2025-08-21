@@ -106,48 +106,68 @@ export class GalleryService {
    */
   async uploadGalleryFile(file: Express.Multer.File, subfolder?: string): Promise<string> {
     try {
-      // For cover photos, use 'gallery/cover' folder
-      // For album images, use 'gallery' folder
-      let folder = 'gallery';
-      if (subfolder === 'cover') {
-        folder = 'gallery/cover';
-      } else if (subfolder) {
-        folder = `gallery/${subfolder}`;
-      }
+      // Define the upload path based on subfolder
+      const uploadPath = subfolder ? `gallery/${subfolder}` : 'gallery';
       
-      // Upload the file and get the full URL
-      const fileUrl = await this.uploadService.uploadFile(file, folder);
+      // Upload the file using the upload service
+      const fileName = await this.uploadService.uploadFile(file, uploadPath);
       
-      // For S3, the uploadService.uploadFile returns just the filename when successful
-      // So we can use that directly instead of parsing it from a URL
-      const filename = fileUrl;
-      
-      if (!filename) {
-        throw new Error('Failed to get filename from upload service');
-      }
-      
-      const fullUrl = this.constructGalleryImageUrl(filename, subfolder);
+      // Log the successful upload
+      const fullUrl = this.constructGalleryImageUrl(fileName, subfolder);
       
       console.log('File uploaded successfully:', {
         originalName: file.originalname,
-        uploadedAs: filename,
-        folder,
-        fullUrl: fullUrl,
-        'filenameType': typeof filename,
-        'isString': typeof filename === 'string',
-        'isURL': filename.startsWith ? filename.startsWith('http') : 'unknown'
+        uploadedAs: fileName,
+        uploadPath,
+        fullUrl,
+        filenameType: typeof fileName,
+        isString: typeof fileName === 'string',
+        isURL: fileName.startsWith ? fileName.startsWith('http') : 'unknown'
       });
       
       console.log('Constructed full URL from filename:', {
-        input: filename,
+        input: fileName,
         output: fullUrl,
-        subfolder: subfolder
+        subfolder
       });
       
-      return filename;
+      return fileName;
     } catch (error) {
       console.error('Error uploading gallery file:', error);
       throw new Error('Failed to upload file to gallery');
+    }
+  }
+
+  /**
+   * Helper method to delete a cover photo from storage
+   * @param coverPhoto The cover photo URL or filename to delete
+   */
+  private async deleteCoverPhoto(coverPhoto: string): Promise<void> {
+    console.log('Deleting cover photo:', coverPhoto);
+    
+    try {
+      if (coverPhoto.includes('amazonaws.com')) {
+        const url = new URL(coverPhoto);
+        let key = url.pathname.substring(1);
+        
+        if (!key.startsWith('gallery/cover/') && key.includes('/cover/')) {
+          const parts = key.split('/cover/');
+          key = `gallery/cover/${parts[parts.length - 1]}`;
+        } else if (!key.startsWith('gallery/')) {
+          key = `gallery/cover/${key}`;
+        }
+        
+        console.log('Deleting S3 object with key:', key);
+        await this.uploadService.deleteFile(key);
+      } else {
+        const cleanFilename = this.getGalleryImageFilenameFromUrl(coverPhoto) || coverPhoto;
+        console.log('Deleting local file with filename:', cleanFilename);
+        await this.uploadService.deleteFile(cleanFilename, 'gallery/cover');
+      }
+      console.log('Successfully deleted cover photo');
+    } catch (error) {
+      console.error('Error deleting cover photo:', error);
+      // Continue even if deletion fails
     }
   }
 
@@ -497,77 +517,61 @@ export class GalleryService {
         updateData.familyCode = ''; // Clear family code for public galleries
       }
 
-      // Handle cover photo update if provided
-      if (dto.coverPhoto) {
+      // Handle cover photo update if provided or being removed
+      if (dto.coverPhoto !== undefined) {
         try {
-          // If it's a file, upload it to S3 in the cover subfolder
-          if (typeof dto.coverPhoto !== 'string') {
-            // Store the old cover photo before updating
-            const oldCoverPhoto = existingGallery.coverPhoto;
+          // Store the old cover photo before any updates
+          const oldCoverPhoto = existingGallery.coverPhoto;
+          
+          // Handle different cases for cover photo update
+          if (dto.coverPhoto === null || dto.coverPhoto === '' || dto.coverPhoto === 'null' || dto.coverPhoto === 'remove') {
+            // Case 1: Cover photo is being removed
+            updateData.coverPhoto = null;
+            console.log('Removing cover photo from gallery');
             
-            // Upload new cover photo to gallery/cover folder
-            const newCoverPhoto = await this.uploadGalleryFile(dto.coverPhoto, 'cover');
+            // If there was an old cover photo, delete it
+            if (oldCoverPhoto) {
+              console.log('Deleting old cover photo:', oldCoverPhoto);
+              await this.deleteCoverPhoto(oldCoverPhoto);
+            }
+          } else if (dto.coverPhoto && typeof dto.coverPhoto !== 'string') {
+            // Case 2: New cover photo file is provided (as Express.Multer.File or similar)
+            const fileToUpload = dto.coverPhoto as Express.Multer.File;
+            const newCoverPhoto = await this.uploadGalleryFile(fileToUpload, 'cover');
             console.log('New cover photo uploaded:', newCoverPhoto);
             updateData.coverPhoto = newCoverPhoto;
             
-            // Log current state before deletion
-            console.log('=== COVER PHOTO UPDATE DEBUG ===');
-            console.log('Current cover photo in DB (raw):', JSON.stringify(oldCoverPhoto));
-            console.log('New cover photo to be saved (raw):', JSON.stringify(newCoverPhoto));
-            
-            // Always attempt to delete old cover photo if it exists and is different from the new one
-            if (oldCoverPhoto) {
-              console.log('Proceeding with cover photo deletion...');
-              console.log('Attempting to delete old cover photo:', {
-                oldCover: oldCoverPhoto,
-                newCover: newCoverPhoto,
-                areDifferent: oldCoverPhoto !== newCoverPhoto
-              });
-              
-              try {
-                // Get the filename from the URL or use as is
-                let filenameToDelete = oldCoverPhoto;
-                
-                // If it's a full URL, extract just the filename
-                if (oldCoverPhoto.includes('amazonaws.com')) {
-                  // For S3 URLs, we need to extract the key properly
-                  const url = new URL(oldCoverPhoto);
-                  // The key is the path without the leading slash
-                  const key = url.pathname.substring(1);
-                  console.log('Deleting S3 object with key:', key);
-                  // Delete using the full S3 key
-                  const deleted = await this.uploadService.deleteFile(key);
-                  if (deleted) {
-                    console.log('Successfully deleted old cover photo from S3');
-                  } else {
-                    console.warn('Failed to delete cover photo from S3');
-                  }
-                } else {
-                  // For local files or direct filenames
-                  const cleanFilename = this.getGalleryImageFilenameFromUrl(oldCoverPhoto) || oldCoverPhoto;
-                  console.log('Deleting local file with filename:', cleanFilename);
-                  // Delete from the cover folder
-                  const deleted = await this.uploadService.deleteFile(cleanFilename, 'gallery/cover');
-                  if (deleted) {
-                    console.log('Successfully deleted old cover photo from local storage');
-                  } else {
-                    console.warn('Failed to delete cover photo from local storage');
-                  }
-                }
-              } catch (error) {
-                console.error('Error in cover photo cleanup:', error);
-                // Continue with the update even if cleanup fails
-              }
-            } else {
-              console.log('No need to delete old cover photo: No existing cover photo');
+            // Delete old cover photo if it exists and is different from the new one
+            if (oldCoverPhoto && oldCoverPhoto !== newCoverPhoto) {
+              console.log('Replacing old cover photo:', oldCoverPhoto);
+              await this.deleteCoverPhoto(oldCoverPhoto);
             }
-          } else {
-            // If it's a string, extract filename if it's a URL
-            if (dto.coverPhoto.startsWith('http')) {
-              const url = new URL(dto.coverPhoto);
-              updateData.coverPhoto = url.pathname.split('/').pop() || dto.coverPhoto;
+          } else if (typeof dto.coverPhoto === 'string' && dto.coverPhoto.startsWith('http')) {
+            // Case 3: Cover photo is a URL (from existing album image)
+            const coverPhotoStr = dto.coverPhoto as string;
+            const url = new URL(coverPhotoStr);
+            // Extract just the filename part from the URL
+            const filename = url.pathname.split('/').pop() || coverPhotoStr;
+            console.log('Using existing image as cover:', filename);
+            
+            if (url.hostname.includes('amazonaws.com')) {
+              updateData.coverPhoto = filename;
             } else {
-              updateData.coverPhoto = dto.coverPhoto;
+              updateData.coverPhoto = coverPhotoStr;
+            }
+            
+            // Delete old cover photo if it's different from the new one
+            if (oldCoverPhoto && oldCoverPhoto !== updateData.coverPhoto) {
+              await this.deleteCoverPhoto(oldCoverPhoto);
+            }
+          } else if (typeof dto.coverPhoto === 'string') {
+            // Case 4: Cover photo is a direct filename (string)
+            const coverPhotoStr = dto.coverPhoto as string;
+            updateData.coverPhoto = coverPhotoStr;
+            
+            // Delete old cover photo if it's different from the new one
+            if (oldCoverPhoto && oldCoverPhoto !== coverPhotoStr) {
+              await this.deleteCoverPhoto(oldCoverPhoto);
             }
           }
         } catch (error) {
@@ -619,7 +623,7 @@ export class GalleryService {
               await this.uploadService.deleteFile(`gallery/${image.album}`);
             } catch (error) {
               console.error(`Error deleting image ${image.album}:`, error);
-              // Continue even if file deletion fails
+              // Continue with other deletions even if one fails
             }
           })
         );

@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Inject, forwardRef } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { Op } from 'sequelize';
@@ -34,7 +34,8 @@ export class FamilyMemberService {
 
     private mailService: MailService,
 
-    private notificationService: NotificationService,
+    @Inject(forwardRef(() => NotificationService))
+    private readonly notificationService: NotificationService,
 
     private readonly uploadService: UploadService,
 
@@ -200,13 +201,22 @@ export class FamilyMemberService {
       const adminUserIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
       if (adminUserIds.length > 0) {
         const user = await this.userProfileModel.findOne({ where: { userId: dto.memberId } });
+        const requesterName = user ? `${user.firstName || ''} ${user.lastName || ''}`.trim() : 'A user';
         await this.notificationService.createNotification(
           {
-            type: 'FAMILY_MEMBER_JOIN_REQUEST',
+            type: 'FAMILY_JOIN_REQUEST_UPDATED',
             title: 'Family Join Request Updated',
-            message: `User ${user?.firstName || ''} ${user?.lastName || ''} has updated their request to join your family.`,
+            message: `User ${requesterName} has updated their request to join your family.`,
             familyCode: dto.familyCode,
             referenceId: dto.memberId,
+            data: {
+              requesterId: dto.memberId,
+              requesterName: requesterName,
+              requesterFamilyCode: dto.familyCode,
+              targetUserId: createdBy,
+              targetName: 'you',
+              targetFamilyCode: dto.familyCode
+            },
             userIds: adminUserIds,
           },
           createdBy,
@@ -227,22 +237,64 @@ export class FamilyMemberService {
       approveStatus: dto.approveStatus || 'pending',
     });
 
-    // Notify all family admins about new join request
-    const adminUserIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
-    if (adminUserIds.length > 0) {
-      const user = await this.userProfileModel.findOne({ where: { userId: dto.memberId } });
-      await this.notificationService.createNotification(
-        {
-          type: 'FAMILY_MEMBER_JOIN_REQUEST',
-          title: 'New Family Join Request',
-          message: `User ${user?.firstName || ''} ${user?.lastName || ''} has requested to join your family.`,
-          familyCode: dto.familyCode,
-          referenceId: dto.memberId,
-          userIds: adminUserIds,
-        },
-        createdBy,
-      );
+    // Get the target user's family code (the one being requested to associate with)
+    const targetUserProfile = await this.userProfileModel.findOne({ 
+      where: { userId: createdBy },
+      include: [{
+        model: this.userModel,
+        as: 'user',
+        include: [{
+          model: UserProfile,
+          as: 'userProfile'
+        }]
+      }]
+    });
+
+    if (!targetUserProfile?.familyCode) {
+      throw new BadRequestException('Target user must belong to a family');
     }
+
+    // Get requester's info
+    const requesterProfile = await this.userProfileModel.findOne({ 
+      where: { userId: dto.memberId },
+      include: [{
+        model: this.userModel,
+        as: 'user',
+        include: [{
+          model: UserProfile,
+          as: 'userProfile'
+        }]
+      }]
+    });
+
+    if (!requesterProfile?.familyCode) {
+      throw new BadRequestException('Requester must belong to a family');
+    }
+
+    const requesterName = requesterProfile.user?.userProfile?.firstName 
+      ? `${requesterProfile.user.userProfile.firstName} ${requesterProfile.user.userProfile.lastName || ''}`.trim() 
+      : 'A user';
+
+    // Send notification to the target user (the one who will accept/reject)
+    await this.notificationService.createNotification(
+      {
+        type: 'FAMILY_ASSOCIATION_REQUEST',
+        title: 'Family Association Request',
+        message: `${requesterName} wants to connect their family with yours`,
+        familyCode: targetUserProfile.familyCode, // Target user's family code
+        referenceId: dto.memberId, // Requester's user ID
+        data: {
+          senderId: dto.memberId, // Who sent the request
+          senderName: requesterName,
+          senderFamilyCode: requesterProfile.familyCode,
+          targetUserId: createdBy, // Who needs to accept
+          targetFamilyCode: targetUserProfile.familyCode,
+          requestType: 'family_association'
+        },
+        userIds: [createdBy], // Send to the target user
+      },
+      dto.memberId, // Triggered by the requester
+    );
 
     return {
       message: 'Family join request submitted successfully',
@@ -428,6 +480,17 @@ export class FamilyMemberService {
       data: result,
     };
 
+  }
+
+  async getUserIdsInFamily(familyCode: string): Promise<number[]> {
+    const members = await this.familyMemberModel.findAll({
+      where: {
+        familyCode,
+        approveStatus: 'approved'
+      },
+      attributes: ['memberId']
+    });
+    return members.map(m => m.memberId);
   }
 
   async getMemberById(memberId: number) {

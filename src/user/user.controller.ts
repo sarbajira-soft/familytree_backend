@@ -150,7 +150,7 @@ export class UserController {
   }
 
   @UseGuards(JwtAuthGuard)
-  @Get(':id')
+  @Get('profile/:id')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Get user profile' })
   @ApiResponse({ status: 200, description: 'User profile data' })

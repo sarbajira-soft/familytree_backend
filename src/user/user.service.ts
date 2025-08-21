@@ -652,8 +652,12 @@ export class UserService {
         }
       }
 
-      // Handle family member update only if familyCode is present
+      // Update user profile with the new family code if provided
       if (dto.familyCode) {
+        // Update the family code in the user profile
+        userProfile.familyCode = dto.familyCode;
+        
+        // Check if user is already a member of this family
         const existing = await this.familyMemberModel.findOne({
           where: { memberId: userId, familyCode: dto.familyCode },
         });
@@ -663,16 +667,16 @@ export class UserService {
             memberId: userId,
             familyCode: dto.familyCode,
             creatorId: null,
-            approveStatus: 'pending',
+            approveStatus: 'approved', // Auto-approve since user is updating their own profile
           });
 
           const adminUserIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
-          if (adminUserIds.length > 0) {
+          if (adminUserIds && adminUserIds.length > 0) {
             await this.notificationService.createNotification(
               {
-                type: 'FAMILY_JOIN_REQUEST',
-                title: 'New Family Join Request',
-                message: `User ${dto.firstName || ''} ${dto.lastName || ''} has requested to join your family.`,
+                type: 'FAMILY_MEMBER_JOINED',
+                title: 'Family Member Joined',
+                message: `User ${userProfile.firstName || ''} ${userProfile.lastName || ''} has joined the family.`,
                 familyCode: dto.familyCode,
                 referenceId: userId,
                 userIds: adminUserIds,
@@ -683,25 +687,42 @@ export class UserService {
         }
       }
 
-      // Update user profile table
-      userProfile.set(dto);
+      // Save the updated profile
       await userProfile.save();
 
-      // Get the updated user with profile
+      // Get the updated user with profile and related data
       const updatedUser = await this.userModel.findByPk(userId, {
         include: [
           {
             model: UserProfile,
             as: 'userProfile',
             include: [
-              { model: Religion, as: 'religion' },
-              { model: Language, as: 'language' },
-              { model: Gothram, as: 'gothram' },
+              {
+                model: FamilyMember,
+                as: 'familyMember',
+                attributes: ['familyCode', 'approveStatus'],
+              },
+              {
+                model: Religion,
+                as: 'religion',
+                attributes: ['id', 'name'],
+              },
+              {
+                model: Language,
+                as: 'language',
+                attributes: ['id', 'name', 'code'],
+              },
+              {
+                model: Gothram,
+                as: 'gothram',
+                attributes: ['id', 'name'],
+              },
             ],
           },
         ],
       });
 
+      // Convert profile image to URL if it exists
       // Convert profile filename to full URL for the response
       if (updatedUser.userProfile?.profile) {
         updatedUser.userProfile.profile = this.uploadService.getFileUrl(updatedUser.userProfile.profile, 'profile');

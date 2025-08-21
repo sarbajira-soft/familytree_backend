@@ -32,6 +32,13 @@ export class CreateNotificationDto {
   familyCode?: string;
 
   @ApiPropertyOptional({
+    example: { requesterId: 1, requesterName: 'John Doe', targetUserId: 2, targetName: 'Jane Smith' },
+    description: 'Additional data for the notification',
+  })
+  @IsOptional()
+  data?: Record<string, any>;
+
+  @ApiPropertyOptional({
     example: 101,
     description: 'Reference ID for related entity (e.g., userId, postId, etc.)',
   })

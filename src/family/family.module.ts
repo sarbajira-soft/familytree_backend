@@ -1,5 +1,6 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { SequelizeModule } from '@nestjs/sequelize';
+import { Sequelize } from 'sequelize-typescript';
 import { FamilyController } from './family.controller';
 import { FamilyService } from './family.service';
 import { FamilyMemberController } from './family-member.controller';
@@ -14,7 +15,10 @@ import { MailService } from '../utils/mail.service';
 import { NotificationModule } from '../notification/notification.module';
 import { RelationshipEdgeService } from './relationship-edge.service';
 import { UploadModule } from '../uploads/upload.module';
- 
+import { NotificationService } from '../notification/notification.service';
+import { UserModule } from '../user/user.module';
+
+
 @Module({
   imports: [
     SequelizeModule.forFeature([
@@ -25,11 +29,26 @@ import { UploadModule } from '../uploads/upload.module';
       FamilyTree,
       UserRelationship,
     ]),
-    NotificationModule,
+    forwardRef(() => NotificationModule),
+    forwardRef(() => UserModule),
     UploadModule,
   ],
   controllers: [FamilyController, FamilyMemberController],
-  providers: [FamilyService, MailService, FamilyMemberService, RelationshipEdgeService],
-  exports: [FamilyService, RelationshipEdgeService],
+  providers: [
+    FamilyService,
+    MailService,
+    FamilyMemberService,
+    RelationshipEdgeService,
+    {
+      provide: 'SEQUELIZE',
+      useExisting: Sequelize,
+    },
+  ],
+  exports: [
+    FamilyService,
+    RelationshipEdgeService,
+    FamilyMemberService,
+    SequelizeModule,
+  ],
 })
 export class FamilyModule {}

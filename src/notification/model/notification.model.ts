@@ -26,8 +26,34 @@ export class Notification extends Model<Notification> {
   @Column({ type: DataType.TEXT, allowNull: false })
   message: string;
 
-  @Column({ type: DataType.STRING })
+  @Column(DataType.STRING)
+  actionType: string;
+
+  @Column({
+    type: DataType.ENUM('pending', 'accepted', 'rejected'),
+    defaultValue: 'pending'
+  })
+  status: 'pending' | 'accepted' | 'rejected';
+  
+  @Column(DataType.INTEGER)
+  senderId: number;
+  
+  @Column(DataType.STRING)
   familyCode: string;
+  
+  @Column({ 
+    type: DataType.JSONB,
+    allowNull: true,
+    defaultValue: {},
+    get() {
+      const rawValue = this.getDataValue('data');
+      return rawValue ? JSON.parse(JSON.stringify(rawValue)) : {};
+    },
+    set(value) {
+      this.setDataValue('data', value || {});
+    }
+  })
+  data: Record<string, any>;
 
   @Column(DataType.INTEGER)
   targetUserId: number;

@@ -17,7 +17,13 @@ export async function bootstrapApp(app: NestExpressApplication) {
     new ValidationPipe({
       transform: true,
       whitelist: true,
-      forbidNonWhitelisted: true,
+      forbidNonWhitelisted: false, // Set to false to allow non-whitelisted properties
+      transformOptions: {
+        enableImplicitConversion: true, // Enable implicit type conversion
+      },
+      validationError: {
+        target: false, // Don't expose the entire target object in validation errors
+      },
     }),
   );
 

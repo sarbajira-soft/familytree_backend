@@ -1,7 +1,16 @@
-import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
-import { InjectModel } from '@nestjs/sequelize';
-import { Op } from 'sequelize';
-import { User} from '../user/model/user.model';
+import { 
+  Injectable, 
+  InternalServerErrorException, 
+  BadRequestException, 
+  NotFoundException, 
+  ForbiddenException 
+} from '@nestjs/common';
+import { 
+  InjectModel, 
+  InjectConnection 
+} from '@nestjs/sequelize';
+import { Sequelize, Op } from 'sequelize';
+import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { Family } from './model/family.model';
 import { FamilyMember } from './model/family-member.model';
@@ -18,14 +27,119 @@ import { CreateFamilyTreeDto, FamilyTreeMemberDto } from './dto/family-tree.dto'
 import { NotificationService } from '../notification/notification.service';
 import { saveBase64Image } from '../utils/upload.utils';
 import { Relationship } from '../relationships/entities/relationship.model';
-import { Sequelize } from 'sequelize-typescript';
 import { RelationshipEdgeService } from './relationship-edge.service';
 
 @Injectable()
 export class FamilyService {
+  async getFamilyByUserId(userId: number) {
+    const user = await this.userModel.findOne({
+      where: { id: userId },
+      include: [
+        {
+          model: UserProfile,
+          as: 'userProfile',
+          attributes: ['familyCode', 'id']
+        }
+      ]
+    });
+
+    if (!user || !user.userProfile) {
+      return null;
+    }
+
+    return {
+      familyCode: user.userProfile.familyCode,
+      userId: user.id
+    };
+  }
+
+  async getUserName(userId: number): Promise<string> {
+    try {
+      // First try to get name from UserProfile directly
+      const userProfile = await this.userProfileModel.findOne({
+        where: { userId },
+        attributes: ['firstName', 'lastName']
+      });
+
+      if (userProfile && userProfile.firstName) {
+        const fullName = `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim();
+        return fullName || 'Someone';
+      }
+
+      // Fallback to User model if UserProfile doesn't have the name
+      const user = await this.userModel.findOne({
+        where: { id: userId },
+        include: [{
+          model: UserProfile,
+          as: 'userProfile',
+          attributes: ['firstName', 'lastName']
+        }]
+      });
+
+      if (!user || !user.userProfile) {
+        return 'Someone';
+      }
+
+      const fullName = `${user.userProfile.firstName || ''} ${user.userProfile.lastName || ''}`.trim();
+      return fullName || 'Someone';
+    } catch (error) {
+      console.error('Error getting user name:', error);
+      return 'Someone';
+    }
+  }
+
+  async associateFamilies(associateDto: { sourceCode: string; targetCode: string }) {
+    const { sourceCode, targetCode } = associateDto;
+    
+    if (!sourceCode || !targetCode || sourceCode === targetCode) {
+      throw new BadRequestException('Invalid family codes');
+    }
+
+    const transaction = await this.sequelize.transaction();
+    
+    try {
+      // Update source family's associated codes
+      await this.userProfileModel.update(
+        {
+          associatedFamilyCodes: this.sequelize.fn(
+            'array_append',
+            this.sequelize.col('associatedFamilyCodes'),
+            targetCode
+          )
+        },
+        {
+          where: { familyCode: sourceCode },
+          transaction
+        }
+      );
+
+      // Update target family's associated codes
+      await this.userProfileModel.update(
+        {
+          associatedFamilyCodes: this.sequelize.fn(
+            'array_append',
+            this.sequelize.col('associatedFamilyCodes'),
+            sourceCode
+          )
+        },
+        {
+          where: { familyCode: targetCode },
+          transaction
+        }
+      );
+
+      await transaction.commit();
+      return { success: true };
+    } catch (error) {
+      await transaction.rollback();
+      throw new InternalServerErrorException('Failed to associate families', error.message);
+    }
+  }
   constructor(
     @InjectModel(User)
     private userModel: typeof User,
+    @InjectConnection()
+    private sequelize: Sequelize,
     @InjectModel(UserProfile)
     private userProfileModel: typeof UserProfile,
     @InjectModel(Family)

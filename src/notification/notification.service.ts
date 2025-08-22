@@ -316,24 +316,24 @@ export class NotificationService {
           }
           
         } else {
-          // Handle rejection
-          const senderName = senderProfile.user?.userProfile
-            ? `${senderProfile.user.userProfile.firstName || ''} ${senderProfile.user.userProfile.lastName || ''}`.trim()
+          // Handle rejection (actor is the target user/admin who rejected)
+          const actorName = targetProfile.user?.userProfile
+            ? `${targetProfile.user.userProfile.firstName || ''} ${targetProfile.user.userProfile.lastName || ''}`.trim()
             : 'A user';
             
           await this.createNotification(
             {
               type: 'FAMILY_ASSOCIATION_REJECTED',
               title: 'Association Request Declined',
-              message: `Your family association request has been declined by ${senderName}.`,
+              message: `Your family association request has been declined by ${actorName}.`,
               familyCode: senderFamilyCode,
               referenceId: targetUserId,
               data: {
                 senderId: targetUserId,
-                senderName: 'You',
+                senderName: actorName,
                 senderFamilyCode: targetFamilyCode,
                 targetUserId: senderId,
-                targetName: senderName,
+                targetName: actorName,
                 targetFamilyCode: senderFamilyCode,
                 requestType: 'family_association_rejected'
               },
@@ -389,6 +389,7 @@ export class NotificationService {
       message: notifRecipient.notification.message,
       type: notifRecipient.notification.type,
       familyCode: notifRecipient.notification.familyCode,
+      data: notifRecipient.notification.data,
       isRead: notifRecipient.isRead,
       createdAt: notifRecipient.notification.createdAt,
       triggeredBy: notifRecipient.notification.triggeredBy,

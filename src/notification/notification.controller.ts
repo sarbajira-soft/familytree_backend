@@ -36,8 +36,8 @@ export class NotificationController {
 
   @Get()
   @ApiOperation({ summary: 'Get notifications for logged-in user' })
-  async getMyNotifications(@Req() req, @Query('all') all: boolean) {
-    const showAll = all === true;
+  async getMyNotifications(@Req() req, @Query('all') all: any) {
+    const showAll = all === true || all === 'true' || all === '1';
     return this.notificationService.getNotificationsForUser(req.user.userId, showAll);
   }
 

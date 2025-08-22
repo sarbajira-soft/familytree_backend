@@ -16,6 +16,7 @@ import { NotificationModule } from '../notification/notification.module';
 import { RelationshipEdgeService } from './relationship-edge.service';
 import { UploadModule } from '../uploads/upload.module';
 import { NotificationService } from '../notification/notification.service';
+import { RelationshipPathService } from './relationship-path.service';
 import { UserModule } from '../user/user.module';
 
 
@@ -35,6 +36,7 @@ import { UserModule } from '../user/user.module';
   ],
   controllers: [FamilyController, FamilyMemberController],
   providers: [
+    RelationshipPathService,
     FamilyService,
     MailService,
     FamilyMemberService,

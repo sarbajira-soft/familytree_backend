@@ -548,35 +548,32 @@ export class UserService {
       
       // If a new profile image is provided (not empty and different from current)
       if (dto.profile && dto.profile !== '') {
+        // Extract just the filename if a full URL is provided
+        let profileFilename = dto.profile;
+        if (dto.profile.includes('/')) {
+          // If it's a URL, extract the filename from the last segment
+          profileFilename = dto.profile.split('/').pop() || dto.profile;
+        }
+        
         // If there's an existing image, delete it from S3
         if (originalProfileImage && originalProfileImage !== '') {
           try {
             console.log('Deleting old profile image from S3:', originalProfileImage);
-            const deleted = await this.uploadService.deleteFile(originalProfileImage, 'profile');
-            if (deleted) {
+            // Only delete if the old image is different from the new one
+            if (originalProfileImage !== profileFilename) {
+              await this.uploadService.deleteFile(originalProfileImage, 'profile');
               console.log('Successfully deleted old profile image');
-            } else {
-              console.warn('Failed to delete old profile image, but continuing with update');
             }
           } catch (error) {
             console.error('Error deleting old profile image from S3:', error);
             // Continue with the update even if deletion fails
           }
         }
-      }
-
-      const isNewImageUploaded = dto.profile && dto.profile !== originalProfileImage;
-      
-      // If a new profile image is provided and it's different from the current one
-      if (isNewImageUploaded && originalProfileImage) {
-        try {
-          // Delete the old image from S3
-          const oldImageUrl = this.uploadService.getFileUrl(originalProfileImage, 'profile');
-          await this.uploadService.deleteFile(oldImageUrl);
-        } catch (error) {
-          console.error('Error deleting old profile image from S3:', error);
-          // Continue with the update even if deletion fails
-        }
+        
+        // Save the new profile image filename to the user profile
+        userProfile.profile = profileFilename;
+        await userProfile.save();
+        console.log('Updated profile image in database:', profileFilename);
       }
 
       // Validate family code
@@ -710,7 +707,7 @@ export class UserService {
               {
                 model: Language,
                 as: 'language',
-                attributes: ['id', 'name', 'code'],
+                attributes: ['id', 'name', 'isoCode'],
               },
               {
                 model: Gothram,

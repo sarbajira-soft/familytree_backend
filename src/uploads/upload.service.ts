@@ -20,8 +20,8 @@ export class UploadService {
 
   async uploadFile(file: Express.Multer.File, folder: string): Promise<string> {
     const fileExt = extname(file.originalname);
-    const fileName = `${uuid()}${fileExt}`; // Remove folder from the stored filename
-    const s3Key = `${folder}/${fileName}`; // But keep folder in S3 path
+    const fileName = `${uuid()}${fileExt}`;
+    const s3Key = `${folder}/${fileName}`;
 
     console.log('Uploading file to S3:', {
       originalName: file.originalname,
@@ -33,7 +33,7 @@ export class UploadService {
 
     const uploadParams = {
       Bucket: process.env.S3_BUCKET_NAME,
-      Key: s3Key, // Use the full path with folder for S3
+      Key: s3Key,
       Body: file.buffer,
       ContentType: file.mimetype,
     };
@@ -41,20 +41,28 @@ export class UploadService {
     await this.s3.send(new PutObjectCommand(uploadParams));
     console.log('Successfully uploaded file to S3:', s3Key);
 
-    // Return only the filename without the folder prefix
-    return fileName;
+    // Return only the filename without any path
+    return fileName.split('/').pop() || fileName;
   }
 
   getFileUrl(fileName: string, folder: string = 'profile'): string {
     if (!fileName) return '';
     // If it's already a full URL, return as is
     if (fileName.startsWith('http')) {
-      return fileName;
+      // Clean up any duplicate path segments
+      const url = new URL(fileName);
+      const pathParts = url.pathname.split('/').filter(part => part && part !== folder);
+      url.pathname = `${folder}/${pathParts.pop()}`;
+      return url.toString();
     }
-    // Add folder prefix if not already present
-    const s3Key = fileName.includes('/') ? fileName : `${folder}/${fileName}`;
-    // Construct the full URL
-    return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/${s3Key}`;
+    
+    // Remove any existing folder prefix from the filename
+    const cleanFileName = fileName.includes('/') 
+      ? fileName.split('/').pop() 
+      : fileName;
+      
+    // Construct the clean URL
+    return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/${folder}/${cleanFileName}`;
   }
 
   async deleteFile(fileName: string, folder: string = 'profile'): Promise<boolean> {

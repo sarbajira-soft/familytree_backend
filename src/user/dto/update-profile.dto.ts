@@ -5,7 +5,7 @@ import {
   IsInt,
   IsJSON,
 } from 'class-validator';
-import { Type } from 'class-transformer';
+import { Transform, Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
 export class UpdateProfileDto {
@@ -64,10 +64,14 @@ export class UpdateProfileDto {
   @IsString()
   gender?: string;
 
-  @ApiPropertyOptional({ description: 'Date of Birth in ISO format', example: '1990-01-01' })
+  @ApiPropertyOptional({ 
+    description: 'Date of Birth in YYYY-MM-DD format', 
+    example: '1990-01-01' 
+  })
   @IsOptional()
-  @IsDateString()
-  dob?: Date;
+  @IsString()
+  @Transform(({ value }) => value ? new Date(value).toISOString() : null)
+  dob?: string;
 
   @ApiPropertyOptional({ description: 'Age', example: 34 })
   @IsOptional()
@@ -80,10 +84,14 @@ export class UpdateProfileDto {
   @IsString()
   maritalStatus?: string;
 
-  @ApiPropertyOptional({ description: 'Date of Marriage in ISO format', example: '2024-01-01' })
+  @ApiPropertyOptional({ 
+    description: 'Date of Marriage in YYYY-MM-DD format', 
+    example: '2024-01-01' 
+  })
   @IsOptional()
-  @IsDateString()
-  marriageDate?: Date;
+  @IsString()
+  @Transform(({ value }) => value ? new Date(value).toISOString() : null)
+  marriageDate?: string;
 
   @ApiPropertyOptional({ description: 'Name of the spouse', example: 'Wife/Husband' })
   @IsOptional()

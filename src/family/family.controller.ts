@@ -225,9 +225,17 @@ export class FamilyController {
     return this.familyService.getFamilyTree(familyCode);
   }
 
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @Get('user/:userId/associated-prefixes')
+  @ApiOperation({ summary: 'Get associated family prefixes (spouse-connected)' })
+  @ApiResponse({ status: 200, description: 'Associated family prefixes retrieved successfully' })
+  async getAssociatedFamilyPrefixes(@Param('userId', ParseIntPipe) userId: number) {
+  return this.familyService.getAssociatedFamilyPrefixes(userId);
+}
+
+  @UseGuards(JwtAuthGuard)
   @Get('user/:userId/families')
-  @ApiOperation({ summary: 'Get all family codes a user is associated with' })
-  @ApiResponse({ status: 200, description: 'User family codes retrieved successfully' })
   async getUserFamilyCodes(@Param('userId') userId: number) {
     return this.familyService.getUserFamilyCodes(userId);
   }
@@ -325,10 +333,14 @@ export class FamilyController {
     // Get requester's name for better notification message
     const requesterName = await this.familyService.getUserName(requesterId);
 
+    // Also notify admins of the target family
+    const adminUserIds = await this.notificationService.getAdminsForFamily(targetProfile.familyCode);
+    const recipientIds = Array.from(new Set([targetUserId, ...adminUserIds]));
+
     const dto = {
       type: 'FAMILY_ASSOCIATION_REQUEST',
       title: 'Family Association Request',
-      message: `${requesterName} wants to connect families`,
+      message: `${requesterName} wants to connect families. Admins have been notified.`,
       familyCode: targetProfile.familyCode,
       referenceId: requesterId, // Use requesterId as reference
       data: {
@@ -337,9 +349,10 @@ export class FamilyController {
         senderFamilyCode: requesterProfile.familyCode,
         targetUserId: targetUserId,
         targetFamilyCode: targetProfile.familyCode,
+        adminUserIds,
         requestType: 'family_association_request'
       },
-      userIds: [targetUserId],
+      userIds: recipientIds,
     } as const;
 
     const result = await this.notificationService.createNotification(dto as any, requesterId);

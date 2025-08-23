@@ -16,6 +16,7 @@ import { Family } from './model/family.model';
 import { FamilyMember } from './model/family-member.model';
 import { FamilyTree } from './model/family-tree.model';
 import { MailService } from '../utils/mail.service';
+import { RelationshipPathService } from './relationship-path.service';
 import { UploadService } from '../uploads/upload.service';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
@@ -55,15 +56,25 @@ export class FamilyService {
 
   async getUserName(userId: number): Promise<string> {
     try {
+      console.log(`Getting user name for userId: ${userId}`);
+      
       // First try to get name from UserProfile directly
       const userProfile = await this.userProfileModel.findOne({
         where: { userId },
-        attributes: ['firstName', 'lastName']
+        attributes: ['firstName', 'lastName', 'userId']
       });
 
-      if (userProfile && userProfile.firstName) {
-        const fullName = `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim();
-        return fullName || 'Someone';
+      console.log('UserProfile found:', userProfile?.toJSON());
+
+      if (userProfile) {
+        const firstName = userProfile.firstName || '';
+        const lastName = userProfile.lastName || '';
+        const fullName = `${firstName} ${lastName}`.trim();
+        
+        if (fullName) {
+          console.log(`Returning name: ${fullName}`);
+          return fullName;
+        }
       }
 
       // Fallback to User model if UserProfile doesn't have the name
@@ -76,15 +87,24 @@ export class FamilyService {
         }]
       });
 
-      if (!user || !user.userProfile) {
-        return 'Someone';
+      console.log('User with profile found:', user?.toJSON());
+
+      if (user && user.userProfile) {
+        const firstName = user.userProfile.firstName || '';
+        const lastName = user.userProfile.lastName || '';
+        const fullName = `${firstName} ${lastName}`.trim();
+        
+        if (fullName) {
+          console.log(`Returning fallback name: ${fullName}`);
+          return fullName;
+        }
       }
 
-      const fullName = `${user.userProfile.firstName || ''} ${user.userProfile.lastName || ''}`.trim();
-      return fullName || 'Someone';
+      console.log('No name found, returning default');
+      return 'Family Member';
     } catch (error) {
       console.error('Error getting user name:', error);
-      return 'Someone';
+      return 'Family Member';
     }
   }
 
@@ -151,6 +171,7 @@ export class FamilyService {
     private mailService: MailService,
     private readonly notificationService: NotificationService,
     private readonly relationshipEdgeService: RelationshipEdgeService,
+    private readonly relationshipPathService: RelationshipPathService,
     private readonly uploadService: UploadService,
   ) {}
 
@@ -843,8 +864,15 @@ export class FamilyService {
    * Get all family codes a user is associated with
    */
   async getUserFamilyCodes(userId: number) {
-    return this.relationshipEdgeService.getUserFamilyCodes(userId);
-  }
+  return this.relationshipEdgeService.getUserFamilyCodes(userId);
+}
+
+/**
+ * Get all spouse-connected family codes with relationship prefixes
+ */
+async getAssociatedFamilyPrefixes(userId: number) {
+  return this.relationshipPathService.getAssociatedFamilyPrefixes(userId);
+}
 
   /**
    * Get all relationships for a user

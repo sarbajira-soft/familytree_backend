@@ -407,7 +407,7 @@ export class PostService {
           firstName: comment.userProfile.firstName,
           lastName: comment.userProfile.lastName,
           profile: comment.userProfile.profile
-            ? `${baseUrl}/${profileUploadPath}/${comment.userProfile.profile}`
+            ? `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${comment.userProfile.profile}`
             : null,
         } : null,
       })),

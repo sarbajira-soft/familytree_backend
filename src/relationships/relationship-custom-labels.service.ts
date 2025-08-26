@@ -103,8 +103,17 @@ export class RelationshipCustomLabelsService {
   }) {
     language = this.mapLanguage(language);
     // Find relationshipId by key
-    const relationship = await this.relationshipModel.findOne({ where: { key: relationshipKey } });
-    if (!relationship) throw new Error('Relationship not found');
+    let relationship = await this.relationshipModel.findOne({ where: { key: relationshipKey } });
+    if (!relationship) {
+      // Auto-create new relationship for composite or missing keys
+      relationship = await this.relationshipModel.create({
+        key: relationshipKey,
+        description: relationshipKey,
+        is_auto_generated: true,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+    }
     const relationshipId = relationship.id;
 
     // Find familyId from familyCode if provided

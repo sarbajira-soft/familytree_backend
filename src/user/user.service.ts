@@ -633,6 +633,27 @@ export class UserService {
 
       await user.save();
 
+      // Update user profile fields
+      const profileUpdates = {};
+      const profileFields = [
+        'firstName', 'lastName', 'gender', 'dob', 'age', 'maritalStatus', 'marriageDate',
+        'spouseName', 'childrenNames', 'fatherName', 'motherName', 'religionId',
+        'languageId', 'caste', 'gothramId', 'kuladevata', 'region', 'hobbies',
+        'likes', 'dislikes', 'favoriteFoods', 'contactNumber', 'countryId',
+        'address', 'bio', 'familyCode'
+      ];
+
+      profileFields.forEach(field => {
+        if (dto[field] !== undefined) {
+          profileUpdates[field] = dto[field];
+        }
+      });
+
+      // Update the profile if there are any changes
+      if (Object.keys(profileUpdates).length > 0) {
+        await userProfile.update(profileUpdates);
+      }
+
       // Handle profile image cleanup - only if we're not using S3 URL
       if (dto.profile && !dto.profile.startsWith('http')) {
         const newFile = path.basename(dto.profile);

@@ -791,9 +791,15 @@ export class FamilyService {
     const baseUrl = process.env.BASE_URL || '';
     const profilePhotoPath = process.env.PROFILE_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
 
+    console.log(`🔧 DEBUG: Family tree entries for ${familyCode}:`, familyTree.length);
+    familyTree.forEach((entry, index) => {
+      console.log(`🔧 DEBUG: Entry ${index}: personId=${entry.personId}, userId=${entry.userId}, generation=${entry.generation}`);
+    });
+
     const people = await Promise.all(familyTree.map(async entry => {
       // If userId is undefined/null, skip this person or handle gracefully
       if (!entry.userId) {
+        console.log(`⚠️ DEBUG: Skipping entry with null userId - personId: ${entry.personId}`);
         return {
           id: entry.personId,
           memberId: null,

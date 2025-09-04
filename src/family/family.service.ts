@@ -184,6 +184,44 @@ export class FamilyService {
     );
   }
 
+  /**
+   * Safely parse age value to prevent NaN issues
+   */
+  private parseAge(age: any): number {
+    if (age === null || age === undefined) {
+      return 0;
+    }
+    
+    const parsedAge = typeof age === 'number' ? age : parseInt(age, 10);
+    return isNaN(parsedAge) ? 0 : parsedAge;
+  }
+
+  /**
+   * Normalize gender values for consistent display
+   */
+  private normalizeGender(gender: string): string {
+    if (!gender) return '';
+    
+    const normalizedGender = gender.toLowerCase().trim();
+    
+    switch (normalizedGender) {
+      case 'm':
+      case 'male':
+      case 'husband':
+        return 'male';
+      case 'f':
+      case 'female':
+      case 'wife':
+        return 'female';
+      case 'unknown':
+      case 'other':
+      case 'prefer not to say':
+        return '';
+      default:
+        return normalizedGender;
+    }
+  }
+
   // Helper function to split full name into first and last names
   private splitName(fullName: string): { firstName: string; lastName: string | null } {
     if (!fullName || typeof fullName !== 'string') {
@@ -473,7 +511,7 @@ export class FamilyService {
               firstName: firstName,
               lastName: lastName,
               gender: member.gender,
-              age: typeof member.age === 'string' ? parseInt(member.age) : member.age,
+              age: this.parseAge(member.age),
             };
             
             // Only update profile image if a new one is provided
@@ -491,7 +529,7 @@ export class FamilyService {
               firstName: firstName,
               lastName: lastName,
               gender: member.gender,
-              age: typeof member.age === 'string' ? parseInt(member.age) : member.age,
+              age: this.parseAge(member.age),
               profile: profileImage,
               familyCode: familyCode,
             });
@@ -834,7 +872,7 @@ export class FamilyService {
         id: entry.personId, // Use personId as id
         memberId: entry.userId, // Include userId as memberId
         name: userProfile ? [userProfile.firstName, userProfile.lastName].filter(Boolean).join(' ') || 'Unknown' : 'Unknown',
-        gender: userProfile?.gender || 'unknown',
+        gender: this.normalizeGender(userProfile?.gender),
         age: userProfile?.age || null,
         generation: entry.generation,
         parents: entry.parents || [],
@@ -846,9 +884,76 @@ export class FamilyService {
       };
     }));
 
+    // Fix ID reference issues first (convert memberIds to person ids in relationships)
+    const memberIdToPersonIdMap = new Map();
+    people.forEach(person => {
+      if (person.memberId) {
+        memberIdToPersonIdMap.set(person.memberId, person.id);
+      }
+    });
+
+    // Fix relationship arrays to use person ids instead of member ids
+    people.forEach(person => {
+      person.parents = (person.parents || []).map(parentRef => 
+        memberIdToPersonIdMap.get(parentRef) || parentRef
+      );
+      person.children = (person.children || []).map(childRef => 
+        memberIdToPersonIdMap.get(childRef) || childRef
+      );
+      person.spouses = (person.spouses || []).map(spouseRef => 
+        memberIdToPersonIdMap.get(spouseRef) || spouseRef
+      );
+      person.siblings = (person.siblings || []).map(siblingRef => 
+        memberIdToPersonIdMap.get(siblingRef) || siblingRef
+      );
+    });
+
+    // Ensure bidirectional relationships
+    people.forEach(person => {
+      // Add missing child relationships
+      person.parents.forEach(parentId => {
+        const parent = people.find(p => p.id === parentId);
+        if (parent && !parent.children.includes(person.id)) {
+          parent.children.push(person.id);
+        }
+      });
+      
+      // Add missing parent relationships
+      person.children.forEach(childId => {
+        const child = people.find(p => p.id === childId);
+        if (child && !child.parents.includes(person.id)) {
+          child.parents.push(person.id);
+        }
+      });
+    });
+
+    // Convert to Map format for generation consistency fix
+    const allPeople = new Map();
+    people.forEach(person => {
+      allPeople.set(person.id, {
+        ...person,
+        parents: new Set(person.parents || []),
+        children: new Set(person.children || []),
+        spouses: new Set(person.spouses || []),
+        siblings: new Set(person.siblings || [])
+      });
+    });
+
+    // Apply generation consistency fix
+    this.fixGenerationConsistency(allPeople);
+
+    // Convert back to array format with corrected generations
+    const correctedPeople = Array.from(allPeople.values()).map(person => ({
+      ...person,
+      parents: Array.from(person.parents),
+      children: Array.from(person.children),
+      spouses: Array.from(person.spouses),
+      siblings: Array.from(person.siblings)
+    }));
+
     return {
       message: 'Family tree retrieved successfully',
-      people: people
+      people: correctedPeople
     };
   }
 
@@ -1026,7 +1131,7 @@ async getAssociatedFamilyPrefixes(userId: number) {
             id: entry.personId,
             memberId: entry.userId,
             name: userProfile ? `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim() : 'Unknown',
-            gender: userProfile?.gender || 'unknown',
+            gender: this.normalizeGender(userProfile?.gender),
             age: userProfile?.age || null,
             generation: entry.generation,
             parents: new Set(entry.parents || []),
@@ -1060,7 +1165,7 @@ async getAssociatedFamilyPrefixes(userId: number) {
         const person1 = allPeople.get(person1Key);
         const person2 = allPeople.get(person2Key);
         
-        // Add relationship based on type
+        // Add relationship based on type using personId for consistency
         if (rel.relationshipType === 'spouse') {
           person1.spouses.add(person2.id);
           person2.spouses.add(person1.id);
@@ -1073,6 +1178,9 @@ async getAssociatedFamilyPrefixes(userId: number) {
         }
       }
     }
+
+    // Fix generation inconsistencies before returning
+    this.fixGenerationConsistency(allPeople);
 
     // Convert sets back to arrays for JSON serialization
     const people = Array.from(allPeople.values()).map(person => ({
@@ -1090,6 +1198,97 @@ async getAssociatedFamilyPrefixes(userId: number) {
       people,
       totalConnections: relationships.length
     };
+  }
+
+  /**
+   * Fix generation inconsistencies in family tree data
+   */
+  private fixGenerationConsistency(allPeople: Map<any, any>): void {
+    console.log('🔧 Fixing generation inconsistencies...');
+    
+    // Convert to array for easier processing
+    const people = Array.from(allPeople.values());
+    
+    // Find root people (those without parents)
+    const rootPeople = people.filter(person => 
+      !person.parents || person.parents.size === 0
+    );
+    
+    // If no clear root, use the oldest person or generation 0 people
+    if (rootPeople.length === 0) {
+      const gen0People = people.filter(person => person.generation === 0);
+      if (gen0People.length > 0) {
+        rootPeople.push(...gen0People);
+      } else {
+        // Find oldest person as root
+        const oldestPerson = people.reduce((oldest, current) => {
+          const currentAge = this.parseAge(current.age);
+          const oldestAge = this.parseAge(oldest?.age);
+          return currentAge > oldestAge ? current : oldest;
+        }, people[0]);
+        if (oldestPerson) {
+          rootPeople.push(oldestPerson);
+        }
+      }
+    }
+    
+    // Reset all generations and recalculate from roots
+    const visited = new Set();
+    const queue = [];
+    
+    // Start with root people at generation 0
+    rootPeople.forEach(rootPerson => {
+      rootPerson.generation = 0;
+      queue.push({ person: rootPerson, generation: 0 });
+      visited.add(rootPerson.id);
+      console.log(`🔧 Set root person ${rootPerson.name} to generation 0`);
+    });
+    
+    // BFS to assign generations
+    while (queue.length > 0) {
+      const { person, generation } = queue.shift();
+      
+      // Process spouses (same generation)
+      if (person.spouses) {
+        person.spouses.forEach(spouseId => {
+          const spouse = people.find(p => p.id === spouseId);
+          if (spouse && !visited.has(spouse.id)) {
+            spouse.generation = generation;
+            queue.push({ person: spouse, generation });
+            visited.add(spouse.id);
+            console.log(`🔧 Set spouse ${spouse.name} to generation ${generation}`);
+          }
+        });
+      }
+      
+      // Process children (next generation)
+      if (person.children) {
+        person.children.forEach(childId => {
+          const child = people.find(p => p.id === childId);
+          if (child && !visited.has(child.id)) {
+            child.generation = generation + 1;
+            queue.push({ person: child, generation: generation + 1 });
+            visited.add(child.id);
+            console.log(`🔧 Set child ${child.name} to generation ${generation + 1}`);
+          }
+        });
+      }
+      
+      // Process siblings (same generation)
+      if (person.siblings) {
+        person.siblings.forEach(siblingId => {
+          const sibling = people.find(p => p.id === siblingId);
+          if (sibling && !visited.has(sibling.id)) {
+            sibling.generation = generation;
+            queue.push({ person: sibling, generation });
+            visited.add(sibling.id);
+            console.log(`🔧 Set sibling ${sibling.name} to generation ${generation}`);
+          }
+        });
+      }
+    }
+    
+    console.log('🔧 Generation consistency fix completed');
   }
 
   /**

@@ -255,42 +255,42 @@ export class NotificationService {
             try {
               console.log(`🔧 DEBUG: Starting card creation for ${senderId} ↔ ${targetUserId}`);
               console.log(`🔧 DEBUG: Family codes: ${senderFamilyCode} ↔ ${targetFamilyCode}`);
+              console.log(`🔧 DEBUG: Sender profile:`, JSON.stringify(senderProfile?.user?.userProfile, null, 2));
+              console.log(`🔧 DEBUG: Target profile:`, JSON.stringify(targetProfile?.user?.userProfile, null, 2));
               
-              // Create cards directly without method calls to avoid errors
-              const { FamilyTree } = await import('../family/model/family-tree.model');
-              
-              // Get next available personIds
-              const senderPersonId = await this.getNextPersonId(senderFamilyCode, transaction);
-              const targetPersonId = await this.getNextPersonId(targetFamilyCode, transaction);
-              
-              console.log(`🔧 DEBUG: PersonIds - Sender: ${senderPersonId}, Target: ${targetPersonId}`);
-              
-              // Create sender's card in target's family tree
-              await FamilyTree.create({
-                familyCode: targetFamilyCode,
-                userId: senderId,
-                personId: targetPersonId,
-                generation: 1,
-                parents: [],
-                children: [],
-                spouses: [senderPersonId], // Reference the target's personId in sender's family
-                siblings: []
-              }, { transaction });
-              
-              // Create target's card in sender's family tree
-              await FamilyTree.create({
-                familyCode: senderFamilyCode,
-                userId: targetUserId,
-                personId: senderPersonId,
-                generation: 1,
-                parents: [],
-                children: [],
-                spouses: [targetPersonId], // Reference the sender's personId in target's family
-                siblings: []
-              }, { transaction });
+              // Create dynamic family cards with proper relationship detection
+              await this.createDynamicFamilyCards(
+                senderId,
+                targetUserId,
+                senderFamilyCode,
+                targetFamilyCode,
+                senderProfile,
+                targetProfile,
+                transaction
+              );
               
               cardsCreated = true;
               console.log(`✅ DEBUG: Card creation completed successfully`);
+              
+              // Verify cards were actually created by querying the database
+              const { FamilyTree } = await import('../family/model/family-tree.model');
+              const createdCards = await FamilyTree.findAll({
+                where: {
+                  [require('sequelize').Op.or]: [
+                    { familyCode: senderFamilyCode, userId: targetUserId },
+                    { familyCode: targetFamilyCode, userId: senderId },
+                    { familyCode: senderFamilyCode, userId: senderId },
+                    { familyCode: targetFamilyCode, userId: targetUserId }
+                  ]
+                },
+                transaction
+              });
+              
+              console.log(`🔧 DEBUG: Found ${createdCards.length} cards after creation:`);
+              createdCards.forEach(card => {
+                console.log(`🔧 DEBUG: Card - familyCode: ${card.familyCode}, userId: ${card.userId}, personId: ${card.personId}, spouses: ${JSON.stringify(card.spouses)}`);
+              });
+              
             } catch (error) {
               console.error('❌ ERROR: Card creation failed:', error);
               console.error('❌ ERROR: Stack trace:', error.stack);
@@ -626,19 +626,32 @@ export class NotificationService {
       const { FamilyTree } = await import('../family/model/family-tree.model');
       
       console.log(`🔄 Creating dynamic family cards between families ${senderFamilyCode} and ${targetFamilyCode}`);
+      console.log(`🔧 DEBUG: Input parameters - senderId: ${senderId}, targetUserId: ${targetUserId}`);
       
       // Get user profile details for relationship detection
-      const senderUserProfile = senderProfile.user?.userProfile;
-      const targetUserProfile = targetProfile.user?.userProfile;
+      const senderUserProfile = senderProfile?.user?.userProfile || senderProfile;
+      const targetUserProfile = targetProfile?.user?.userProfile || targetProfile;
       
-      console.log(`🔧 DEBUG: Sender profile structure:`, JSON.stringify(senderProfile, null, 2));
-      console.log(`🔧 DEBUG: Target profile structure:`, JSON.stringify(targetProfile, null, 2));
+      console.log(`🔧 DEBUG: Extracted profiles:`);
+      console.log(`🔧 DEBUG: Sender - gender: ${senderUserProfile?.gender}, age: ${senderUserProfile?.age}`);
+      console.log(`🔧 DEBUG: Target - gender: ${targetUserProfile?.gender}, age: ${targetUserProfile?.age}`);
       
       if (!senderUserProfile || !targetUserProfile) {
         console.log('❌ Missing user profile data for relationship detection');
         console.log(`❌ DEBUG: senderUserProfile exists: ${!!senderUserProfile}`);
         console.log(`❌ DEBUG: targetUserProfile exists: ${!!targetUserProfile}`);
-        throw new Error('Missing user profile data for relationship detection');
+        
+        // Fallback: create spouse cards anyway with default relationship
+        console.log('⚠️ Falling back to spouse relationship creation');
+        await this.createSpouseCards(
+          senderId, targetUserId,
+          senderFamilyCode, targetFamilyCode,
+          1, 1, // Default personIds, will be updated
+          { gender: 'unknown', age: 0 },
+          { gender: 'unknown', age: 0 },
+          transaction
+        );
+        return;
       }
       
       // Detect relationship type based on gender, age, and generation
@@ -656,8 +669,11 @@ export class NotificationService {
       ]);
       
       // Create cards based on relationship type
+      console.log(`🔧 DEBUG: Creating cards for relationship type: ${relationshipType}`);
+      
       switch (relationshipType) {
         case 'spouse':
+          console.log(`🔧 DEBUG: Creating spouse cards with personIds - sender: ${senderNextPersonId}, target: ${targetNextPersonId}`);
           await this.createSpouseCards(
             senderId, targetUserId,
             senderFamilyCode, targetFamilyCode,
@@ -668,6 +684,7 @@ export class NotificationService {
           break;
           
         case 'parent-child':
+          console.log(`🔧 DEBUG: Creating parent-child cards`);
           await this.createParentChildCards(
             senderId, targetUserId,
             senderFamilyCode, targetFamilyCode,
@@ -678,6 +695,7 @@ export class NotificationService {
           break;
           
         case 'sibling':
+          console.log(`🔧 DEBUG: Creating sibling cards`);
           await this.createSiblingCards(
             senderId, targetUserId,
             senderFamilyCode, targetFamilyCode,
@@ -688,6 +706,7 @@ export class NotificationService {
           break;
           
         default:
+          console.log(`🔧 DEBUG: Creating general association cards`);
           // Create general association cards
           await this.createGeneralAssociationCards(
             senderId, targetUserId,
@@ -707,41 +726,61 @@ export class NotificationService {
   }
   
   /**
+   * Safely parse age value to prevent NaN issues
+   */
+  private parseAge(age: any): number {
+    if (age === null || age === undefined) {
+      return 0;
+    }
+    
+    const parsedAge = typeof age === 'number' ? age : parseInt(age, 10);
+    return isNaN(parsedAge) ? 0 : parsedAge;
+  }
+
+  /**
    * Detect relationship type between two users
    */
   private detectRelationshipType(user1Profile: any, user2Profile: any): string {
-    const user1Gender = user1Profile.gender?.toLowerCase();
-    const user2Gender = user2Profile.gender?.toLowerCase();
-    const user1Age = user1Profile.age || 0;
-    const user2Age = user2Profile.age || 0;
+    const user1Gender = user1Profile?.gender;
+    const user2Gender = user2Profile?.gender;
     
-    // Log the input data for debugging
-    console.log(`🔍 Relationship detection - User1: age=${user1Age}, gender=${user1Gender} | User2: age=${user2Age}, gender=${user2Gender}`);
-
-    // Age difference threshold for parent-child relationship
+    // Safely parse ages with proper validation
+    const user1Age = this.parseAge(user1Profile?.age);
+    const user2Age = this.parseAge(user2Profile?.age);
     const ageDifference = Math.abs(user1Age - user2Age);
-    const PARENT_CHILD_AGE_THRESHOLD = 15;
-    const SPOUSE_AGE_THRESHOLD = 10;
     
-    // If significant age difference, likely parent-child
-    if (ageDifference >= PARENT_CHILD_AGE_THRESHOLD) {
+    console.log(`🔍 Relationship detection:`);
+    console.log(`   User 1: ${user1Gender}, age ${user1Age}`);
+    console.log(`   User 2: ${user2Gender}, age ${user2Age}`);
+    console.log(`   Age difference: ${ageDifference} years`);
+    
+    // Improved relationship detection logic
+    
+    // If significant age difference (>15 years), likely parent-child
+    if (ageDifference > 15) {
       console.log(`🔍 Detected parent-child relationship (age difference: ${ageDifference} years)`);
       return 'parent-child';
     }
     
-    // If opposite genders and reasonable age difference, likely spouse
+    // If opposite gender and similar age (within 10 years), likely spouse
     if (user1Gender && user2Gender && 
         user1Gender !== user2Gender && 
-        ageDifference <= SPOUSE_AGE_THRESHOLD) {
-      console.log(`🔍 Detected spouse relationship (age difference: ${ageDifference} years)`);
+        ageDifference <= 10) {
+      console.log(`🔍 Detected spouse relationship (opposite gender, age difference: ${ageDifference} years)`);
       return 'spouse';
     }
     
-    // If same gender and similar age, likely sibling
+    // If same gender and similar age (within 8 years), likely sibling
     if (user1Gender && user2Gender && 
         user1Gender === user2Gender && 
-        ageDifference < 10) {
-      console.log(`🔍 Detected sibling relationship (age difference: ${ageDifference} years)`);
+        ageDifference <= 8) {
+      console.log(`🔍 Detected sibling relationship (same gender, age difference: ${ageDifference} years)`);
+      return 'sibling';
+    }
+    
+    // If moderate age difference (8-15 years), could be sibling or cousin
+    if (ageDifference >= 8 && ageDifference <= 15) {
+      console.log(`🔍 Detected sibling/cousin relationship (moderate age difference: ${ageDifference} years)`);
       return 'sibling';
     }
     
@@ -750,7 +789,104 @@ export class NotificationService {
   }
   
   /**
-   * Create spouse relationship cards
+   * Calculate the appropriate generation for any relationship type in a family tree
+   * Considers both users' existing generations and relationship type
+   */
+  private async calculateGeneration(
+    familyCode: string, 
+    userId: number, 
+    partnerUserId: number,
+    relationshipType: string,
+    transaction: any
+  ): Promise<number> {
+    const { FamilyTree } = await import('../family/model/family-tree.model');
+    
+    // Check if the user already has a card in this family
+    const existingCard = await FamilyTree.findOne({
+      where: { familyCode, userId },
+      transaction
+    });
+    
+    if (existingCard) {
+      console.log(`🔧 User ${userId} already exists in family ${familyCode} with generation ${existingCard.generation}`);
+      return existingCard.generation;
+    }
+    
+    // Check if the partner already has a card in this family
+    const partnerCard = await FamilyTree.findOne({
+      where: { familyCode, userId: partnerUserId },
+      transaction
+    });
+    
+    if (partnerCard) {
+      const partnerGeneration = partnerCard.generation || 0;
+      let calculatedGeneration;
+      
+      switch (relationshipType) {
+        case 'spouse':
+        case 'sibling':
+          // Same generation as partner
+          calculatedGeneration = partnerGeneration;
+          console.log(`🔧 ${relationshipType} relationship: using partner's generation ${calculatedGeneration}`);
+          break;
+        case 'parent-child':
+          // Determine who is parent/child based on age or existing family structure
+          calculatedGeneration = partnerGeneration - 1; // Default: user is parent (older generation)
+          console.log(`🔧 Parent-child relationship: using generation ${calculatedGeneration} (parent of partner)`);
+          break;
+        default:
+          calculatedGeneration = partnerGeneration;
+          console.log(`🔧 General relationship: using partner's generation ${calculatedGeneration}`);
+      }
+      
+      return calculatedGeneration;
+    }
+    
+    // Find all existing family members to determine the appropriate generation
+    const familyMembers = await FamilyTree.findAll({
+      where: { familyCode },
+      transaction
+    });
+    
+    if (familyMembers.length === 0) {
+      console.log(`🔧 No existing members in family ${familyCode}, using generation 0`);
+      return 0;
+    }
+    
+    // Calculate generation based on relationship type and existing family structure
+    const generationCounts = {};
+    familyMembers.forEach(member => {
+      const gen = member.generation || 0;
+      generationCounts[gen] = (generationCounts[gen] || 0) + 1;
+    });
+    
+    // Find the most common generation (mode) among existing members
+    const mostCommonGeneration = Object.keys(generationCounts)
+      .reduce((a, b) => generationCounts[a] > generationCounts[b] ? a : b);
+    
+    let calculatedGeneration = parseInt(mostCommonGeneration);
+    
+    // Adjust generation based on relationship type
+    switch (relationshipType) {
+      case 'parent-child':
+        // If adding as parent, use older generation (lower number)
+        calculatedGeneration = calculatedGeneration - 1;
+        console.log(`🔧 Parent-child: calculated generation ${calculatedGeneration} (parent level)`);
+        break;
+      case 'spouse':
+      case 'sibling':
+        // Same generation as most common
+        console.log(`🔧 ${relationshipType}: using most common generation ${calculatedGeneration}`);
+        break;
+      default:
+        console.log(`🔧 General relationship: using most common generation ${calculatedGeneration}`);
+    }
+    
+    return calculatedGeneration;
+  }
+  
+  /**
+   * Create spouse relationship cards with proper personId cross-references
    */
   private async createSpouseCards(
     senderId: number, targetUserId: number,
@@ -761,84 +897,172 @@ export class NotificationService {
   ): Promise<void> {
     const { FamilyTree } = await import('../family/model/family-tree.model');
     
-    console.log(`🔧 DEBUG: Creating spouse cards`);
-    console.log(`🔧 DEBUG: Sender ${senderId} -> Target family ${targetFamilyCode} with personId ${targetPersonId}`);
-    console.log(`🔧 DEBUG: Target ${targetUserId} -> Sender family ${senderFamilyCode} with personId ${senderPersonId}`);
+    console.log(`🔧 Creating spouse cards with proper cross-references`);
+    console.log(`🔧 Sender ${senderId} (personId: ${senderPersonId} in ${senderFamilyCode}) -> Target family ${targetFamilyCode} (personId: ${targetPersonId})`);
+    console.log(`🔧 Target ${targetUserId} (personId: ${targetPersonId} in ${targetFamilyCode}) -> Sender family ${senderFamilyCode} (personId: ${senderPersonId})`);
     
-    // Check if sender already exists in target's family tree
+    // Calculate proper generations for both families, considering both users and relationship type
+    const [senderGeneration, targetGeneration] = await Promise.all([
+      this.calculateGeneration(senderFamilyCode, senderId, targetUserId, 'spouse', transaction),
+      this.calculateGeneration(targetFamilyCode, targetUserId, senderId, 'spouse', transaction)
+    ]);
+    
+    console.log(`🔧 Calculated generations - Sender: ${senderGeneration}, Target: ${targetGeneration}`);
+    
+    // Ensure both spouses are in the same generation level by using the same generation
+    // Use the higher generation number to maintain family hierarchy
+    const finalGeneration = Math.max(senderGeneration, targetGeneration);
+    console.log(`🔧 Using final generation ${finalGeneration} for both spouse cards`);
+    
+    // Step 1: Create sender's card in target's family tree
     const existingSenderCard = await FamilyTree.findOne({
-      where: {
-        familyCode: targetFamilyCode,
-        userId: senderId
-      },
+      where: { familyCode: targetFamilyCode, userId: senderId },
       transaction
     });
     
-    // Check if target already exists in sender's family tree
-    const existingTargetCard = await FamilyTree.findOne({
-      where: {
-        familyCode: senderFamilyCode,
-        userId: targetUserId
-      },
-      transaction
-    });
-    
+    let senderCardInTargetFamily;
     if (existingSenderCard) {
-      console.log(`⚠️ DEBUG: Sender ${senderId} already exists in family ${targetFamilyCode}, updating spouse relationship`);
-      // Update existing card to add spouse relationship
-      const currentSpouses = existingSenderCard.spouses || [];
-      if (!currentSpouses.includes(targetUserId)) {
-        await existingSenderCard.update({
-          spouses: [...currentSpouses, targetUserId]
-        }, { transaction });
-      }
+      console.log(`⚠️ Sender already exists in target family, updating`);
+      senderCardInTargetFamily = existingSenderCard;
     } else {
-      // Create card for sender in target's family tree
-      const senderCard = await FamilyTree.create({
+      senderCardInTargetFamily = await FamilyTree.create({
         familyCode: targetFamilyCode,
         userId: senderId,
         personId: targetPersonId,
-        generation: 1, // Same generation as spouse
+        generation: finalGeneration, // Use final matched generation
         parents: [],
         children: [],
-        spouses: [targetUserId], // Connected as spouse
+        spouses: [], // Will be updated after target card is created
         siblings: []
       }, { transaction });
-      console.log(`🔧 DEBUG: Created sender card:`, senderCard.toJSON());
+      console.log(`✅ Created sender card in target family`);
     }
     
+    // Step 2: Create target's card in sender's family tree
+    const existingTargetCard = await FamilyTree.findOne({
+      where: { familyCode: senderFamilyCode, userId: targetUserId },
+      transaction
+    });
+    
+    let targetCardInSenderFamily;
     if (existingTargetCard) {
-      console.log(`⚠️ DEBUG: Target ${targetUserId} already exists in family ${senderFamilyCode}, updating spouse relationship`);
-      // Update existing card to add spouse relationship
-      const currentSpouses = existingTargetCard.spouses || [];
-      if (!currentSpouses.includes(senderId)) {
-        await existingTargetCard.update({
-          spouses: [...currentSpouses, senderId]
-        }, { transaction });
-      }
+      console.log(`⚠️ Target already exists in sender family, updating`);
+      targetCardInSenderFamily = existingTargetCard;
     } else {
-      // Create card for target in sender's family tree
-      const targetCard = await FamilyTree.create({
+      targetCardInSenderFamily = await FamilyTree.create({
         familyCode: senderFamilyCode,
         userId: targetUserId,
         personId: senderPersonId,
-        generation: 1, // Same generation as spouse
+        generation: finalGeneration, // Use final matched generation
         parents: [],
         children: [],
-        spouses: [senderId], // Connected as spouse
+        spouses: [], // Will be updated after sender card is created
         siblings: []
       }, { transaction });
-      console.log(`🔧 DEBUG: Created target card:`, targetCard.toJSON());
+      console.log(`✅ Created target card in sender family`);
     }
     
-    // Update existing cards to include spouse relationships
-    await this.updateExistingSpouseRelationships(
-      senderId, targetUserId,
-      senderFamilyCode, targetFamilyCode,
+    // Step 3: Find or create the target's original card in their own family
+    let targetOriginalCard = await FamilyTree.findOne({
+      where: { familyCode: targetFamilyCode, userId: targetUserId },
       transaction
-    );
+    });
     
-    console.log(`✅ Spouse cards created successfully`);
+    if (!targetOriginalCard) {
+      // Create original card if it doesn't exist
+      const targetOriginalPersonId = await this.getNextPersonId(targetFamilyCode, transaction);
+      targetOriginalCard = await FamilyTree.create({
+        familyCode: targetFamilyCode,
+        userId: targetUserId,
+        personId: targetOriginalPersonId,
+        generation: 1,
+        parents: [],
+        children: [],
+        spouses: [],
+        siblings: []
+      }, { transaction });
+      console.log(`✅ Created target's original card in their own family`);
+    }
+    
+    // Step 4: Find or create the sender's original card in their own family
+    let senderOriginalCard = await FamilyTree.findOne({
+      where: { familyCode: senderFamilyCode, userId: senderId },
+      transaction
+    });
+    
+    if (!senderOriginalCard) {
+      // Create original card if it doesn't exist
+      const senderOriginalPersonId = await this.getNextPersonId(senderFamilyCode, transaction);
+      senderOriginalCard = await FamilyTree.create({
+        familyCode: senderFamilyCode,
+        userId: senderId,
+        personId: senderOriginalPersonId,
+        generation: 1,
+        parents: [],
+        children: [],
+        spouses: [],
+        siblings: []
+      }, { transaction });
+      console.log(`✅ Created sender's original card in their own family`);
+    }
+    
+    // Step 5: Update spouse relationships with correct personId references
+    // Sender's card in target family should reference target's original personId
+    if (targetOriginalCard) {
+      const currentSpouses = senderCardInTargetFamily.spouses || [];
+      if (!currentSpouses.includes(targetOriginalCard.personId)) {
+        await senderCardInTargetFamily.update({
+          spouses: [...currentSpouses, targetOriginalCard.personId]
+        }, { transaction });
+        console.log(`✅ Updated sender card spouse reference to target's original personId: ${targetOriginalCard.personId}`);
+      }
+    }
+    
+    // Target's card in sender family should reference sender's original personId
+    if (senderOriginalCard) {
+      const currentSpouses = targetCardInSenderFamily.spouses || [];
+      if (!currentSpouses.includes(senderOriginalCard.personId)) {
+        await targetCardInSenderFamily.update({
+          spouses: [...currentSpouses, senderOriginalCard.personId]
+        }, { transaction });
+        console.log(`✅ Updated target card spouse reference to sender's original personId: ${senderOriginalCard.personId}`);
+      }
+    }
+    
+    // Step 6: Update original cards to include cross-family spouse references
+    if (senderOriginalCard && targetCardInSenderFamily) {
+      const currentSpouses = Array.isArray(senderOriginalCard.spouses) ? senderOriginalCard.spouses : [];
+      if (!currentSpouses.includes(targetCardInSenderFamily.personId)) {
+        await senderOriginalCard.update({
+          spouses: [...currentSpouses, targetCardInSenderFamily.personId]
+        }, { transaction });
+        console.log(`✅ Updated sender's original card (personId: ${senderOriginalCard.personId}) with cross-family spouse reference: ${targetCardInSenderFamily.personId}`);
+      }
+    }
+    
+    if (targetOriginalCard && senderCardInTargetFamily) {
+      const currentSpouses = Array.isArray(targetOriginalCard.spouses) ? targetOriginalCard.spouses : [];
+      if (!currentSpouses.includes(senderCardInTargetFamily.personId)) {
+        await targetOriginalCard.update({
+          spouses: [...currentSpouses, senderCardInTargetFamily.personId]
+        }, { transaction });
+        console.log(`✅ Updated target's original card (personId: ${targetOriginalCard.personId}) with cross-family spouse reference: ${senderCardInTargetFamily.personId}`);
+      }
+    }
+    
+    // Step 7: Reload and verify the updates
+    await senderOriginalCard.reload({ transaction });
+    await targetOriginalCard.reload({ transaction });
+    await senderCardInTargetFamily.reload({ transaction });
+    await targetCardInSenderFamily.reload({ transaction });
+    
+    console.log(`🔧 DEBUG: Final spouse arrays after reload:`);
+    console.log(`🔧 DEBUG: Sender original card (${senderFamilyCode}) spouses: ${JSON.stringify(senderOriginalCard.spouses)}`);
+    console.log(`🔧 DEBUG: Target original card (${targetFamilyCode}) spouses: ${JSON.stringify(targetOriginalCard.spouses)}`);
+    console.log(`🔧 DEBUG: Sender card in target family spouses: ${JSON.stringify(senderCardInTargetFamily.spouses)}`);
+    console.log(`🔧 DEBUG: Target card in sender family spouses: ${JSON.stringify(targetCardInSenderFamily.spouses)}`);
+    
+    console.log(`✅ Spouse cards created successfully with proper cross-references`);
   }
 
   /**
@@ -885,7 +1109,7 @@ export class NotificationService {
         generation: 1,
         parents: [],
         children: [],
-        spouses: [senderPersonId], // Reference the target's personId in sender's family
+        spouses: [], // Will be updated with proper cross-family personId references
         siblings: []
       }, { transaction });
       
@@ -903,7 +1127,7 @@ export class NotificationService {
         generation: 1,
         parents: [],
         children: [],
-        spouses: [targetPersonId], // Reference the sender's personId in target's family
+        spouses: [], // Will be updated with proper cross-family personId references
         siblings: []
       }, { transaction });
       
@@ -965,7 +1189,7 @@ export class NotificationService {
           generation: 1,
           parents: [],
           children: [],
-          spouses: [senderPersonId], // Reference the target's personId in sender's family
+          spouses: [], // Will be updated with proper cross-family personId references
           siblings: []
         }, { transaction });
         console.log(`✅ Created sender card in target family: ${senderId} → ${targetFamilyCode}`, senderCard.id);
@@ -983,7 +1207,7 @@ export class NotificationService {
           generation: 1,
           parents: [],
           children: [],
-          spouses: [targetPersonId], // Reference the sender's personId in target's family
+          spouses: [], // Will be updated with proper cross-family personId references
           siblings: []
         }, { transaction });
         console.log(`✅ Created target card in sender family: ${targetUserId} → ${senderFamilyCode}`, targetCard.id);

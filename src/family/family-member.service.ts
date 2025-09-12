@@ -418,10 +418,18 @@ export class FamilyMemberService {
 
   // Get all approved family members by family code
   async getAllFamilyMembers(familyCode: string) {
+    // Get all users whose primary family is this familyCode OR who are approved members
     const members = await this.familyMemberModel.findAll({
       where: {
         familyCode,
-        approveStatus: 'approved',
+        // Include both primary family members and approved additional members
+        [Op.or]: [
+          { approveStatus: 'approved' },
+          // Include users whose primary family is this code regardless of approval status
+          {
+            '$user.userProfile.familyCode$': familyCode
+          }
+        ]
       },
       include: [
         {
@@ -486,8 +494,20 @@ export class FamilyMemberService {
     const members = await this.familyMemberModel.findAll({
       where: {
         familyCode,
-        approveStatus: 'approved'
+        [Op.or]: [
+          { approveStatus: 'approved' },
+          { '$user.userProfile.familyCode$': familyCode }
+        ]
       },
+      include: [{
+        model: this.userModel,
+        as: 'user',
+        include: [{
+          model: this.userProfileModel,
+          as: 'userProfile',
+          attributes: ['familyCode']
+        }]
+      }],
       attributes: ['memberId']
     });
     return members.map(m => m.memberId);
@@ -524,7 +544,13 @@ export class FamilyMemberService {
 
   async getFamilyStatsByCode(familyCode: string) {
     const members = await this.familyMemberModel.findAll({
-      where: { familyCode, approveStatus: "approved" },
+      where: { 
+        familyCode,
+        [Op.or]: [
+          { approveStatus: 'approved' },
+          { '$user.userProfile.familyCode$': familyCode }
+        ]
+      },
       include: [
         {
           model: this.userModel,

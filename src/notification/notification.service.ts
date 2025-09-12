@@ -915,17 +915,8 @@ export class NotificationService {
     console.log(`🔧 Using final generation ${finalGeneration} for both spouse cards`);
     
     // Step 1: Create sender's card in target's family tree
-    const existingSenderCard = await FamilyTree.findOne({
-      where: { familyCode: targetFamilyCode, userId: senderId },
-      transaction
-    });
-    
-    let senderCardInTargetFamily;
-    if (existingSenderCard) {
-      console.log(`⚠️ Sender already exists in target family, updating`);
-      senderCardInTargetFamily = existingSenderCard;
-    } else {
-      senderCardInTargetFamily = await FamilyTree.create({
+    // Duplicate support: always create a fresh card for sender in target family
+    const senderCardInTargetFamily = await FamilyTree.create({
         familyCode: targetFamilyCode,
         userId: senderId,
         personId: targetPersonId,
@@ -935,21 +926,11 @@ export class NotificationService {
         spouses: [], // Will be updated after target card is created
         siblings: []
       }, { transaction });
-      console.log(`✅ Created sender card in target family`);
-    }
+    console.log(`✅ Created sender card in target family`);
     
     // Step 2: Create target's card in sender's family tree
-    const existingTargetCard = await FamilyTree.findOne({
-      where: { familyCode: senderFamilyCode, userId: targetUserId },
-      transaction
-    });
-    
-    let targetCardInSenderFamily;
-    if (existingTargetCard) {
-      console.log(`⚠️ Target already exists in sender family, updating`);
-      targetCardInSenderFamily = existingTargetCard;
-    } else {
-      targetCardInSenderFamily = await FamilyTree.create({
+    // Duplicate support: always create a fresh card for target in sender family
+    const targetCardInSenderFamily = await FamilyTree.create({
         familyCode: senderFamilyCode,
         userId: targetUserId,
         personId: senderPersonId,
@@ -959,8 +940,7 @@ export class NotificationService {
         spouses: [], // Will be updated after sender card is created
         siblings: []
       }, { transaction });
-      console.log(`✅ Created target card in sender family`);
-    }
+    console.log(`✅ Created target card in sender family`);
     
     // Step 3: Find or create the target's original card in their own family
     let targetOriginalCard = await FamilyTree.findOne({

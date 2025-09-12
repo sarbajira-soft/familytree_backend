@@ -40,7 +40,7 @@ export async function bootstrapApp(app: NestExpressApplication) {
   });
 
   const sequelize = app.get(Sequelize);
-  await sequelize.sync({ force: false, alter: true });
+  await sequelize.sync({ force: false, alter: false });
 
   const swaggerPath = '/api';
   setupSwagger(app, swaggerPath);

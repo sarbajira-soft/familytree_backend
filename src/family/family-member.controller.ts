@@ -12,6 +12,7 @@ import {
   Req,
   HttpCode,
   HttpStatus,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
@@ -33,12 +34,12 @@ import {
 
 @ApiTags('Family Member')
 @Controller('family/member')
-@UseGuards(JwtAuthGuard)
 @ApiBearerAuth()
 export class FamilyMemberController {
   constructor(private readonly familyMemberService: FamilyMemberService) {}
 
   @Post('register-and-join-family')
+  @UseGuards(JwtAuthGuard)
   @UseInterceptors(
     FileInterceptor('profile', {
       storage: diskStorage({
@@ -71,6 +72,7 @@ export class FamilyMemberController {
 
   // User requests to join a family (creates membership with pending)
   @Post('request-join')
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Request to join family' })
   @ApiResponse({ status: 201, description: 'Family join request submitted' })
   @ApiResponse({ status: 400, description: 'Invalid family code or user already exists' })
@@ -81,6 +83,7 @@ export class FamilyMemberController {
 
   // Approve member (admin action)
   @Put('approve/:memberId/:familyCode')
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Approve family member request' })
   @ApiResponse({ status: 200, description: 'Member approved successfully' })
   async approveMember(
@@ -92,6 +95,7 @@ export class FamilyMemberController {
 
   // Reject member (admin action)
   @Put('reject/:memberId/:familyCode')
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Reject family member request' })
   @ApiResponse({ status: 200, description: 'Member rejected successfully' })
   async rejectMember(
@@ -105,6 +109,7 @@ export class FamilyMemberController {
 
   // Delete member from family (remove membership)
   @Delete('delete/:memberId/:familyCode')
+  @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Remove member from family' })
   @ApiResponse({ status: 200, description: 'Family member removed successfully' })
@@ -117,6 +122,7 @@ export class FamilyMemberController {
 
   // Get all approved family members by family code
   @Get(':familyCode')
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Get all approved family members by family code' })
   @ApiResponse({ status: 200, description: 'List of family members returned' })
   async getFamilyMembers(@Param('familyCode') familyCode: string) {
@@ -125,6 +131,7 @@ export class FamilyMemberController {
 
   // Get all pending family member requests for logged-in user
   @Get('requests/pending')
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Get all pending family member requests' })
   @ApiResponse({ status: 200, description: 'List of pending family member requests returned' })
   async getPendingRequests(@Req() req) {
@@ -134,6 +141,7 @@ export class FamilyMemberController {
 
   // Get member relationship details by memberId
   @Get('member/:memberId')
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Get family member details by memberId' })
   @ApiResponse({ status: 200, description: 'Family member details returned' })
   async getMemberRelation(@Param('memberId') memberId: number) {
@@ -141,15 +149,42 @@ export class FamilyMemberController {
   }
 
   @Get('suggest-family/:userId')
+  @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Suggest existing families based on profile details' })
   async suggestFamily(@Param('userId') userId: number) {
     return this.familyMemberService.suggestFamilyByProfile(userId);
   }
 
   @Get(':familyCode/stats')
+  @UseGuards(JwtAuthGuard)
   async getStats(@Param('familyCode') familyCode: string) {
     const stats = await this.familyMemberService.getFamilyStatsByCode(familyCode);
     return { message: 'Family stats fetched successfully', data: stats };
+  }
+
+// Public endpoints for link validation (no authentication required)
+  @Get('public/:familyCode/member/:memberId/exists')
+  @ApiOperation({ summary: 'Check if member exists and link is valid (public endpoint)' })
+  @ApiResponse({ status: 200, description: 'Member validation result' })
+  @ApiResponse({ status: 404, description: 'Member not found' })
+  async checkMemberExistsPublic(
+    @Param('familyCode') familyCode: string,
+    @Param('memberId', ParseIntPipe) memberId: number
+  ) {
+    return this.familyMemberService.checkMemberExists(familyCode, memberId);
+  }
+
+  @Post('public/:familyCode/member/:memberId/mark-used')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Mark invitation link as used (public endpoint)' })
+  @ApiResponse({ status: 200, description: 'Link marked as used successfully' })
+  @ApiResponse({ status: 404, description: 'Member not found' })
+  @ApiResponse({ status: 400, description: 'Link already used' })
+  async markLinkAsUsedPublic(
+    @Param('familyCode') familyCode: string,
+    @Param('memberId', ParseIntPipe) memberId: number
+  ) {
+    return this.familyMemberService.markLinkAsUsed(familyCode, memberId);
   }
 
 }

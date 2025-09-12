@@ -251,6 +251,42 @@ export class UserController {
     return this.userService.updateProfile(targetUserId, body);
   }
 
+  @Put('profile/update/public/:id')
+  @UseInterceptors(
+    FileInterceptor('profile', {
+      storage: memoryStorage(),
+      fileFilter: imageFileFilter,
+      limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
+    }),
+  )
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Update user profile with optional image (public endpoint)' })
+  @ApiResponse({ status: 200, description: 'User profile updated successfully' })
+  @ApiConsumes('multipart/form-data')
+  async updateProfilePublic(
+    @Param('id') id: number,
+    @UploadedFile() file: Express.Multer.File,
+    @Body() body: UpdateProfileDto,
+  ) {
+    // Convert param to number just in case
+    const targetUserId = Number(id);
+    
+    // Clean up empty strings in the body
+    Object.keys(body).forEach((key) => {
+      if (body[key] === '') {
+        body[key] = undefined;
+      }
+    });
+
+    // Handle file upload to S3 if file exists
+    if (file) {
+      // Upload to S3 and get the URL
+      body.profile = await this.uploadService.uploadFile(file, 'profile');
+    }
+    
+    return this.userService.updateProfile(targetUserId, body);
+  }
+
   @UseGuards(JwtAuthGuard)
   @Delete(':id')
   @HttpCode(HttpStatus.OK)
@@ -263,5 +299,4 @@ export class UserController {
     const loggedInUser = req.user;
     return this.userService.deleteUser(id, loggedInUser.userId);
   }
-
 }

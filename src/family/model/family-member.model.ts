@@ -28,4 +28,8 @@ export class FamilyMember extends Model<FamilyMember> {
     allowNull: false,
   })
   approveStatus: 'pending' | 'approved' | 'rejected';
+
+  @Default(false)
+  @Column({ type: DataType.BOOLEAN, allowNull: false, field: 'isLinkedUsed' })
+  isLinkUsed: boolean;
 }

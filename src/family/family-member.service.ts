@@ -787,5 +787,98 @@ export class FamilyMemberService {
 
     return { message: `Matching families found`, data: families };
   }
+
+// Enhanced validation method for link validation - checks member exists and link usage
+async checkMemberExists(familyCode: string, memberId: number) {
+  try {
+    const member = await this.familyMemberModel.findOne({
+      where: {
+        familyCode,
+        memberId
+      },
+      include: [
+        {
+          model: this.userModel,
+          as: 'user',
+          include: [
+            {
+              model: this.userProfileModel,
+              as: 'userProfile'
+            }
+          ]
+        }
+      ]
+    });
+
+    if (!member) {
+      throw new NotFoundException('Member not found in this family');
+    }
+
+    // Type assertion to access included associations
+    const memberData = member as any;
+    
+    return {
+      message: 'Member validation successful',
+      data: {
+        exists: true,
+        isLinkUsed: member.isLinkUsed || false,
+        member: {
+          id: member.memberId,
+          familyCode: member.familyCode,
+          approveStatus: member.approveStatus,
+          user: memberData.user ? {
+            id: memberData.user.id,
+            email: memberData.user.email,
+            mobile: memberData.user.mobile,
+            userProfile: memberData.user.userProfile
+          } : null
+        }
+      }
+    };
+  } catch (error) {
+    if (error instanceof NotFoundException) {
+      throw error;
+    }
+    console.error('Error validating member:', error);
+    throw new BadRequestException('Failed to validate member');
+  }
+}
+
+// Mark invitation link as used
+async markLinkAsUsed(familyCode: string, memberId: number) {
+  try {
+    const member = await this.familyMemberModel.findOne({
+      where: {
+        familyCode,
+        memberId
+      }
+    });
+
+    if (!member) {
+      throw new NotFoundException('Member not found in this family');
+    }
+
+    if (member.isLinkUsed) {
+      throw new BadRequestException('This invitation link has already been used');
+    }
+
+    await member.update({ isLinkUsed: true });
+
+    return {
+      message: 'Invitation link marked as used successfully',
+      data: {
+        memberId: member.memberId,
+        familyCode: member.familyCode,
+        isLinkUsed: true
+      }
+    };
+  } catch (error) {
+    if (error instanceof NotFoundException || error instanceof BadRequestException) {
+      throw error;
+    }
+    console.error('Error marking link as used:', error);
+    throw new BadRequestException('Failed to mark link as used');
+  }
+}
   
 }

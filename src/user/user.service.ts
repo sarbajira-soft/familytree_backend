@@ -588,7 +588,13 @@ export class UserService {
         }
       }
 
-      const { email, countryCode, mobile, role, status } = dto;
+      const { email, countryCode, mobile, role, status, password } = dto;
+      
+      // Handle password update - hash the password if provided
+      if (password !== undefined && password !== '') {
+        const hashedPassword = await bcrypt.hash(password, 10);
+        user.password = hashedPassword;
+      }
       
       // Handle email update - allow same email, but check for conflicts with other users
       if (email !== undefined && email !== user.email) {

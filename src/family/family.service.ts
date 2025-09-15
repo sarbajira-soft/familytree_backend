@@ -794,13 +794,13 @@ export class FamilyService {
       const people = familyMembers.map((member: any, index) => {
         const userProfile = member.user?.userProfile;
         
-        // Build full image URL if profile image exists
+        // Get profile image full S3 URL
         let img = null;
         if (userProfile?.profile) {
           if (userProfile.profile.startsWith('http')) {
             img = userProfile.profile; // Already a full URL
           } else {
-            img = `${baseUrl}/${profilePhotoPath}/${userProfile.profile}`;
+            img = `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`;
           }
         }
 
@@ -854,13 +854,13 @@ export class FamilyService {
         };
       }
       const userProfile = entry.user?.userProfile;
-      // Build full image URL if profile image exists
+      // Get profile image full S3 URL
       let img = null;
       if (userProfile?.profile) {
         if (userProfile.profile.startsWith('http')) {
           img = userProfile.profile; // Already a full URL
         } else {
-          img = `${baseUrl}/${profilePhotoPath}/${userProfile.profile}`;
+          img = `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`;
         }
       }
       // Get associatedFamilyCodes if available

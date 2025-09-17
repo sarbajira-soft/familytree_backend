@@ -167,7 +167,7 @@ export class FamilyController {
       // List of possible fields
       const fields = [
         'id', 'name', 'gender', 'age', 'generation', 'birthOrder', 'memberId',
-        'parents', 'children', 'spouses', 'siblings', 'img'
+        'parents', 'children', 'spouses', 'siblings', 'img', 'lifeStatus'
       ];
       for (const field of fields) {
         const key = prefix + field;

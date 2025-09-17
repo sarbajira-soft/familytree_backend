@@ -20,6 +20,10 @@ export class FamilyTreeMemberDto {
   img?: string;
 
   @IsOptional()
+  @IsString()
+  lifeStatus?: 'living' | 'remembering';
+
+  @IsOptional()
   @IsNumber()
   generation?: number;
 

@@ -627,6 +627,7 @@ export class FamilyService {
           userId,
           personId: member.id, // Store the position ID (person_X_id)
           generation: member.generation,
+          lifeStatus: member.lifeStatus ?? 'living',
           parents: Array.isArray(member.parents) ? member.parents : Array.from(member.parents || []).map(Number),
           children: Array.isArray(member.children) ? member.children : Array.from(member.children || []).map(Number),
           spouses: Array.isArray(member.spouses) ? member.spouses : Array.from(member.spouses || []).map(Number),
@@ -642,6 +643,7 @@ export class FamilyService {
           children: familyTreeEntry.children,
           spouses: familyTreeEntry.spouses,
           siblings: familyTreeEntry.siblings,
+          lifeStatus: familyTreeEntry.lifeStatus,
         });
       } catch (err) {
         console.error('Error creating FamilyTree entry:', err, {
@@ -875,6 +877,7 @@ export class FamilyService {
         gender: this.normalizeGender(userProfile?.gender),
         age: userProfile?.age || null,
         generation: entry.generation,
+        lifeStatus: entry.lifeStatus || 'living',
         parents: entry.parents || [],
         children: entry.children || [],
         spouses: entry.spouses || [],

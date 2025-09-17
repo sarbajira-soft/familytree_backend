@@ -46,6 +46,13 @@ export class FamilyTree extends Model<FamilyTree> {
   personId: number; // Position ID for each member
 
   @Column({
+    type: DataType.ENUM('living', 'remembering'),
+    allowNull: false,
+    defaultValue: 'living',
+  })
+  lifeStatus: string;
+
+  @Column({
     type: DataType.JSON,
     allowNull: true,
   })

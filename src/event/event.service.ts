@@ -122,9 +122,9 @@ export class EventService {
 
   private constructProfileImageUrl(filename: string): string {
     if (!filename) return null;
-    const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
-    const uploadPath = process.env.PROFILE_IMAGE_UPLOAD_PATH?.replace(/^\.?\/?/, '') || 'uploads/profile';
-    return `${baseUrl.replace(/\/$/, '')}/${uploadPath.replace(/\/$/, '')}/${filename}`;
+    const baseUrl = process.env.S3_BUCKET_URL || 'http://localhost:3000';
+    const uploadPath = 'profile';
+    return `${baseUrl}/${uploadPath}/${filename}`;
   }
 
   async getAll(userId?: number) {
@@ -508,8 +508,11 @@ export class EventService {
     // Process birthdays
     for (const member of familyMembers) {
       if (member.dob) {
-        const dob = new Date(member.dob);
-        const nextBirthday = new Date(currentYear, dob.getMonth(), dob.getDate());
+        // Parse date as local date to avoid timezone issues
+        const dobString = typeof member.dob === 'string' ? member.dob.split('T')[0] : member.dob.toISOString().split('T')[0]; // Get YYYY-MM-DD part
+        const [year, month, day] = dobString.split('-').map(Number);
+        
+        const nextBirthday = new Date(currentYear, month - 1, day); // month is 0-indexed
         
         // If birthday has passed this year, check next year
         if (nextBirthday < today) {
@@ -519,11 +522,14 @@ export class EventService {
         // Only include if birthday is within next 30 days
         const daysUntilBirthday = Math.ceil((nextBirthday.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
         if (daysUntilBirthday <= 30) {
+          // Format date as YYYY-MM-DD without timezone conversion
+          const eventDateString = `${nextBirthday.getFullYear()}-${String(nextBirthday.getMonth() + 1).padStart(2, '0')}-${String(nextBirthday.getDate()).padStart(2, '0')}`;
+          
           upcomingBirthdays.push({
             id: `birthday_${member.memberId}`,
             eventTitle: `Birthday - ${member.firstName} ${member.lastName}`,
             eventDescription: `Happy Birthday! 🎉`,
-            eventDate: nextBirthday.toISOString().split('T')[0],
+            eventDate: eventDateString,
             eventTime: null,
             location: null,
             familyCode: familyCode,
@@ -535,7 +541,7 @@ export class EventService {
               lastName: member.lastName,
               profileImage: this.constructProfileImageUrl(member.profile),
               message: `Wishing ${member.firstName} a wonderful birthday! 🎂🎈`,
-              age: nextBirthday.getFullYear() - dob.getFullYear()
+              age: nextBirthday.getFullYear() - year
             },
             eventImages: []
           });
@@ -594,8 +600,11 @@ export class EventService {
     // Process marriage anniversaries
     for (const member of familyMembers) {
       if (member.marriageDate) {
-        const marriageDate = new Date(member.marriageDate);
-        const nextAnniversary = new Date(currentYear, marriageDate.getMonth(), marriageDate.getDate());
+        // Parse date as local date to avoid timezone issues
+        const marriageDateString = typeof member.marriageDate === 'string' ? member.marriageDate.split('T')[0] : member.marriageDate.toISOString().split('T')[0]; // Get YYYY-MM-DD part
+        const [year, month, day] = marriageDateString.split('-').map(Number);
+        
+        const nextAnniversary = new Date(currentYear, month - 1, day); // month is 0-indexed
         
         // If anniversary has passed this year, check next year
         if (nextAnniversary < today) {
@@ -605,12 +614,15 @@ export class EventService {
         // Only include if anniversary is within next 30 days
         const daysUntilAnniversary = Math.ceil((nextAnniversary.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
         if (daysUntilAnniversary <= 30) {
-          const yearsOfMarriage = nextAnniversary.getFullYear() - marriageDate.getFullYear();
+          const yearsOfMarriage = nextAnniversary.getFullYear() - year;
+          // Format date as YYYY-MM-DD without timezone conversion
+          const eventDateString = `${nextAnniversary.getFullYear()}-${String(nextAnniversary.getMonth() + 1).padStart(2, '0')}-${String(nextAnniversary.getDate()).padStart(2, '0')}`;
+          
           upcomingAnniversaries.push({
             id: `anniversary_${member.memberId}`,
             eventTitle: `Marriage Anniversary - ${member.firstName} ${member.lastName}`,
             eventDescription: `Happy ${yearsOfMarriage}${this.getOrdinalSuffix(yearsOfMarriage)} Anniversary! 💕`,
-            eventDate: nextAnniversary.toISOString().split('T')[0],
+            eventDate: eventDateString,
             eventTime: null,
             location: null,
             familyCode: familyCode,
@@ -697,8 +709,11 @@ export class EventService {
     // Process birthdays
     for (const member of familyMembers) {
       if (member.dob) {
-        const dob = new Date(member.dob);
-        const nextBirthday = new Date(currentYear, dob.getMonth(), dob.getDate());
+        // Parse date as local date to avoid timezone issues
+        const dobString = typeof member.dob === 'string' ? member.dob.split('T')[0] : member.dob.toISOString().split('T')[0]; // Get YYYY-MM-DD part
+        const [year, month, day] = dobString.split('-').map(Number);
+        
+        const nextBirthday = new Date(currentYear, month - 1, day); // month is 0-indexed
         
         // If birthday has passed this year, check next year
         if (nextBirthday < today) {
@@ -708,11 +723,14 @@ export class EventService {
         // Only include if birthday is within next 30 days
         const daysUntilBirthday = Math.ceil((nextBirthday.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
         if (daysUntilBirthday <= 30) {
+          // Format date as YYYY-MM-DD without timezone conversion
+          const eventDateString = `${nextBirthday.getFullYear()}-${String(nextBirthday.getMonth() + 1).padStart(2, '0')}-${String(nextBirthday.getDate()).padStart(2, '0')}`;
+          
           upcomingBirthdays.push({
             id: `birthday_${member.memberId}`,
             eventTitle: `Birthday - ${member.firstName} ${member.lastName}`,
             eventDescription: `Happy Birthday! 🎉`,
-            eventDate: nextBirthday.toISOString().split('T')[0],
+            eventDate: eventDateString,
             eventTime: null,
             location: null,
             familyCode: familyCode,
@@ -724,7 +742,7 @@ export class EventService {
               lastName: member.lastName,
               profileImage: this.constructProfileImageUrl(member.profile),
               message: `Wishing ${member.firstName} a wonderful birthday! 🎂🎈`,
-              age: nextBirthday.getFullYear() - dob.getFullYear()
+              age: nextBirthday.getFullYear() - year
             },
             eventImages: []
           });

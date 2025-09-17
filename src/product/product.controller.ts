@@ -39,19 +39,9 @@ export class ProductController {
   @Post('create')
   @UseInterceptors(
     FilesInterceptor('productImages', 10, {
-      storage: diskStorage({
-        destination: (req, file, cb) => {
-          const uploadPath = process.env.PRODUCT_IMAGE_UPLOAD_PATH || 'uploads/products';
-          if (!fs.existsSync(uploadPath)) {
-            fs.mkdirSync(uploadPath, { recursive: true });
-          }
-          cb(null, uploadPath);
-        },
-        filename: (req, file, cb) => {
-          cb(null, generateFileName(file.originalname));
-        },
-      }),
+      storage: memoryStorage(),
       fileFilter: imageFileFilter,
+      limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
     }),
   )
   @ApiConsumes('multipart/form-data')
@@ -83,13 +73,7 @@ export class ProductController {
     @UploadedFiles() files: Express.Multer.File[],
     @Body() body: CreateProductDto,
   ) {
-    const result = await this.productService.createProduct(body);
-    const productId = result.data.id;
-    const imageNames = files?.map(file => file.filename) || [];
-    if (imageNames.length > 0) {
-      await this.productService.addProductImages(productId, imageNames);
-    }
-    return result;
+    return this.productService.createProduct(body, files || []);
   }
 
   @Post(':id/images')

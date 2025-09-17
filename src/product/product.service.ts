@@ -7,6 +7,7 @@ import { UpdateProductDto } from './dto/update-product.dto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ProductImage } from './model/product-image.model';
+import { UploadService } from '../uploads/upload.service';
 
 @Injectable()
 export class ProductService {
@@ -18,19 +19,70 @@ export class ProductService {
     private readonly productImageModel: typeof ProductImage,
   ) {}
 
-  // Helper method to construct image URLs properly
-  private constructImageUrl(imageName: string): string {
-    if (!imageName) return null;
+  // Helper method to construct S3 image URLs
+  private constructProductImageUrl(filename: string): string {
+    if (!filename) return null;
     
-    const baseUrl = (process.env.BASE_URL || '').replace(/\/$/, ''); // Remove trailing slash
-    const uploadPath = (process.env.PRODUCT_IMAGE_UPLOAD_PATH?.replace(/^\.?\/?/, '') || 'uploads/products').replace(/\/$/, ''); // Remove trailing slash
-    
-    // Ensure proper URL construction without double slashes
-    return `${baseUrl}/${uploadPath}/${imageName}`;
+    // If it's already a full URL, return as is
+    if (filename.startsWith('http://') || filename.startsWith('https://')) {
+      return filename;
+    }
+
+    // If S3 is configured, construct S3 URL
+    if (process.env.S3_BUCKET_NAME && process.env.REGION) {
+      return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/products/${filename}`;
+    }
+
+    // Fallback to local URL
+    const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
+    const uploadPath = process.env.PRODUCT_IMAGE_UPLOAD_PATH?.replace(/^\.?\/?/, '') || 'uploads/products';
+    return `${baseUrl.replace(/\/$/, '')}/${uploadPath.replace(/\/$/, '')}/${filename}`;
   }
 
-  async createProduct(dto: CreateProductDto) {
+  private getProductImageFilenameFromUrl(url: string): string | null {
+    if (!url) return null;
+    
+    try {
+      const parsedUrl = new URL(url);
+      // Extract the filename from the path
+      return parsedUrl.pathname.split('/').pop() || null;
+    } catch (e) {
+      // If it's not a valid URL, return as is (might already be a filename)
+      return url;
+    }
+  }
+
+  async createProduct(dto: CreateProductDto, imageFiles?: Express.Multer.File[]) {
     const product = await this.productModel.create(dto);
+    const uploadService = new UploadService();
+
+    // Save images if provided
+    if (imageFiles && imageFiles.length > 0) {
+      try {
+        // Upload files to S3 and get URLs
+        const uploadPromises = imageFiles.map(file => 
+          uploadService.uploadFile(file, 'products')
+        );
+        
+        const imageUrls = await Promise.all(uploadPromises);
+        
+        // Save image references to database
+        await Promise.all(
+          imageUrls.map(imageUrl => 
+            this.productImageModel.create({ 
+              productId: product.id, 
+              imageUrl: this.getProductImageFilenameFromUrl(imageUrl) || imageUrl 
+            })
+          )
+        );
+      } catch (error) {
+        console.error('Error uploading product images:', error);
+        // Clean up product if image upload fails
+        await product.destroy();
+        throw new Error('Failed to upload product images');
+      }
+    }
+
     const productWithCategory = await this.productModel.findByPk(product.id, {
       include: [
         { 
@@ -59,7 +111,7 @@ export class ProductService {
     });
     return products.map((product) => {
       const productJson = product.toJSON();
-      const images = productJson.images?.map(img => this.constructImageUrl(img.imageUrl)) || [];
+      const images = productJson.images?.map(img => this.constructProductImageUrl(img.imageUrl)) || [];
       return {
         ...productJson,
         images,
@@ -81,7 +133,7 @@ export class ProductService {
     if (!product) throw new NotFoundException('Product not found');
     
     const productJson = product.toJSON();
-    const images = productJson.images?.map(img => this.constructImageUrl(img.imageUrl)) || [];
+    const images = productJson.images?.map(img => this.constructProductImageUrl(img.imageUrl)) || [];
     return {
       ...productJson,
       images,
@@ -122,18 +174,28 @@ export class ProductService {
     });
     if (!product) throw new NotFoundException('Product not found');
 
-    // Delete product images and files
+    // Delete product images from S3 or local storage
+    const uploadService = new UploadService();
     const uploadDir = process.env.PRODUCT_IMAGE_UPLOAD_PATH || 'uploads/products';
+    
     for (const img of product.images || []) {
-      const imagePath = path.join(uploadDir, img.imageUrl);
-      if (fs.existsSync(imagePath)) {
-        try {
-          fs.unlinkSync(imagePath);
-        } catch (err) {
-          console.warn('Failed to delete product image:', err.message);
+      try {
+        const imageUrl = this.constructProductImageUrl(img.imageUrl);
+        if (imageUrl.includes('amazonaws.com')) {
+          // Delete from S3
+          await uploadService.deleteFile(imageUrl);
+        } else {
+          // Local file deletion
+          const imagePath = path.join(uploadDir, img.imageUrl);
+          if (fs.existsSync(imagePath)) {
+            fs.unlinkSync(imagePath);
+          }
         }
+        await img.destroy();
+      } catch (error) {
+        console.error('Error deleting product image:', error);
+        // Continue with other deletions even if one fails
       }
-      await img.destroy();
     }
 
     await product.destroy();
@@ -150,24 +212,38 @@ export class ProductService {
     );
     return {
       message: 'Images added successfully',
-      images: createdImages.map(img => ({ id: img.id, imageUrl: this.constructImageUrl(img.imageUrl) })),
+      images: createdImages.map(img => ({ id: img.id, imageUrl: this.constructProductImageUrl(img.imageUrl) })),
     };
   }
 
   async deleteProductImage(imageId: number) {
     const image = await this.productImageModel.findByPk(imageId);
     if (!image) throw new NotFoundException('Image not found');
-    const uploadDir = process.env.PRODUCT_IMAGE_UPLOAD_PATH || 'uploads/products';
-    const imagePath = path.join(uploadDir, image.imageUrl);
-    if (fs.existsSync(imagePath)) {
-      fs.unlinkSync(imagePath);
+    
+    const uploadService = new UploadService();
+    try {
+      const imageUrl = this.constructProductImageUrl(image.imageUrl);
+      if (imageUrl.includes('amazonaws.com')) {
+        // Delete from S3
+        await uploadService.deleteFile(imageUrl);
+      } else {
+        // Local file deletion
+        const uploadDir = process.env.PRODUCT_IMAGE_UPLOAD_PATH || 'uploads/products';
+        const imagePath = path.join(uploadDir, image.imageUrl);
+        if (fs.existsSync(imagePath)) {
+          fs.unlinkSync(imagePath);
+        }
+      }
+    } catch (error) {
+      console.error('Error deleting product image:', error);
     }
+    
     await image.destroy();
     return { message: 'Image deleted successfully' };
   }
 
   async getProductImages(productId: number) {
     const images = await this.productImageModel.findAll({ where: { productId } });
-    return images.map(img => ({ id: img.id, imageUrl: this.constructImageUrl(img.imageUrl) }));
+    return images.map(img => ({ id: img.id, imageUrl: this.constructProductImageUrl(img.imageUrl) }));
   }
 }

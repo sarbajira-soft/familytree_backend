@@ -440,8 +440,7 @@ export class FamilyService {
       throw new NotFoundException('Family not found');
     }
 
-    // Remove existing family tree data for this family
-    await this.familyTreeModel.destroy({ where: { familyCode } });
+    // DO NOT delete existing tree; we will update existing rows and add new ones
 
     // ✅ SYNC FIX: Sync family_member table with tree data
     // Get all member IDs that should remain (existing members in the tree)
@@ -622,7 +621,7 @@ export class FamilyService {
 
       //Create family tree entry
       try {
-        const familyTreeEntry = await this.familyTreeModel.create({
+        const [familyTreeEntry] = await this.familyTreeModel.upsert({
           familyCode,
           userId,
           personId: member.id, // Store the position ID (person_X_id)

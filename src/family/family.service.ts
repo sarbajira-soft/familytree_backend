@@ -207,10 +207,12 @@ export class FamilyService {
     switch (normalizedGender) {
       case 'm':
       case 'male':
+      case 'man':
       case 'husband':
         return 'male';
       case 'f':
       case 'female':
+      case 'woman':
       case 'wife':
         return 'female';
       case 'unknown':

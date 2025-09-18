@@ -43,12 +43,13 @@ export class NotificationController {
 
   @Post(':id/read')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Mark a specific notification as read' })
+  @ApiOperation({ summary: 'Mark a specific notification as read and optionally update status' })
   async markAsRead(
     @Param('id', ParseIntPipe) id: number,
     @Req() req,
+    @Query('status') status?: 'accepted' | 'rejected',
   ) {
-    return this.notificationService.markNotificationAsRead(id, req.user.userId);
+    return this.notificationService.markNotificationAsRead(id, req.user.userId, status);
   }
 
   @Get('unread/count')

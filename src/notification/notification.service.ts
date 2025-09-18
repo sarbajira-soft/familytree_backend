@@ -453,7 +453,7 @@ export class NotificationService {
     }));
   }
 
-  async markNotificationAsRead(notificationId: number, userId: number) {
+  async markNotificationAsRead(notificationId: number, userId: number, status?: 'accepted' | 'rejected') {
     const notifRecipient = await this.recipientModel.findOne({
       where: {
         notificationId,
@@ -465,13 +465,23 @@ export class NotificationService {
       throw new NotFoundException('Notification not found for this user');
     }
 
+    // Mark notification as read
     if (!notifRecipient.isRead) {
       notifRecipient.isRead = true;
       notifRecipient.readAt = new Date();
       await notifRecipient.save();
     }
 
-    return { message: 'Notification marked as read' };
+    // Update notification status if provided
+    if (status) {
+      await this.notificationModel.update(
+        { status },
+        { where: { id: notificationId } }
+      );
+    }
+
+    const statusMessage = status ? ` and status updated to ${status}` : '';
+    return { message: `Notification marked as read${statusMessage}` };
   }
 
   async getUnreadCount(userId: number): Promise<{ unreadCount: number }> {

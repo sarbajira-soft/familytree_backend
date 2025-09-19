@@ -26,9 +26,6 @@ export class Notification extends Model<Notification> {
   @Column({ type: DataType.TEXT, allowNull: false })
   message: string;
 
-  @Column(DataType.STRING)
-  actionType: string;
-
   @Column({
     type: DataType.ENUM('pending', 'accepted', 'rejected'),
     defaultValue: 'pending'

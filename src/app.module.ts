@@ -30,6 +30,8 @@ import { InviteModule } from './invite/invite.module';
       database: process.env.DB_NAME,
       autoLoadModels: true,
       synchronize: true,
+      sync: { alter: true }, // ← Force alter table to add missing columns
+      logging: false, // ← Add this to reduce SQL query logs
       dialectOptions: {
         ssl: {
           require: true,

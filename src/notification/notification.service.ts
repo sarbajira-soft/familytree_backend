@@ -320,6 +320,15 @@ export class NotificationService {
               console.warn(`⚠️ Family association completed but card creation had issues: ${cardsError || 'Unknown error'}`);
             }
             
+            // Update the original notification status to 'accepted'
+            await this.markAsAccepted(notificationId);
+            
+            // Mark the notification as read for the user who accepted it
+            await this.recipientModel.update(
+              { isRead: true, readAt: new Date() },
+              { where: { notificationId, userId } }
+            );
+            
             await transaction.commit();
             console.log(`✅ Family association completed successfully`);
             
@@ -328,12 +337,31 @@ export class NotificationService {
               ? `${targetProfile.user.userProfile.firstName || ''} ${targetProfile.user.userProfile.lastName || ''}`.trim() 
               : 'A user';
             
-            // Create notification for the sender
-            await this.createNotification(
+            // Get family admins for both families
+            const [senderFamilyAdmins, targetFamilyAdmins] = await Promise.all([
+              this.getAdminsForFamily(senderFamilyCode),
+              this.getAdminsForFamily(targetFamilyCode)
+            ]);
+            
+            console.log(`👥 Sender family (${senderFamilyCode}) admins:`, senderFamilyAdmins);
+            console.log(`👥 Target family (${targetFamilyCode}) admins:`, targetFamilyAdmins);
+            
+            // Combine sender + sender family admins (remove duplicates)
+            const senderNotificationRecipients = Array.from(new Set([senderId, ...senderFamilyAdmins]));
+            
+            // Combine target family admins (excluding the acceptor who already knows)
+            const targetNotificationRecipients = targetFamilyAdmins.filter(adminId => adminId !== targetUserId);
+            
+            console.log(`📧 Sender notification recipients:`, senderNotificationRecipients);
+            console.log(`📧 Target notification recipients:`, targetNotificationRecipients);
+
+            // Create notification for the sender and sender family admins
+            console.log(`🔔 Creating acceptance notification for sender and admins`);
+            const senderAcceptanceNotification = await this.createNotification(
               {
                 type: 'FAMILY_ASSOCIATION_ACCEPTED',
                 title: 'Association Request Accepted',
-                message: `${targetName} has accepted your family association request.`,
+                message: `${targetName} from ${targetFamilyCode} has accepted the family association request.`,
                 familyCode: senderFamilyCode,
                 referenceId: targetUserId,
                 data: {
@@ -345,10 +373,39 @@ export class NotificationService {
                   requestType: 'family_association_accepted',
                   cardsCreated: cardsCreated
                 },
-                userIds: [senderId],
+                userIds: senderNotificationRecipients,
               },
               targetUserId,
             );
+            console.log(`✅ Sender acceptance notification created:`, senderAcceptanceNotification);
+            
+            // Create notification for target family admins (if any)
+            if (targetNotificationRecipients.length > 0) {
+              console.log(`🔔 Creating acceptance notification for target family admins`);
+              const targetAcceptanceNotification = await this.createNotification(
+                {
+                  type: 'FAMILY_ASSOCIATION_ACCEPTED',
+                  title: 'Family Association Established',
+                  message: `${targetName} has accepted an association request from ${senderFamilyCode}. The families are now connected.`,
+                  familyCode: targetFamilyCode,
+                  referenceId: senderId,
+                  data: {
+                    senderId: senderId,
+                    senderName: senderProfile.user?.userProfile 
+                      ? `${senderProfile.user.userProfile.firstName || ''} ${senderProfile.user.userProfile.lastName || ''}`.trim() 
+                      : 'A user',
+                    senderFamilyCode: senderFamilyCode,
+                    targetUserId: targetUserId,
+                    targetFamilyCode: targetFamilyCode,
+                    requestType: 'family_association_accepted',
+                    cardsCreated: cardsCreated
+                  },
+                  userIds: targetNotificationRecipients,
+                },
+                targetUserId,
+              );
+              console.log(`✅ Target family acceptance notification created:`, targetAcceptanceNotification);
+            }
             
             return { 
               success: true, 
@@ -375,12 +432,40 @@ export class NotificationService {
           const actorName = targetProfile.user?.userProfile
             ? `${targetProfile.user.userProfile.firstName || ''} ${targetProfile.user.userProfile.lastName || ''}`.trim()
             : 'A user';
+          
+          // Update the original notification status to 'rejected'
+          await this.markAsRejected(notificationId);
+          
+          // Mark the notification as read for the user who rejected it
+          await this.recipientModel.update(
+            { isRead: true, readAt: new Date() },
+            { where: { notificationId, userId } }
+          );
             
-          await this.createNotification(
+          // Get family admins for both families
+          const [senderFamilyAdmins, targetFamilyAdmins] = await Promise.all([
+            this.getAdminsForFamily(senderFamilyCode),
+            this.getAdminsForFamily(targetFamilyCode)
+          ]);
+          
+          console.log(`👥 Sender family (${senderFamilyCode}) admins:`, senderFamilyAdmins);
+          console.log(`👥 Target family (${targetFamilyCode}) admins:`, targetFamilyAdmins);
+          
+          // Combine sender + sender family admins (remove duplicates)
+          const senderNotificationRecipients = Array.from(new Set([senderId, ...senderFamilyAdmins]));
+          
+          // Target family admins (excluding the rejector who already knows)
+          const targetNotificationRecipients = targetFamilyAdmins.filter(adminId => adminId !== targetUserId);
+          
+          console.log(`📧 Sender rejection notification recipients:`, senderNotificationRecipients);
+          console.log(`📧 Target rejection notification recipients:`, targetNotificationRecipients);
+
+          console.log(`🔔 Creating rejection notification for sender and admins`);
+          const senderRejectionNotification = await this.createNotification(
             {
               type: 'FAMILY_ASSOCIATION_REJECTED',
               title: 'Association Request Declined',
-              message: `Your family association request has been declined by ${actorName}.`,
+              message: `Your family association request has been declined by ${actorName} from ${targetFamilyCode}.`,
               familyCode: senderFamilyCode,
               referenceId: targetUserId,
               data: {
@@ -392,10 +477,38 @@ export class NotificationService {
                 targetFamilyCode: senderFamilyCode,
                 requestType: 'family_association_rejected'
               },
-              userIds: [senderId],
+              userIds: senderNotificationRecipients,
             },
             targetUserId,
           );
+          console.log(`✅ Sender rejection notification created:`, senderRejectionNotification);
+          
+          // Create notification for target family admins (if any)
+          if (targetNotificationRecipients.length > 0) {
+            console.log(`🔔 Creating rejection notification for target family admins`);
+            const targetRejectionNotification = await this.createNotification(
+              {
+                type: 'FAMILY_ASSOCIATION_REJECTED',
+                title: 'Family Association Request Declined',
+                message: `${actorName} has declined an association request from ${senderFamilyCode}.`,
+                familyCode: targetFamilyCode,
+                referenceId: senderId,
+                data: {
+                  senderId: senderId,
+                  senderName: senderProfile.user?.userProfile 
+                    ? `${senderProfile.user.userProfile.firstName || ''} ${senderProfile.user.userProfile.lastName || ''}`.trim() 
+                    : 'A user',
+                  senderFamilyCode: senderFamilyCode,
+                  targetUserId: targetUserId,
+                  targetFamilyCode: targetFamilyCode,
+                  requestType: 'family_association_rejected'
+                },
+                userIds: targetNotificationRecipients,
+              },
+              targetUserId,
+            );
+            console.log(`✅ Target family rejection notification created:`, targetRejectionNotification);
+          }
           
           return { 
             success: true, 
@@ -446,6 +559,7 @@ export class NotificationService {
       familyCode: notifRecipient.notification.familyCode,
       data: notifRecipient.notification.data,
       isRead: notifRecipient.isRead,
+      status: notifRecipient.notification.status, // Include notification status
       createdAt: notifRecipient.notification.createdAt,
       triggeredBy: notifRecipient.notification.triggeredBy,
       referenceId: notifRecipient.notification.referenceId,

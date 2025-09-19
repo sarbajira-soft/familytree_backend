@@ -906,5 +906,75 @@ async markLinkAsUsed(familyCode: string, memberId: number) {
     throw new BadRequestException('Failed to mark link as used');
   }
 }
+
+  async addUserToFamily(userId: number, familyCode: string, addedBy: number) {
+    try {
+      // Check if user exists
+      const user = await this.userModel.findByPk(userId, {
+        include: [{
+          model: this.userProfileModel,
+          as: 'userProfile'
+        }]
+      });
+
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
+
+      // Check if family exists
+      const familyExists = await this.familyMemberModel.findOne({
+        where: { familyCode }
+      });
+
+      if (!familyExists) {
+        throw new NotFoundException('Family not found');
+      }
+
+      // Check if user is already a member of this family
+      const existingMember = await this.familyMemberModel.findOne({
+        where: {
+          memberId: userId,
+          familyCode
+        }
+      });
+
+      if (existingMember) {
+        throw new BadRequestException('User is already a member of this family');
+      }
+
+      // Update user profile with familyCode if not already set
+      if (user.userProfile && !user.userProfile.familyCode) {
+        await this.userProfileModel.update(
+          { familyCode },
+          { where: { userId } }
+        );
+      }
+
+      // Add user to family member table
+      const newMember = await this.familyMemberModel.create({
+        memberId: userId,
+        familyCode,
+        approveStatus: 'approved', // Auto-approve since admin is adding
+        creatorId: addedBy
+      });
+
+      return {
+        message: 'User added to family successfully',
+        data: {
+          memberId: newMember.memberId,
+          userId,
+          familyCode,
+          approveStatus: 'approved'
+        }
+      };
+
+    } catch (error) {
+      if (error instanceof NotFoundException || error instanceof BadRequestException) {
+        throw error;
+      }
+      console.error('Error adding user to family:', error);
+      throw new BadRequestException('Failed to add user to family');
+    }
+  }
   
 }

@@ -31,5 +31,5 @@ export class FamilyMember extends Model<FamilyMember> {
 
   @Default(false)
   @Column({ type: DataType.BOOLEAN, allowNull: false, field: 'isLinkedUsed' })
-  isLinkUsed: boolean;
+  isLinkedUsed: boolean;
 }

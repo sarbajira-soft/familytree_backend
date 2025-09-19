@@ -847,7 +847,7 @@ async checkMemberExists(familyCode: string, memberId: number) {
       message: 'Member validation successful',
       data: {
         exists: true,
-        isLinkUsed: member.isLinkUsed || false,
+        isLinkUsed: member.isLinkedUsed || false,
         member: {
           id: member.memberId,
           familyCode: member.familyCode,
@@ -884,11 +884,11 @@ async markLinkAsUsed(familyCode: string, memberId: number) {
       throw new NotFoundException('Member not found in this family');
     }
 
-    if (member.isLinkUsed) {
+    if (member.isLinkedUsed) {
       throw new BadRequestException('This invitation link has already been used');
     }
 
-    await member.update({ isLinkUsed: true });
+    await member.update({ isLinkedUsed: true });
 
     return {
       message: 'Invitation link marked as used successfully',

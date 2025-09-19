@@ -187,4 +187,19 @@ export class FamilyMemberController {
     return this.familyMemberService.markLinkAsUsed(familyCode, memberId);
   }
 
+  @Post('add-user-to-family')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Add existing user to family by userId and familyCode' })
+  @ApiResponse({ status: 200, description: 'User added to family successfully' })
+  @ApiResponse({ status: 400, description: 'Invalid data or user already in family' })
+  @ApiResponse({ status: 404, description: 'User or family not found' })
+  async addUserToFamily(
+    @Body() body: { userId: number; familyCode: string },
+    @Req() req
+  ) {
+    const addedBy = req.user?.userId;
+    return this.familyMemberService.addUserToFamily(body.userId, body.familyCode, addedBy);
+  }
+
 }

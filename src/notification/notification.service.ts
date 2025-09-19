@@ -764,6 +764,7 @@ export class NotificationService {
       where: {
         familyCode,
         type: 'FAMILY_JOIN_REQUEST',
+        status: 'pending',
       },
       order: [['createdAt', 'DESC']],
     });

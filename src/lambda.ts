@@ -10,6 +10,7 @@ import { join } from 'path';
 import { setupSwagger } from './config/swagger';
 import { ValidationPipe } from '@nestjs/common';
 import { Sequelize } from 'sequelize-typescript';
+import { setupAssociations } from './associations/sequelize.associations';
 
 let cachedServer: any;
 
@@ -25,6 +26,9 @@ async function bootstrapServer() {
       logger: ['error', 'warn', 'log'],
       bufferLogs: true
     });
+
+    // Setup Sequelize associations
+    setupAssociations();
 
     // Middleware
     app.use(bodyParser.json({ limit: '50mb' }));

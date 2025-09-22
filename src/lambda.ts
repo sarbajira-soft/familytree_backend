@@ -10,7 +10,6 @@ import { join } from 'path';
 import { setupSwagger } from './config/swagger';
 import { ValidationPipe } from '@nestjs/common';
 import { Sequelize } from 'sequelize-typescript';
-import { setupAssociations } from './associations/sequelize.associations';
 
 let cachedServer: any;
 
@@ -32,9 +31,6 @@ async function bootstrapServer() {
     app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
     app.use(cookieParser());
 
-    // Set global API prefix
-    app.setGlobalPrefix('api');
-
     // Global pipes
     app.useGlobalPipes(
       new ValidationPipe({
@@ -46,27 +42,9 @@ async function bootstrapServer() {
 
     // CORS
     app.enableCors({
-      origin: [
-        'https://www.familyss.com',
-        'https://familyss.com',
-        'http://localhost:3000',
-        'http://localhost:3001',
-        'http://localhost:5173',
-        'http://localhost:5174'
-      ],
-      methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
-      allowedHeaders: [
-        'Content-Type',
-        'Authorization',
-        'X-Requested-With',
-        'Accept',
-        'Origin',
-        'Access-Control-Request-Method',
-        'Access-Control-Request-Headers'
-      ],
+      origin: true,
+      methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
       credentials: true,
-      preflightContinue: false,
-      optionsSuccessStatus: 204
     });
 
     // Static assets
@@ -78,10 +56,6 @@ async function bootstrapServer() {
     try {
       const sequelize = app.get(Sequelize);
       await sequelize.sync({ alter: true });
-      
-      // Setup associations after Sequelize sync to ensure all models are initialized
-      setupAssociations();
-      console.log('Sequelize associations have been set up successfully in Lambda.');
     } catch (dbError) {
       console.error('Database sync error:', dbError);
     }
@@ -108,33 +82,11 @@ export const handler = async (
 ) => {
   console.log('Incoming Event:', JSON.stringify(event, null, 2));
 
-  // Handle preflight OPTIONS requests
-  if (event.httpMethod === 'OPTIONS' || event.requestContext?.httpMethod === 'OPTIONS') {
-    return {
-      statusCode: 200,
-      headers: {
-        'Access-Control-Allow-Origin': 'https://www.familyss.com',
-        'Access-Control-Allow-Methods': 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Requested-With,Accept,Origin,Access-Control-Request-Method,Access-Control-Request-Headers',
-        'Access-Control-Allow-Credentials': 'true',
-        'Access-Control-Max-Age': '86400'
-      },
-      body: ''
-    };
-  }
-
   // Transform test events to proper API Gateway format
-  let path = event.path || '/';
-  
-  // Handle paths that don't start with /api
-  if (path.startsWith('/user/') || path.startsWith('/family/') || path.startsWith('/auth/')) {
-    path = '/api' + path;
-  }
-  
   const processedEvent = {
     ...event,
     httpMethod: event.httpMethod || 'GET',
-    path: path,
+    path: event.path || '/',
     requestContext: event.requestContext || {
       httpMethod: event.httpMethod || 'GET',
       path: event.path || '/'
@@ -152,18 +104,6 @@ export const handler = async (
     }
     
     const result = await cachedServer(processedEvent, context, callback);
-    
-    // Ensure CORS headers are present in the response
-    if (result) {
-      if (!result.headers) {
-        result.headers = {};
-      }
-      result.headers['Access-Control-Allow-Origin'] = 'https://www.familyss.com';
-      result.headers['Access-Control-Allow-Methods'] = 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS';
-      result.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,X-Requested-With,Accept,Origin,Access-Control-Request-Method,Access-Control-Request-Headers';
-      result.headers['Access-Control-Allow-Credentials'] = 'true';
-    }
-    
     return result;
   } catch (error) {
     console.error('Lambda handler error:', error);
@@ -175,11 +115,7 @@ export const handler = async (
         stack: process.env.NODE_ENV === 'production' ? undefined : error.stack
       }),
       headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': 'https://www.familyss.com',
-        'Access-Control-Allow-Methods': 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Requested-With,Accept,Origin,Access-Control-Request-Method,Access-Control-Request-Headers',
-        'Access-Control-Allow-Credentials': 'true'
+        'Content-Type': 'application/json'
       }
     };
   }

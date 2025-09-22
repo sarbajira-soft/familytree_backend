@@ -8,6 +8,7 @@ import * as bodyParser from 'body-parser';
 import { setupSwagger } from './config/swagger';
 import { Sequelize } from 'sequelize-typescript';
 import * as express from 'express';
+import { setupAssociations } from './associations/sequelize.associations';
 
 export async function bootstrapApp(app: NestExpressApplication) {
   app.use(bodyParser.json({ limit: '50mb' }));
@@ -41,6 +42,10 @@ export async function bootstrapApp(app: NestExpressApplication) {
 
   const sequelize = app.get(Sequelize);
   await sequelize.sync({ force: false, alter: false });
+  
+  // Setup associations after Sequelize sync to ensure all models are initialized
+  setupAssociations();
+  console.log('Sequelize associations have been set up successfully.');
 
   const swaggerPath = '/api';
   setupSwagger(app, swaggerPath);

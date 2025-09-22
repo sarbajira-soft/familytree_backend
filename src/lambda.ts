@@ -27,16 +27,13 @@ async function bootstrapServer() {
       bufferLogs: true
     });
 
-    // Setup Sequelize associations
-    setupAssociations();
-
-    // Set global API prefix
-    app.setGlobalPrefix('api');
-
     // Middleware
     app.use(bodyParser.json({ limit: '50mb' }));
     app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
     app.use(cookieParser());
+
+    // Set global API prefix
+    app.setGlobalPrefix('api');
 
     // Global pipes
     app.useGlobalPipes(
@@ -81,6 +78,10 @@ async function bootstrapServer() {
     try {
       const sequelize = app.get(Sequelize);
       await sequelize.sync({ alter: true });
+      
+      // Setup associations after Sequelize sync to ensure all models are initialized
+      setupAssociations();
+      console.log('Sequelize associations have been set up successfully in Lambda.');
     } catch (dbError) {
       console.error('Database sync error:', dbError);
     }

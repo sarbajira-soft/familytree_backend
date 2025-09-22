@@ -57,10 +57,9 @@ import { InviteModule } from './invite/invite.module';
   // providers: [RelationshipSeeder],
 })
 export class AppModule {
-  constructor() {
-    setupAssociations();
-  }
-
+  // Removed setupAssociations from constructor to avoid timing issues
+  // Associations are now set up in bootstrap.ts and lambda.ts after sequelize.sync()
+  
   // async onApplicationBootstrap() {
   //   await this.seeder.seed();
   // }

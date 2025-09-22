@@ -30,6 +30,9 @@ async function bootstrapServer() {
     // Setup Sequelize associations
     setupAssociations();
 
+    // Set global API prefix
+    app.setGlobalPrefix('api');
+
     // Middleware
     app.use(bodyParser.json({ limit: '50mb' }));
     app.use(bodyParser.urlencoded({ limit: '50mb', extended: true }));
@@ -46,9 +49,27 @@ async function bootstrapServer() {
 
     // CORS
     app.enableCors({
-      origin: true,
-      methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
+      origin: [
+        'https://www.familyss.com',
+        'https://familyss.com',
+        'http://localhost:3000',
+        'http://localhost:3001',
+        'http://localhost:5173',
+        'http://localhost:5174'
+      ],
+      methods: ['GET', 'HEAD', 'PUT', 'PATCH', 'POST', 'DELETE', 'OPTIONS'],
+      allowedHeaders: [
+        'Content-Type',
+        'Authorization',
+        'X-Requested-With',
+        'Accept',
+        'Origin',
+        'Access-Control-Request-Method',
+        'Access-Control-Request-Headers'
+      ],
       credentials: true,
+      preflightContinue: false,
+      optionsSuccessStatus: 204
     });
 
     // Static assets
@@ -108,6 +129,15 @@ export const handler = async (
     }
     
     const result = await cachedServer(processedEvent, context, callback);
+    
+    // Ensure CORS headers are present in the response
+    if (result && result.headers) {
+      result.headers['Access-Control-Allow-Origin'] = 'https://www.familyss.com';
+      result.headers['Access-Control-Allow-Methods'] = 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS';
+      result.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,X-Requested-With,Accept,Origin';
+      result.headers['Access-Control-Allow-Credentials'] = 'true';
+    }
+    
     return result;
   } catch (error) {
     console.error('Lambda handler error:', error);
@@ -119,7 +149,11 @@ export const handler = async (
         stack: process.env.NODE_ENV === 'production' ? undefined : error.stack
       }),
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': 'https://www.familyss.com',
+        'Access-Control-Allow-Methods': 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Requested-With,Accept,Origin',
+        'Access-Control-Allow-Credentials': 'true'
       }
     };
   }

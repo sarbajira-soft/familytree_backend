@@ -108,11 +108,33 @@ export const handler = async (
 ) => {
   console.log('Incoming Event:', JSON.stringify(event, null, 2));
 
+  // Handle preflight OPTIONS requests
+  if (event.httpMethod === 'OPTIONS' || event.requestContext?.httpMethod === 'OPTIONS') {
+    return {
+      statusCode: 200,
+      headers: {
+        'Access-Control-Allow-Origin': 'https://www.familyss.com',
+        'Access-Control-Allow-Methods': 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Requested-With,Accept,Origin,Access-Control-Request-Method,Access-Control-Request-Headers',
+        'Access-Control-Allow-Credentials': 'true',
+        'Access-Control-Max-Age': '86400'
+      },
+      body: ''
+    };
+  }
+
   // Transform test events to proper API Gateway format
+  let path = event.path || '/';
+  
+  // Handle paths that don't start with /api
+  if (path.startsWith('/user/') || path.startsWith('/family/') || path.startsWith('/auth/')) {
+    path = '/api' + path;
+  }
+  
   const processedEvent = {
     ...event,
     httpMethod: event.httpMethod || 'GET',
-    path: event.path || '/',
+    path: path,
     requestContext: event.requestContext || {
       httpMethod: event.httpMethod || 'GET',
       path: event.path || '/'
@@ -132,10 +154,13 @@ export const handler = async (
     const result = await cachedServer(processedEvent, context, callback);
     
     // Ensure CORS headers are present in the response
-    if (result && result.headers) {
+    if (result) {
+      if (!result.headers) {
+        result.headers = {};
+      }
       result.headers['Access-Control-Allow-Origin'] = 'https://www.familyss.com';
       result.headers['Access-Control-Allow-Methods'] = 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS';
-      result.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,X-Requested-With,Accept,Origin';
+      result.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization,X-Requested-With,Accept,Origin,Access-Control-Request-Method,Access-Control-Request-Headers';
       result.headers['Access-Control-Allow-Credentials'] = 'true';
     }
     
@@ -153,7 +178,7 @@ export const handler = async (
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': 'https://www.familyss.com',
         'Access-Control-Allow-Methods': 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Requested-With,Accept,Origin',
+        'Access-Control-Allow-Headers': 'Content-Type,Authorization,X-Requested-With,Accept,Origin,Access-Control-Request-Method,Access-Control-Request-Headers',
         'Access-Control-Allow-Credentials': 'true'
       }
     };

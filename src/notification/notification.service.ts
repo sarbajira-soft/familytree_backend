@@ -32,17 +32,33 @@ export class NotificationService {
   }
 
   async markAsAccepted(notificationId: number) {
-    return this.notificationModel.update(
+    console.log(`🔧 DEBUG: Marking notification ${notificationId} as accepted`);
+    const result = await this.notificationModel.update(
       { status: 'accepted', updatedAt: new Date() },
       { where: { id: notificationId } }
     );
+    console.log(`🔧 DEBUG: Update result for accepted:`, result);
+    
+    // Verify the update worked
+    const updated = await this.notificationModel.findByPk(notificationId);
+    console.log(`🔧 DEBUG: Notification after update:`, { id: updated?.id, status: updated?.status });
+    
+    return result;
   }
 
   async markAsRejected(notificationId: number) {
-    return this.notificationModel.update(
+    console.log(`🔧 DEBUG: Marking notification ${notificationId} as rejected`);
+    const result = await this.notificationModel.update(
       { status: 'rejected', updatedAt: new Date() },
       { where: { id: notificationId } }
     );
+    console.log(`🔧 DEBUG: Update result for rejected:`, result);
+    
+    // Verify the update worked
+    const updated = await this.notificationModel.findByPk(notificationId);
+    console.log(`🔧 DEBUG: Notification after update:`, { id: updated?.id, status: updated?.status });
+    
+    return result;
   }
   constructor(
     @InjectModel(Notification)
@@ -320,13 +336,17 @@ export class NotificationService {
               console.warn(`⚠️ Family association completed but card creation had issues: ${cardsError || 'Unknown error'}`);
             }
             
-            // Update the original notification status to 'accepted'
-            await this.markAsAccepted(notificationId);
+            // Update the original notification status to 'accepted' within the transaction
+            console.log(`🔧 DEBUG: Updating notification ${notificationId} status to 'accepted' within transaction`);
+            await this.notificationModel.update(
+              { status: 'accepted', updatedAt: new Date() },
+              { where: { id: notificationId }, transaction }
+            );
             
             // Mark the notification as read for the user who accepted it
             await this.recipientModel.update(
               { isRead: true, readAt: new Date() },
-              { where: { notificationId, userId } }
+              { where: { notificationId, userId }, transaction }
             );
             
             await transaction.commit();
@@ -434,7 +454,11 @@ export class NotificationService {
             : 'A user';
           
           // Update the original notification status to 'rejected'
-          await this.markAsRejected(notificationId);
+          console.log(`🔧 DEBUG: Updating notification ${notificationId} status to 'rejected'`);
+          await this.notificationModel.update(
+            { status: 'rejected', updatedAt: new Date() },
+            { where: { id: notificationId } }
+          );
           
           // Mark the notification as read for the user who rejected it
           await this.recipientModel.update(
@@ -551,20 +575,31 @@ export class NotificationService {
 
     const notifications = await this.recipientModel.findAll(options);
 
-    return notifications.map((notifRecipient) => ({
-      id: notifRecipient.notificationId,
-      title: notifRecipient.notification.title,
-      message: notifRecipient.notification.message,
-      type: notifRecipient.notification.type,
-      familyCode: notifRecipient.notification.familyCode,
-      data: notifRecipient.notification.data,
-      isRead: notifRecipient.isRead,
-      status: notifRecipient.notification.status, // Include notification status
-      createdAt: notifRecipient.notification.createdAt,
-      triggeredBy: notifRecipient.notification.triggeredBy,
-      referenceId: notifRecipient.notification.referenceId,
-      readAt: notifRecipient.readAt,
-    }));
+    const result = notifications.map((notifRecipient) => {
+      const mapped = {
+        id: notifRecipient.notificationId,
+        title: notifRecipient.notification.title,
+        message: notifRecipient.notification.message,
+        type: notifRecipient.notification.type,
+        familyCode: notifRecipient.notification.familyCode,
+        data: notifRecipient.notification.data,
+        isRead: notifRecipient.isRead,
+        status: notifRecipient.notification.status, // Include notification status
+        createdAt: notifRecipient.notification.createdAt,
+        triggeredBy: notifRecipient.notification.triggeredBy,
+        referenceId: notifRecipient.notification.referenceId,
+        readAt: notifRecipient.readAt,
+      };
+      
+      // Debug log to see what status we're returning
+      if (notifRecipient.notification.type === 'FAMILY_ASSOCIATION_REQUEST') {
+        console.log(`🔧 DEBUG: Returning notification ${mapped.id} with status: ${mapped.status}`);
+      }
+      
+      return mapped;
+    });
+    
+    return result;
   }
 
   async markNotificationAsRead(notificationId: number, userId: number, status?: 'accepted' | 'rejected') {

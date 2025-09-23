@@ -482,32 +482,41 @@ export class UserService {
 
   async getUserProfile(id: number | string) {
     try {
+      console.log(`[getUserProfile] Starting query for user ID: ${id}`);
+      const startTime = Date.now();
+      
       const user = await this.userModel.findOne({
         where: { id },
+        attributes: ['id', 'email', 'mobile', 'countryCode', 'status', 'role', 'createdAt', 'updatedAt'], // Only fetch needed user fields
         include: [
           {
             model: UserProfile,
             as: 'userProfile',
+            required: false, // LEFT JOIN instead of INNER JOIN
             include: [
               {
                 model: FamilyMember,
                 as: 'familyMember',
                 attributes: ['familyCode', 'approveStatus'],
+                required: false,
               },
               {
                 model: Religion,
                 as: 'religion',
                 attributes: ['id', 'name'],
+                required: false,
               },
               {
                 model: Language,
                 as: 'language',
                 attributes: ['id', 'name', 'isoCode'],
+                required: false,
               },
               {
                 model: Gothram,
                 as: 'gothram',
                 attributes: ['id', 'name'],
+                required: false,
               },
             ],
           },
@@ -516,11 +525,15 @@ export class UserService {
 
       if (!user) throw new NotFoundException('User profile not found');
 
+      const queryTime = Date.now() - startTime;
+      console.log(`[getUserProfile] Query completed in ${queryTime}ms for user ID: ${id}`);
+
       // Convert profile filename to full URL if it exists and isn't already a URL
       if (user.userProfile?.profile) {
         user.userProfile.profile = this.uploadService.getFileUrl(user.userProfile.profile, 'profile');
       }
 
+      console.log(`[getUserProfile] Total execution time: ${Date.now() - startTime}ms for user ID: ${id}`);
       return user;
     } catch (error) {
       console.error('Error in getUserProfile:', error);

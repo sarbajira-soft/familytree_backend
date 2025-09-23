@@ -31,12 +31,23 @@ import { InviteModule } from './invite/invite.module';
       autoLoadModels: true,
       synchronize: true,
       sync: { alter: true }, // ← Force alter table to add missing columns
-      logging: false, // ← Add this to reduce SQL query logs
+      logging: process.env.NODE_ENV === 'development' ? console.log : false, // ← Enable logging in dev to see slow queries
+      pool: {
+        max: 10, // Maximum number of connections
+        min: 0,  // Minimum number of connections
+        acquire: 30000, // Maximum time (ms) to get connection
+        idle: 10000,    // Maximum time (ms) connection can be idle
+      },
       dialectOptions: {
         ssl: {
           require: true,
           rejectUnauthorized: false,
         },
+        connectTimeout: 20000, // 20 seconds connection timeout
+        requestTimeout: 30000, // 30 seconds request timeout
+      },
+      retry: {
+        max: 3, // Maximum retry attempts
       },
     }),
     UserModule,

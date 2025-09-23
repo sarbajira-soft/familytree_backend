@@ -10,6 +10,7 @@ import { join } from 'path';
 import { setupSwagger } from './config/swagger';
 import { ValidationPipe } from '@nestjs/common';
 import { Sequelize } from 'sequelize-typescript';
+import { setupAssociations } from './associations/sequelize.associations';
 
 let cachedServer: any;
 
@@ -56,6 +57,10 @@ async function bootstrapServer() {
     try {
       const sequelize = app.get(Sequelize);
       await sequelize.sync({ alter: true });
+      
+      // Setup associations after Sequelize sync to ensure all models are initialized
+      setupAssociations();
+      console.log('Sequelize associations have been set up successfully in Lambda.');
     } catch (dbError) {
       console.error('Database sync error:', dbError);
     }

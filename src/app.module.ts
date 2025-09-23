@@ -11,7 +11,7 @@ import { FamilyModule } from './family/family.module';
 import { RelationshipsModule } from './relationships/relationships.module';
 // import { RelationshipSeeder } from './relationships/seed/seed-relationships';
 import { GalleryModule } from './gallery/gallery.module';
-import { setupAssociations } from './associations/sequelize.associations';
+// import { setupAssociations } from './associations/sequelize.associations'; // Moved to bootstrap.ts and lambda.ts
 import { PostModule } from './post/post.module';
 import { NotificationModule } from './notification/notification.module';
 import { ProductModule } from './product/product.module';
@@ -57,9 +57,8 @@ import { InviteModule } from './invite/invite.module';
   // providers: [RelationshipSeeder],
 })
 export class AppModule {
-  constructor() {
-    setupAssociations();
-  }
+  // setupAssociations() moved to bootstrap.ts and lambda.ts after database sync
+  // to prevent timing issues with model initialization
 
   // async onApplicationBootstrap() {
   //   await this.seeder.seed();

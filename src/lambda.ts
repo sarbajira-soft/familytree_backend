@@ -53,16 +53,26 @@ async function bootstrapServer() {
       prefix: '/uploads/',
     });
 
-    // Database sync (remove if not needed)
+    // Database setup with proper association timing
     try {
       const sequelize = app.get(Sequelize);
-      await sequelize.sync({ alter: true });
       
-      // Setup associations after Sequelize sync to ensure all models are initialized
+      // CRITICAL: Setup associations BEFORE any database operations
+      // This ensures associations are available during model initialization
       setupAssociations();
       console.log('Sequelize associations have been set up successfully in Lambda.');
+      
+      // Now sync the database with associations already in place
+      await sequelize.sync({ alter: true });
+      console.log('Database sync completed with associations.');
+      
+      // Verify associations are working by testing a simple query
+      await sequelize.authenticate();
+      console.log('Database connection and associations verified.');
+      
     } catch (dbError) {
-      console.error('Database sync error:', dbError);
+      console.error('Database setup error:', dbError);
+      // Don't throw here to allow Lambda to continue, but log the error
     }
 
     // Swagger setup

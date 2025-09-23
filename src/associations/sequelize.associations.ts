@@ -10,7 +10,17 @@ import { Religion } from '../religion/model/religion.model';
 import { Language } from '../language/model/language.model';
 import { Gothram } from '../gothram/model/gothram.model';
 
+let associationsSetup = false;
+
 export function setupAssociations() {
+  // Prevent duplicate association setup
+  if (associationsSetup) {
+    console.log('Associations already set up, skipping...');
+    return;
+  }
+
+  console.log('Setting up Sequelize associations...');
+  
   // UserProfile
   User.hasOne(UserProfile, { foreignKey: 'userId', as: 'userProfile' });
   UserProfile.belongsTo(User, { foreignKey: 'userId', as: 'profileOwner' });
@@ -46,4 +56,14 @@ export function setupAssociations() {
   // FamilyTree ↔ User
   User.hasMany(FamilyTree, { foreignKey: 'userId', as: 'familyTreeEntries' });
   FamilyTree.belongsTo(User, { foreignKey: 'userId', as: 'familyTreeUser' });
+  
+  // Mark associations as set up
+  associationsSetup = true;
+  console.log('All Sequelize associations have been set up successfully.');
+}
+
+// Export function to reset associations flag (useful for testing)
+export function resetAssociations() {
+  associationsSetup = false;
+  console.log('Associations flag reset.');
 }

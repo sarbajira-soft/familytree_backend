@@ -29,9 +29,7 @@ export class FamilyMember extends Model<FamilyMember> {
   })
   approveStatus: 'pending' | 'approved' | 'rejected';
 
-  // @Default(false)
-  // @Column({ type: DataType.BOOLEAN, allowNull: false, field: 'isLinkedUsed' })
-  // isLinkedUsed: boolean;
+  @Default(false)
   @Column({ type: DataType.BOOLEAN, allowNull: false, field: 'isLinkedUsed' })
   isLinkedUsed: boolean;
 }

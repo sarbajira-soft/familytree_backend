@@ -26,16 +26,12 @@ export class Notification extends Model<Notification> {
   @Column({ type: DataType.TEXT, allowNull: false })
   message: string;
 
-  // @Column({
-  //   type: DataType.ENUM('pending', 'accepted', 'rejected'),
-  //   defaultValue: 'pending'
-  // })
-  // status: 'pending' | 'accepted' | 'rejected';
   @Column({
-    type: DataType.ENUM('pending', 'accepted', 'rejected')
+    type: DataType.ENUM('pending', 'accepted', 'rejected'),
+    defaultValue: 'pending'
   })
   status: 'pending' | 'accepted' | 'rejected';
-  
+
   @Column(DataType.INTEGER)
   senderId: number;
   

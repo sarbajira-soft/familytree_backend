@@ -343,11 +343,12 @@ export class NotificationService {
               { where: { id: notificationId }, transaction }
             );
             
-            // Mark the notification as read for the user who accepted it
+            // Mark the notification as read for ALL recipients since it's been processed
             await this.recipientModel.update(
               { isRead: true, readAt: new Date() },
-              { where: { notificationId, userId }, transaction }
+              { where: { notificationId }, transaction }
             );
+            console.log(`🔧 DEBUG: Marked notification ${notificationId} as read for all recipients`);
             
             await transaction.commit();
             console.log(`✅ Family association completed successfully`);
@@ -460,11 +461,12 @@ export class NotificationService {
             { where: { id: notificationId } }
           );
           
-          // Mark the notification as read for the user who rejected it
+          // Mark the notification as read for ALL recipients since it's been processed
           await this.recipientModel.update(
             { isRead: true, readAt: new Date() },
-            { where: { notificationId, userId } }
+            { where: { notificationId } }
           );
+          console.log(`🔧 DEBUG: Marked notification ${notificationId} as read for all recipients after rejection`);
             
           // Get family admins for both families
           const [senderFamilyAdmins, targetFamilyAdmins] = await Promise.all([

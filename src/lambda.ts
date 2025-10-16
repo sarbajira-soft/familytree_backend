@@ -11,6 +11,7 @@ import { setupSwagger } from './config/swagger';
 import { ValidationPipe } from '@nestjs/common';
 import { Sequelize } from 'sequelize-typescript';
 import { setupAssociations } from './associations/sequelize.associations';
+import { ensureSchemaUpdates } from './database/ensure-schema';
 
 let cachedServer: any;
 
@@ -47,7 +48,6 @@ async function bootstrapServer() {
       methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
       credentials: true,
     });
-
     // Static assets
     app.useStaticAssets(join(process.cwd(), 'uploads'), {
       prefix: '/uploads/',
@@ -56,19 +56,23 @@ async function bootstrapServer() {
     // Database setup with proper association timing
     try {
       const sequelize = app.get(Sequelize);
+      console.log('Starting Lambda database sync...');
       
-      // CRITICAL: Setup associations BEFORE any database operations
-      // This ensures associations are available during model initialization
+      // Use gentle sync - only create new tables, don't alter existing ones
+      await sequelize.sync({ force: false, alter: false });
+      console.log('Database sync completed successfully.');
+      
+      // Ensure all required columns exist using IF NOT EXISTS
+      // This is safe to run every time - idempotent!
+      await ensureSchemaUpdates(sequelize);
+      
+      // Setup associations after Sequelize sync to ensure all models are initialized
       setupAssociations();
       console.log('Sequelize associations have been set up successfully in Lambda.');
       
-      // Now sync the database with associations already in place
-      await sequelize.sync({ alter: true });
-      console.log('Database sync completed with associations.');
-      
-      // Verify associations are working by testing a simple query
+      // Verify database connection
       await sequelize.authenticate();
-      console.log('Database connection and associations verified.');
+      console.log('Database connection verified.');
       
     } catch (dbError) {
       console.error('Database setup error:', dbError);
@@ -77,8 +81,6 @@ async function bootstrapServer() {
 
     // Swagger setup
     setupSwagger(app, '/api');
-
-    await app.init();
 
     return serverlessExpress({ 
       app: expressApp,

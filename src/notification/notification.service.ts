@@ -87,6 +87,8 @@ export class NotificationService {
 
     @Optional()
     private readonly uploadService?: any,
+    
+    // Removed family service injection to avoid circular dependency
   ) {}
 
   async createNotification(dto: CreateNotificationDto, triggeredBy: number) {
@@ -314,7 +316,10 @@ export class NotificationService {
               // Continue with the rest of the process even if card creation fails
             }
 
-            // Update associated family codes bidirectionally
+            // Update associated family codes bidirectionally using family service
+            console.log(`🔧 DEBUG: Updating family associations bidirectionally`);
+            console.log(`🔧 DEBUG: Sender ${senderId} (${senderFamilyCode}) <-> Target ${targetUserId} (${targetFamilyCode})`);
+            
             const [updatedSender, updatedTarget] = await Promise.all([
               this.updateUserFamilyAssociations(
                 senderId,
@@ -327,6 +332,9 @@ export class NotificationService {
                 targetFamilyCode
               )
             ]);
+            
+            // Note: Family service association update will be handled separately
+            console.log(`✅ Association update completed via notification service`);
 
             console.log(`📊 Association results after card creation: sender=${updatedSender}, target=${updatedTarget}`);
             
@@ -816,13 +824,8 @@ export class NotificationService {
         return;
       }
       
-      // Detect relationship type based on gender, age, and generation
-      const relationshipType = this.detectRelationshipType(
-        senderUserProfile,
-        targetUserProfile
-      );
-      
-      console.log(`🔍 Detected relationship: ${relationshipType}`);
+      // Simplified logic: Always create spouse relationship for association requests
+      console.log(`🔍 Creating spouse relationship for association request`);
       
       // Get next available personIds for both family trees
       const [senderNextPersonId, targetNextPersonId] = await Promise.all([
@@ -830,54 +833,15 @@ export class NotificationService {
         this.getNextPersonId(targetFamilyCode, transaction)
       ]);
       
-      // Create cards based on relationship type
-      console.log(`🔧 DEBUG: Creating cards for relationship type: ${relationshipType}`);
-      
-      switch (relationshipType) {
-        case 'spouse':
-          console.log(`🔧 DEBUG: Creating spouse cards with personIds - sender: ${senderNextPersonId}, target: ${targetNextPersonId}`);
-          await this.createSpouseCards(
-            senderId, targetUserId,
-            senderFamilyCode, targetFamilyCode,
-            senderNextPersonId, targetNextPersonId,
-            senderUserProfile, targetUserProfile,
-            transaction
-          );
-          break;
-          
-        case 'parent-child':
-          console.log(`🔧 DEBUG: Creating parent-child cards`);
-          await this.createParentChildCards(
-            senderId, targetUserId,
-            senderFamilyCode, targetFamilyCode,
-            senderNextPersonId, targetNextPersonId,
-            senderUserProfile, targetUserProfile,
-            transaction
-          );
-          break;
-          
-        case 'sibling':
-          console.log(`🔧 DEBUG: Creating sibling cards`);
-          await this.createSiblingCards(
-            senderId, targetUserId,
-            senderFamilyCode, targetFamilyCode,
-            senderNextPersonId, targetNextPersonId,
-            senderUserProfile, targetUserProfile,
-            transaction
-          );
-          break;
-          
-        default:
-          console.log(`🔧 DEBUG: Creating general association cards`);
-          // Create general association cards
-          await this.createGeneralAssociationCards(
-            senderId, targetUserId,
-            senderFamilyCode, targetFamilyCode,
-            senderNextPersonId, targetNextPersonId,
-            senderUserProfile, targetUserProfile,
-            transaction
-          );
-      }
+      // Always create spouse cards for association requests
+      console.log(`🔧 DEBUG: Creating spouse cards with personIds - sender: ${senderNextPersonId}, target: ${targetNextPersonId}`);
+      await this.createSpouseCards(
+        senderId, targetUserId,
+        senderFamilyCode, targetFamilyCode,
+        senderNextPersonId, targetNextPersonId,
+        senderUserProfile, targetUserProfile,
+        transaction
+      );
       
       console.log(`✅ Dynamic family cards created successfully`);
       
@@ -900,54 +864,18 @@ export class NotificationService {
   }
 
   /**
-   * Detect relationship type between two users
+   * Simplified relationship detection - always returns spouse for association requests
+   * This ensures all association requests create spouse relationships for easy cross-family navigation
    */
   private detectRelationshipType(user1Profile: any, user2Profile: any): string {
-    const user1Gender = user1Profile?.gender;
-    const user2Gender = user2Profile?.gender;
+    console.log(`🔍 Simplified relationship detection - forcing spouse relationship`);
+    console.log(`   User 1: ${user1Profile?.gender || 'unknown'}`);
+    console.log(`   User 2: ${user2Profile?.gender || 'unknown'}`);
+    console.log(`🔍 All association requests will create spouse relationships for easy navigation`);
     
-    // Safely parse ages with proper validation
-    const user1Age = this.parseAge(user1Profile?.age);
-    const user2Age = this.parseAge(user2Profile?.age);
-    const ageDifference = Math.abs(user1Age - user2Age);
-    
-    console.log(`🔍 Relationship detection:`);
-    console.log(`   User 1: ${user1Gender}, age ${user1Age}`);
-    console.log(`   User 2: ${user2Gender}, age ${user2Age}`);
-    console.log(`   Age difference: ${ageDifference} years`);
-    
-    // Improved relationship detection logic
-    
-    // If significant age difference (>15 years), likely parent-child
-    if (ageDifference > 15) {
-      console.log(`🔍 Detected parent-child relationship (age difference: ${ageDifference} years)`);
-      return 'parent-child';
-    }
-    
-    // If opposite gender and similar age (within 10 years), likely spouse
-    if (user1Gender && user2Gender && 
-        user1Gender !== user2Gender && 
-        ageDifference <= 10) {
-      console.log(`🔍 Detected spouse relationship (opposite gender, age difference: ${ageDifference} years)`);
-      return 'spouse';
-    }
-    
-    // If same gender and similar age (within 8 years), likely sibling
-    if (user1Gender && user2Gender && 
-        user1Gender === user2Gender && 
-        ageDifference <= 8) {
-      console.log(`🔍 Detected sibling relationship (same gender, age difference: ${ageDifference} years)`);
-      return 'sibling';
-    }
-    
-    // If moderate age difference (8-15 years), could be sibling or cousin
-    if (ageDifference >= 8 && ageDifference <= 15) {
-      console.log(`🔍 Detected sibling/cousin relationship (moderate age difference: ${ageDifference} years)`);
-      return 'sibling';
-    }
-    
-    console.log(`🔍 No specific relationship detected, using general association`);
-    return 'general';
+    // Always return spouse for association requests
+    // This simplifies the logic and ensures cross-family navigation works consistently
+    return 'spouse';
   }
   
   /**

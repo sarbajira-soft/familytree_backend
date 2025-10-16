@@ -74,6 +74,18 @@ export class RelationshipPathService {
       }
     }
 
+    // ALSO CHECK associatedFamilyCodes from user profile
+    // This handles cases where associations were created via notification system
+    if (rootProfile.associatedFamilyCodes && Array.isArray(rootProfile.associatedFamilyCodes)) {
+      for (const familyCode of rootProfile.associatedFamilyCodes) {
+        if (familyCode && familyCode !== rootFamilyCode && !discoveredCodes.has(familyCode)) {
+          // Use a generic prefix for profile-based associations
+          result.push({ familyCode, prefix: 'Associated' });
+          discoveredCodes.add(familyCode);
+        }
+      }
+    }
+
     return result;
   }
 

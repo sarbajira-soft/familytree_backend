@@ -18,10 +18,7 @@ import { FamilyTree } from './model/family-tree.model';
 import { MailService } from '../utils/mail.service';
 import { RelationshipPathService } from './relationship-path.service';
 import { UploadService } from '../uploads/upload.service';
-import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
-import * as fs from 'fs';
-import * as path from 'path';
  
 import { CreateFamilyDto } from './dto/create-family.dto';
 import { CreateFamilyTreeDto, FamilyTreeMemberDto } from './dto/family-tree.dto';
@@ -118,35 +115,35 @@ export class FamilyService {
     const transaction = await this.sequelize.transaction();
     
     try {
-      // Update source family's associated codes
-      await this.userProfileModel.update(
-        {
-          associatedFamilyCodes: this.sequelize.fn(
-            'array_append',
-            this.sequelize.col('associatedFamilyCodes'),
-            targetCode
-          )
-        },
-        {
-          where: { familyCode: sourceCode },
-          transaction
-        }
-      );
+      // Update source family's associated codes (JSON array compatible)
+      await this.sequelize.query(`
+        UPDATE ft_user_profile 
+        SET "associatedFamilyCodes" = 
+          CASE 
+            WHEN "associatedFamilyCodes" IS NULL THEN '["${targetCode}"]'::jsonb
+            WHEN "associatedFamilyCodes" @> '"${targetCode}"'::jsonb THEN "associatedFamilyCodes"
+            ELSE "associatedFamilyCodes" || '"${targetCode}"'::jsonb
+          END
+        WHERE "familyCode" = :sourceCode
+      `, {
+        replacements: { sourceCode },
+        transaction
+      });
 
-      // Update target family's associated codes
-      await this.userProfileModel.update(
-        {
-          associatedFamilyCodes: this.sequelize.fn(
-            'array_append',
-            this.sequelize.col('associatedFamilyCodes'),
-            sourceCode
-          )
-        },
-        {
-          where: { familyCode: targetCode },
-          transaction
-        }
-      );
+      // Update target family's associated codes (JSON array compatible)
+      await this.sequelize.query(`
+        UPDATE ft_user_profile 
+        SET "associatedFamilyCodes" = 
+          CASE 
+            WHEN "associatedFamilyCodes" IS NULL THEN '["${sourceCode}"]'::jsonb
+            WHEN "associatedFamilyCodes" @> '"${sourceCode}"'::jsonb THEN "associatedFamilyCodes"
+            ELSE "associatedFamilyCodes" || '"${sourceCode}"'::jsonb
+          END
+        WHERE "familyCode" = :targetCode
+      `, {
+        replacements: { targetCode },
+        transaction
+      });
 
       await transaction.commit();
       return { success: true };
@@ -434,6 +431,9 @@ export class FamilyService {
 
   // ✅ FIXED METHOD: createFamilyTree with sync logic AND existing user profile updates
   async createFamilyTree(dto: CreateFamilyTreeDto) {
+    const startTime = Date.now();
+    console.log(`🚀 Starting createFamilyTree for ${dto.familyCode} with ${dto.members?.length || 0} members`);
+    
     const { familyCode, members } = dto;
 
     // Check if family exists
@@ -442,7 +442,61 @@ export class FamilyService {
       throw new NotFoundException('Family not found');
     }
 
-    // DO NOT delete existing tree; we will update existing rows and add new ones
+    // 🚀 CRITICAL FIX: Delete family_tree entries not in the new tree
+    // Get all personIds from the payload
+    const personIdsInPayload = members.map(m => m.id);
+    console.log('📋 PersonIds in payload:', personIdsInPayload);
+
+    // Delete entries where personId is NOT in the payload
+    const deletedEntries = await this.familyTreeModel.destroy({
+      where: {
+        familyCode,
+        personId: { [Op.notIn]: personIdsInPayload }
+      }
+    });
+    console.log(`🗑️ Deleted ${deletedEntries} family_tree entries not in payload`);
+
+    // 🚀 CRITICAL: Clean up orphaned relationships
+    // After deleting entries, we need to remove references to deleted personIds
+    // from the remaining entries' relationship fields
+    if (deletedEntries > 0) {
+      // Get all remaining entries
+      const remainingEntries = await this.familyTreeModel.findAll({
+        where: { familyCode }
+      });
+
+      // Update each entry to remove references to deleted personIds
+      for (const entry of remainingEntries) {
+        const cleanArray = (arr: any) => {
+          if (!arr || !Array.isArray(arr)) return [];
+          // Handle both string arrays ["2", "3"] and number arrays [2, 3]
+          return arr
+            .map(id => typeof id === 'string' ? parseInt(id) : id)
+            .filter(id => !isNaN(id) && personIdsInPayload.includes(id));
+        };
+
+        const cleanedParents = cleanArray(entry.parents);
+        const cleanedChildren = cleanArray(entry.children);
+        const cleanedSpouses = cleanArray(entry.spouses);
+        const cleanedSiblings = cleanArray(entry.siblings);
+
+        // Check if any array changed
+        const parentsChanged = JSON.stringify(cleanedParents) !== JSON.stringify(entry.parents);
+        const childrenChanged = JSON.stringify(cleanedChildren) !== JSON.stringify(entry.children);
+        const spousesChanged = JSON.stringify(cleanedSpouses) !== JSON.stringify(entry.spouses);
+        const siblingsChanged = JSON.stringify(cleanedSiblings) !== JSON.stringify(entry.siblings);
+
+        if (parentsChanged || childrenChanged || spousesChanged || siblingsChanged) {
+          await entry.update({
+            parents: cleanedParents,
+            children: cleanedChildren,
+            spouses: cleanedSpouses,
+            siblings: cleanedSiblings
+          });
+        }
+      }
+      console.log(`🧹 Cleaned up orphaned relationships in remaining entries`);
+    }
 
     // ✅ SYNC FIX: Sync family_member table with tree data
     // Get all member IDs that should remain (existing members in the tree)
@@ -460,7 +514,7 @@ export class FamilyService {
           memberId: { [Op.notIn]: memberIdsInTree }
         }
       });
-      console.log(`✅ Removed ${deletedMembers} members from family_member table who are not in tree`);
+      console.log(`✅ Removed ${deletedMembers} family members not in new tree`);
     } else {
       // If no existing members in tree, remove all members except creator
       const familyCreator = await this.familyModel.findOne({ 
@@ -481,30 +535,146 @@ export class FamilyService {
 
     const createdMembers = [];
 
-    for (const member of members) {
+    // 🚀 PERFORMANCE OPTIMIZATION: Fetch all data in bulk queries
+    const memberIds = members.filter(m => m.memberId).map(m => m.memberId);
+    
+    // Fetch all existing entries in ONE query
+    const existingEntries = await this.familyTreeModel.findAll({
+      where: {
+        familyCode,
+        personId: members.map(m => m.id)
+      }
+    });
+
+    // Fetch all existing users in ONE query
+    const existingUsers = memberIds.length > 0 
+      ? await this.userModel.findAll({ where: { id: memberIds } })
+      : [];
+
+    // Fetch all existing profiles in ONE query
+    const existingProfiles = memberIds.length > 0
+      ? await this.userProfileModel.findAll({ where: { userId: memberIds } })
+      : [];
+
+    // Fetch all existing family members in ONE query
+    const existingFamilyMembers = memberIds.length > 0
+      ? await this.familyMemberModel.findAll({ 
+          where: { memberId: memberIds, familyCode } 
+        })
+      : [];
+
+    // Create Maps for O(1) lookup
+    const existingEntriesMap = new Map(
+      existingEntries.map(entry => [entry.personId, entry])
+    );
+    const existingUsersMap = new Map(
+      existingUsers.map(user => [user.id, user])
+    );
+    const existingProfilesMap = new Map(
+      existingProfiles.map(profile => [profile.userId, profile])
+    );
+    const existingFamilyMembersMap = new Map(
+      existingFamilyMembers.map(fm => [fm.memberId, fm])
+    );
+
+    console.log(`📊 Performance stats:
+      - Family tree entries: ${existingEntries.length}/${members.length}
+      - Existing users: ${existingUsers.length}
+      - Existing profiles: ${existingProfiles.length}
+      - Existing family members: ${existingFamilyMembers.length}
+    `);
+
+    // 🚀 PERFORMANCE: Process all images in parallel BEFORE the loop
+    console.log('🖼️ Processing images in parallel...');
+    const imageStartTime = Date.now();
+    
+    const imageProcessingPromises = members.map(async (member, index) => {
+      if (member.img && member.img.startsWith('data:image/')) {
+        const uploadPath = process.env.PROFILE_PHOTO_UPLOAD_PATH || './uploads/profile';
+        try {
+          const processedImage = await saveBase64Image(member.img, uploadPath);
+          return { index, image: processedImage };
+        } catch (err) {
+          console.error(`Error processing image for member ${index}:`, err);
+          return { index, image: null };
+        }
+      }
+      return { index, image: member.img }; // Already a URL or null
+    });
+
+    const processedImages = await Promise.all(imageProcessingPromises);
+    const imageMap = new Map(processedImages.map(item => [item.index, item.image]));
+    
+    console.log(`✅ Processed ${processedImages.length} images in ${Date.now() - imageStartTime}ms`);
+
+    // Prepare bulk operations
+    const entriesToUpdate = [];
+    const entriesToCreate = [];
+    const profilesToUpdate = [];
+    const profilesToCreate = [];
+    const usersToCreate = [];
+    const familyMembersToCreate = [];
+    const newUserIndexMap = new Map(); // Track which members need new users
+
+    // 🚀 STEP 1: Identify members needing new users and prepare data
+    for (let memberIndex = 0; memberIndex < members.length; memberIndex++) {
+      const member = members[memberIndex];
       let userId = member.memberId; // Use memberId as userId
 
-      // ✅ NEW FIX: Check if user exists and update their profile if they do
+      // Check if user exists
       if (userId) {
-        // Try to find existing user
-        const existingUser = await this.userModel.findByPk(userId);
-        if (existingUser) {
-          console.log(`✅ Updating existing user profile for userId: ${userId}`);
-          
-          // Handle profile image if provided
-          let profileImage = null;
-          if (member.img && member.img.startsWith('data:image/')) {
-            const uploadPath = process.env.PROFILE_PHOTO_UPLOAD_PATH || './uploads/profile';
-            profileImage = await saveBase64Image(member.img, uploadPath);
-          } else if (member.img && typeof member.img === 'string') {
-            // If it's already a URL or filename, use as is
-            profileImage = member.img;
-          }
+        const existingUser = existingUsersMap.get(userId);
+        if (!existingUser) {
+          userId = null; // User doesn't exist
+        }
+      }
 
-          // Update existing user profile
-          const userProfile = await this.userProfileModel.findOne({ 
-            where: { userId: userId } 
-          });
+      // If no userId, prepare for bulk user creation
+      if (!userId) {
+        const tempEmail = `familytree_${Date.now()}_${memberIndex}_${Math.floor(Math.random() * 10000)}@example.com`;
+        const tempMobile = `99999${Math.floor(100000 + Math.random() * 899999)}`;
+        
+        usersToCreate.push({
+          email: tempEmail,
+          mobile: tempMobile,
+          status: 1,
+          role: 1,
+        });
+        
+        newUserIndexMap.set(memberIndex, usersToCreate.length - 1); // Track position
+      }
+    }
+
+    // 🚀 STEP 2: Bulk create all new users at once
+    let createdUsers = [];
+    if (usersToCreate.length > 0) {
+      const userStartTime = Date.now();
+      console.log(`👥 Creating ${usersToCreate.length} new users in bulk...`);
+      createdUsers = await this.userModel.bulkCreate(usersToCreate);
+      console.log(`✅ Created ${createdUsers.length} users in ${Date.now() - userStartTime}ms`);
+    }
+
+    // 🚀 STEP 3: Process all members with user IDs now available
+    for (let memberIndex = 0; memberIndex < members.length; memberIndex++) {
+      const member = members[memberIndex];
+      let userId = member.memberId; // Use memberId as userId
+
+      // Check if this member got a new user created
+      const newUserIndex = newUserIndexMap.get(memberIndex);
+      if (newUserIndex !== undefined) {
+        userId = createdUsers[newUserIndex].id;
+      }
+
+      // 🚀 PERFORMANCE: Use Map lookup instead of database query
+      if (userId && member.memberId) {
+        const existingUser = existingUsersMap.get(userId);
+        if (existingUser) {
+          
+          // 🚀 PERFORMANCE: Use pre-processed image from Map
+          const profileImage = imageMap.get(memberIndex);
+
+          // 🚀 PERFORMANCE: Use Map lookup instead of database query
+          const userProfile = existingProfilesMap.get(userId);
           
           if (userProfile) {
             const { firstName, lastName } = this.splitName(member.name);
@@ -520,12 +690,15 @@ export class FamilyService {
               updateData.profile = profileImage;
             }
             
-            await userProfile.update(updateData);
-            console.log(`✅ Updated profile for user ${userId}: name=${member.name}, gender=${member.gender}, age=${member.age}`);
+            // Prepare for bulk update
+            profilesToUpdate.push({
+              id: userProfile.id,
+              ...updateData
+            });
           } else {
-            // Create profile if it doesn't exist
+            // Prepare profile for bulk create
             const { firstName, lastName } = this.splitName(member.name);
-            await this.userProfileModel.create({
+            profilesToCreate.push({
               userId: userId,
               firstName: firstName,
               lastName: lastName,
@@ -534,118 +707,97 @@ export class FamilyService {
               profile: profileImage,
               familyCode: familyCode,
             });
-            console.log(`✅ Created new profile for existing user ${userId}`);
           }
 
-          // Ensure user is in family_member table
-          const existingMember = await this.familyMemberModel.findOne({
-            where: { memberId: userId, familyCode }
-          });
+          // 🚀 PERFORMANCE: Use Map lookup for family member check
+          const existingMember = existingFamilyMembersMap.get(userId);
           
           if (!existingMember) {
-            await this.familyMemberModel.create({
+            familyMembersToCreate.push({
               memberId: userId,
               familyCode: familyCode,
               creatorId: null,
               approveStatus: 'approved'
             });
-            console.log(`✅ Added existing user ${userId} to family_member table`);
           }
-        } else {
-          // User doesn't exist, set userId to null to create new user
-          userId = null;
         }
       }
 
-      // If user doesn't exist (no memberId or user not found), create new user and profile
-      if (!userId) {
-        // Generate a temporary email
-        const tempEmail = `familytree_${Date.now()}_${Math.floor(Math.random() * 10000)}@example.com`;
-        // Generate a temporary mobile number
-        const tempMobile = `99999${Math.floor(100000 + Math.random() * 899999)}`;
-        // Create new user
-        let newUser;
-        try {
-          newUser = await this.userModel.create({
-            email: tempEmail,
-            mobile: tempMobile,
-            status: 1, // Active
-            role: 1, // Member
-          });
-        } catch (err) {
-          console.error('Error creating User:', err, { email: tempEmail, mobile: tempMobile });
-          throw err;
-        }
+      // For new users, prepare profiles and family members for bulk creation
+      if (userId && newUserIndexMap.has(memberIndex)) {
+        const profileImage = imageMap.get(memberIndex);
+        const { firstName, lastName } = this.splitName(member.name);
+        
+        profilesToCreate.push({
+          userId: userId,
+          firstName: firstName,
+          lastName: lastName,
+          gender: member.gender,
+          age: typeof member.age === 'string' ? parseInt(member.age) : member.age,
+          profile: profileImage,
+          familyCode: familyCode,
+        });
 
-        // Handle profile image if provided
-        let profileImage = null;
-        if (member.img && member.img.startsWith('data:image/')) {
-          const uploadPath = process.env.PROFILE_PHOTO_UPLOAD_PATH || './uploads/profile';
-          profileImage = await saveBase64Image(member.img, uploadPath);
-        } else if (member.img) {
-          // If it's already a URL, extract filename or use as is
-          profileImage = member.img;
-        }
-
-        // Create user profile
-        try {
-          const { firstName, lastName } = this.splitName(member.name);
-          await this.userProfileModel.create({
-            userId: newUser.id,
-            firstName: firstName,
-            lastName: lastName,
-            gender: member.gender,
-            age: typeof member.age === 'string' ? parseInt(member.age) : member.age,
-            profile: profileImage, // Use extracted filename
-            familyCode: familyCode,
-          });
-        } catch (err) {
-          console.error('Error creating UserProfile:', err, { userId: newUser.id, firstName: member.name, gender: member.gender, age: member.age, profile: profileImage, familyCode });
-          throw err;
-        }
-
-        // ✅ SYNC FIX: Add new user to family member table as approved member
-        try {
-          await this.familyMemberModel.create({
-            memberId: newUser.id,
-            familyCode: familyCode,
-            creatorId: null,
-            approveStatus: 'approved'
-          });
-          console.log(`✅ Added new user ${newUser.id} to family_member table`);
-        } catch (err) {
-          console.error('Error creating FamilyMember:', err, { memberId: newUser.id, familyCode });
-          throw err;
-        }
-
-        userId = newUser.id;
+        familyMembersToCreate.push({
+          memberId: userId,
+          familyCode: familyCode,
+          creatorId: null,
+          approveStatus: 'approved'
+        });
       }
 
-      //Create family tree entry
+      // 🚀 PERFORMANCE: Check if entry exists using Map (O(1) lookup)
+      const existingEntry = existingEntriesMap.get(member.id);
+      
+      const entryData = {
+        familyCode,
+        userId,
+        personId: member.id,
+        generation: member.generation,
+        lifeStatus: member.lifeStatus ?? 'living',
+        parents: Array.isArray(member.parents) ? member.parents : Array.from(member.parents || []).map(Number),
+        children: Array.isArray(member.children) ? member.children : Array.from(member.children || []).map(Number),
+        spouses: Array.isArray(member.spouses) ? member.spouses : Array.from(member.spouses || []).map(Number),
+        siblings: Array.isArray(member.siblings) ? member.siblings : Array.from(member.siblings || []).map(Number),
+      };
+
       try {
-        const [familyTreeEntry] = await this.familyTreeModel.upsert({
-          familyCode,
-          userId,
-          personId: member.id, // Store the position ID (person_X_id)
-          generation: member.generation,
-          lifeStatus: member.lifeStatus ?? 'living',
-          parents: Array.isArray(member.parents) ? member.parents : Array.from(member.parents || []).map(Number),
-          children: Array.isArray(member.children) ? member.children : Array.from(member.children || []).map(Number),
-          spouses: Array.isArray(member.spouses) ? member.spouses : Array.from(member.spouses || []).map(Number),
-          siblings: Array.isArray(member.siblings) ? member.siblings : Array.from(member.siblings || []).map(Number),
-        });
-        createdMembers.push({
-          id: familyTreeEntry.id,
-          userId,
-          personId: member.id, // Include position ID in response
-          name: member.name,
-          generation: member.generation,
-          parents: familyTreeEntry.parents,
-          children: familyTreeEntry.children,
-          spouses: familyTreeEntry.spouses,
-          siblings: familyTreeEntry.siblings,
-          lifeStatus: familyTreeEntry.lifeStatus,
-        });
+        if (existingEntry) {
+          // Prepare for bulk update
+          entriesToUpdate.push({
+            id: existingEntry.id,
+            ...entryData
+          });
+          
+          createdMembers.push({
+            id: existingEntry.id,
+            userId,
+            personId: member.id,
+            name: member.name,
+            generation: member.generation,
+            parents: entryData.parents,
+            children: entryData.children,
+            spouses: entryData.spouses,
+            siblings: entryData.siblings,
+            lifeStatus: entryData.lifeStatus,
+          });
+        } else {
+          // Prepare for bulk create
+          entriesToCreate.push(entryData);
+          
+          createdMembers.push({
+            id: null, // Will be assigned after bulk create
+            userId,
+            personId: member.id,
+            name: member.name,
+            generation: member.generation,
+            parents: entryData.parents,
+            children: entryData.children,
+            spouses: entryData.spouses,
+            siblings: entryData.siblings,
+            lifeStatus: entryData.lifeStatus,
+          });
+        }
       } catch (err) {
         console.error('Error creating FamilyTree entry:', err, {
           familyCode,
@@ -654,13 +806,88 @@ export class FamilyService {
           generation: member.generation,
           parents: member.parents,
           children: member.children,
-          spouses: member.spouses,
-          siblings: member.siblings,
         });
         throw err;
       }
       console.log(member);
     }
+
+    // 🚀 BULK OPERATIONS: Execute all updates and creates in batches
+    const totalStartTime = Date.now();
+    console.log(`📊 Bulk operations summary:
+      - Family tree entries: ${entriesToUpdate.length} updates, ${entriesToCreate.length} creates
+      - User profiles: ${profilesToUpdate.length} updates, ${profilesToCreate.length} creates
+      - Family members: ${familyMembersToCreate.length} creates
+    `);
+    
+    // Bulk update user profiles
+    if (profilesToUpdate.length > 0) {
+      const startTime = Date.now();
+      await Promise.all(
+        profilesToUpdate.map(profile =>
+          this.userProfileModel.update(
+            {
+              firstName: profile.firstName,
+              lastName: profile.lastName,
+              gender: profile.gender,
+              age: profile.age,
+              ...(profile.profile && { profile: profile.profile })
+            },
+            {
+              where: { id: profile.id }
+            }
+          )
+        )
+      );
+      console.log(`✅ Bulk updated ${profilesToUpdate.length} profiles in ${Date.now() - startTime}ms`);
+    }
+
+    // Bulk create user profiles
+    if (profilesToCreate.length > 0) {
+      const startTime = Date.now();
+      await this.userProfileModel.bulkCreate(profilesToCreate);
+      console.log(`✅ Bulk created ${profilesToCreate.length} profiles in ${Date.now() - startTime}ms`);
+    }
+
+    // Bulk create family members
+    if (familyMembersToCreate.length > 0) {
+      const startTime = Date.now();
+      await this.familyMemberModel.bulkCreate(familyMembersToCreate);
+      console.log(`✅ Bulk created ${familyMembersToCreate.length} family members in ${Date.now() - startTime}ms`);
+    }
+    
+    // Bulk update family tree entries
+    if (entriesToUpdate.length > 0) {
+      const startTime = Date.now();
+      await Promise.all(
+        entriesToUpdate.map(entry =>
+          this.familyTreeModel.update(
+            {
+              userId: entry.userId,
+              generation: entry.generation,
+              lifeStatus: entry.lifeStatus,
+              parents: entry.parents,
+              children: entry.children,
+              spouses: entry.spouses,
+              siblings: entry.siblings,
+            },
+            {
+              where: { id: entry.id }
+            }
+          )
+        )
+      );
+      console.log(`✅ Bulk updated ${entriesToUpdate.length} family tree entries in ${Date.now() - startTime}ms`);
+    }
+
+    // Bulk create family tree entries
+    if (entriesToCreate.length > 0) {
+      const startTime = Date.now();
+      await this.familyTreeModel.bulkCreate(entriesToCreate);
+      console.log(`✅ Bulk created ${entriesToCreate.length} family tree entries in ${Date.now() - startTime}ms`);
+    }
+
+    console.log(`⚡ Total bulk operations completed in ${Date.now() - totalStartTime}ms`);
 
     // NEW: Create relationship edges for all relationships in the family tree
     await this.createRelationshipEdgesFromFamilyTree(members, familyCode);
@@ -688,11 +915,18 @@ export class FamilyService {
       }
     }
 
+    const totalTime = Date.now() - startTime;
     console.log(`✅ Family tree sync completed successfully! Tree entries: ${createdMembers.length}`);
+    console.log(`⚡ Total operation time: ${totalTime}ms (${(totalTime/1000).toFixed(2)}s)`);
 
     return {
       message: 'Family tree created successfully',
       data: createdMembers,
+      performanceStats: {
+        totalTimeMs: totalTime,
+        membersProcessed: members.length,
+        avgTimePerMember: (totalTime / members.length).toFixed(2) + 'ms'
+      }
     };
   }
 
@@ -818,7 +1052,8 @@ export class FamilyService {
           children: [],
           spouses: [],
           siblings: [],
-          img: img
+          img: img,
+          familyCode: userProfile?.familyCode || familyCode // Add familyCode field
         };
       });
 
@@ -832,15 +1067,27 @@ export class FamilyService {
     const baseUrl = process.env.BASE_URL || '';
     const profilePhotoPath = process.env.PROFILE_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
 
-    console.log(`🔧 DEBUG: Family tree entries for ${familyCode}:`, familyTree.length);
-    familyTree.forEach((entry, index) => {
-      console.log(`🔧 DEBUG: Entry ${index}: personId=${entry.personId}, userId=${entry.userId}, generation=${entry.generation}`);
-    });
 
-    const people = await Promise.all(familyTree.map(async entry => {
+    // FIXED: Remove duplicate entries from database result
+    const uniqueFamilyTree = familyTree.reduce((unique, entry) => {
+      const existingIndex = unique.findIndex(u => u.personId === entry.personId && u.userId === entry.userId);
+      if (existingIndex === -1) {
+        unique.push(entry);
+      } else {
+        // Merge relationship data from duplicates
+        const existing = unique[existingIndex];
+        existing.parents = [...new Set([...(existing.parents || []), ...(entry.parents || [])])];
+        existing.children = [...new Set([...(existing.children || []), ...(entry.children || [])])];
+        existing.spouses = [...new Set([...(existing.spouses || []), ...(entry.spouses || [])])];
+        existing.siblings = [...new Set([...(existing.siblings || []), ...(entry.siblings || [])])];
+      }
+      return unique;
+    }, []);
+
+
+    const people = await Promise.all(uniqueFamilyTree.map(async entry => {
       // If userId is undefined/null, skip this person or handle gracefully
       if (!entry.userId) {
-        console.log(`⚠️ DEBUG: Skipping entry with null userId - personId: ${entry.personId}`);
         return {
           id: entry.personId,
           memberId: null,
@@ -853,7 +1100,7 @@ export class FamilyService {
           spouses: entry.spouses || [],
           siblings: entry.siblings || [],
           img: null,
-          associatedFamilyCodes: [],
+          familyCode: entry.familyCode || familyCode // Add familyCode field
         };
       }
       const userProfile = entry.user?.userProfile;
@@ -865,11 +1112,6 @@ export class FamilyService {
         } else {
           img = `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`;
         }
-      }
-      // Get associatedFamilyCodes if available
-      let associatedFamilyCodes = [];
-      if (userProfile && userProfile.associatedFamilyCodes) {
-        associatedFamilyCodes = userProfile.associatedFamilyCodes;
       }
       return {
         id: entry.personId, // Use personId as id
@@ -884,9 +1126,12 @@ export class FamilyService {
         spouses: entry.spouses || [],
         siblings: entry.siblings || [],
         img: img,
-        associatedFamilyCodes: associatedFamilyCodes,
+        familyCode: userProfile?.familyCode || entry.familyCode || familyCode // Add familyCode field
       };
     }));
+
+    // Get all valid personIds for cleanup
+    const validPersonIds = people.map(p => p.id);
 
     // Fix ID reference issues first (convert memberIds to person ids in relationships)
     const memberIdToPersonIdMap = new Map();
@@ -897,24 +1142,30 @@ export class FamilyService {
     });
 
     // Fix relationship arrays to use person ids instead of member ids
+    // AND remove references to non-existent persons
+    const processedSpousePairs = new Set<string>();
+    
     people.forEach(person => {
-      person.parents = (person.parents || []).map(parentRef => 
-        memberIdToPersonIdMap.get(parentRef) || parentRef
-      );
-      person.children = (person.children || []).map(childRef => 
-        memberIdToPersonIdMap.get(childRef) || childRef
-      );
-      person.spouses = (person.spouses || []).map(spouseRef => 
-        memberIdToPersonIdMap.get(spouseRef) || spouseRef
-      );
-      person.siblings = (person.siblings || []).map(siblingRef => 
-        memberIdToPersonIdMap.get(siblingRef) || siblingRef
-      );
-    });
+      const cleanArray = (arr: any[]) => {
+        if (!arr || !Array.isArray(arr)) return [];
+        // Convert to numbers and filter out invalid IDs, remove duplicates
+        const cleanedIds = arr
+          .map(ref => {
+            // Try to map memberId to personId first
+            const personId = memberIdToPersonIdMap.get(ref) || ref;
+            return typeof personId === 'string' ? parseInt(personId) : personId;
+          })
+          .filter(id => !isNaN(id) && validPersonIds.includes(id));
+        
+        // FIXED: Remove duplicates using Set
+        return [...new Set(cleanedIds)];
+      };
 
-    // Ensure bidirectional relationships
-    people.forEach(person => {
-      // Add missing child relationships
+      person.parents = cleanArray(person.parents);
+      person.children = cleanArray(person.children);
+      person.spouses = cleanArray(person.spouses);
+      person.siblings = cleanArray(person.siblings);
+      // FIXED: Ensure bidirectional parent-child relationships
       person.parents.forEach(parentId => {
         const parent = people.find(p => p.id === parentId);
         if (parent && !parent.children.includes(person.id)) {
@@ -922,7 +1173,67 @@ export class FamilyService {
         }
       });
       
-      // Add missing parent relationships
+      person.children.forEach(childId => {
+        const child = people.find(p => p.id === childId);
+        if (child && !child.parents.includes(person.id)) {
+          child.parents.push(person.id);
+        }
+      });
+
+      // Ensure bidirectional spouse relationships
+      person.spouses.forEach(spouseId => {
+        const spouse = people.find(p => p.id === spouseId);
+        if (spouse && !spouse.spouses.includes(person.id)) {
+          spouse.spouses.push(person.id);
+        }
+      });
+
+      // FIXED: Ensure shared children between spouses - PREVENT DUPLICATE PROCESSING
+      person.spouses.forEach(spouseId => {
+        const spouse = people.find(p => p.id === spouseId);
+        if (spouse) {
+          // Create unique pair key to prevent duplicate processing
+          const pairKey = [person.id, spouseId].sort().join('-');
+          
+          if (!processedSpousePairs.has(pairKey)) {
+            processedSpousePairs.add(pairKey);
+            
+            // Collect all unique children from both parents
+            const personChildrenSet = new Set(person.children.map(id => Number(id)));
+            const spouseChildrenSet = new Set(spouse.children.map(id => Number(id)));
+            const allChildrenSet = new Set([...personChildrenSet, ...spouseChildrenSet]);
+            
+            // Update both parents with clean arrays
+            person.children = Array.from(allChildrenSet);
+            spouse.children = Array.from(allChildrenSet);
+            
+            
+            // Ensure each child has both parents
+            allChildrenSet.forEach(childId => {
+              const child = people.find(p => p.id === childId);
+              if (child) {
+                const childParentsSet = new Set(child.parents.map(id => Number(id)));
+                childParentsSet.add(Number(person.id));
+                childParentsSet.add(Number(spouseId));
+                child.parents = Array.from(childParentsSet);
+              }
+            });
+          }
+        }
+      });
+    });
+
+    // Second pass to ensure all bidirectional relationships
+    people.forEach(person => {
+      // Fix spouse relationships in second pass
+      person.spouses.forEach(spouseId => {
+        const spouse = people.find(p => p.id === spouseId);
+        if (spouse && !spouse.spouses.includes(person.id)) {
+          spouse.spouses.push(person.id);
+        }
+      });
+      
+      // Fix parent-child relationships in second pass
       person.children.forEach(childId => {
         const child = people.find(p => p.id === childId);
         if (child && !child.parents.includes(person.id)) {
@@ -949,15 +1260,37 @@ export class FamilyService {
     // Convert back to array format with corrected generations
     const correctedPeople = Array.from(allPeople.values()).map(person => ({
       ...person,
-      parents: Array.from(person.parents),
-      children: Array.from(person.children),
-      spouses: Array.from(person.spouses),
-      siblings: Array.from(person.siblings)
+      // FIXED: Final duplicate cleanup using Set
+      parents: [...new Set(Array.from(person.parents))],
+      children: [...new Set(Array.from(person.children))],
+      spouses: [...new Set(Array.from(person.spouses))],
+      siblings: [...new Set(Array.from(person.siblings))]
     }));
+
+    // FINAL DEDUPLICATION: Remove duplicate people by ID
+    const finalPeople = correctedPeople.reduce((unique, person) => {
+      const existingIndex = unique.findIndex(u => u.id === person.id);
+      if (existingIndex === -1) {
+        unique.push(person);
+      } else {
+        // Merge relationships from duplicates
+        const existing = unique[existingIndex];
+        existing.parents = [...new Set([...existing.parents, ...person.parents])];
+        existing.children = [...new Set([...existing.children, ...person.children])];
+        existing.spouses = [...new Set([...existing.spouses, ...person.spouses])];
+        existing.siblings = [...new Set([...existing.siblings, ...person.siblings])];
+      }
+      return unique;
+    }, []);
+
+
+    // PERFORMANCE: Remove backend calculation - let frontend handle it
+    // Frontend RelationshipCalculator is faster and more efficient
+    // Backend only ensures data integrity
 
     return {
       message: 'Family tree retrieved successfully',
-      people: correctedPeople
+      people: finalPeople
     };
   }
 
@@ -1208,7 +1541,6 @@ async getAssociatedFamilyPrefixes(userId: number) {
    * Fix generation inconsistencies in family tree data
    */
   private fixGenerationConsistency(allPeople: Map<any, any>): void {
-    console.log('🔧 Fixing generation inconsistencies...');
     
     // Convert to array for easier processing
     const people = Array.from(allPeople.values());
@@ -1245,7 +1577,6 @@ async getAssociatedFamilyPrefixes(userId: number) {
       rootPerson.generation = 0;
       queue.push({ person: rootPerson, generation: 0 });
       visited.add(rootPerson.id);
-      console.log(`🔧 Set root person ${rootPerson.name} to generation 0`);
     });
     
     // BFS to assign generations
@@ -1286,13 +1617,11 @@ async getAssociatedFamilyPrefixes(userId: number) {
             sibling.generation = generation;
             queue.push({ person: sibling, generation });
             visited.add(sibling.id);
-            console.log(`🔧 Set sibling ${sibling.name} to generation ${generation}`);
           }
         });
       }
     }
     
-    console.log('🔧 Generation consistency fix completed');
   }
 
   /**

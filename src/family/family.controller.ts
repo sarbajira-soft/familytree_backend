@@ -350,7 +350,7 @@ export class FamilyController {
         targetUserId: targetUserId,
         targetFamilyCode: targetProfile.familyCode,
         adminUserIds,
-        requestType: 'family_association_request'
+        requestType: 'family_association'
       },
       userIds: recipientIds,
     } as const;
@@ -466,4 +466,14 @@ export class FamilyController {
       throw new InternalServerErrorException('Failed to process association rejection');
     }
   }
+
+  // ==================== NEW ASSOCIATION ENDPOINTS (TODO: Implement service methods) ====================
+  
+  // TODO: Implement these endpoints after creating the service methods
+  // @UseGuards(JwtAuthGuard)
+  // @Post('associations/request')
+  // async sendAssociationRequest(@Body() dto: any, @Req() req: any) {
+  //   const requesterId = req.user.userId;
+  //   return this.familyService.sendAssociationRequest(requesterId, dto.targetUserId, dto.message);
+  // }
 }

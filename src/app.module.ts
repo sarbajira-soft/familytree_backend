@@ -29,13 +29,13 @@ import { InviteModule } from './invite/invite.module';
       password: process.env.DB_PASS,
       database: process.env.DB_NAME,
       autoLoadModels: true,
-      synchronize: true,
-      sync: { alter: true }, // ← Force alter table to add missing columns
+      synchronize: false, // Disable auto-sync, we'll handle it in bootstrap
+      // sync: { alter: true }, // Moved to bootstrap.ts
       logging: process.env.NODE_ENV === 'development' ? console.log : false, // ← Enable logging in dev to see slow queries
       pool: {
-        max: 10, // Maximum number of connections
+        max: 5, // Reduce max connections for stability
         min: 0,  // Minimum number of connections
-        acquire: 30000, // Maximum time (ms) to get connection
+        acquire: 60000, // Increase to 60 seconds
         idle: 10000,    // Maximum time (ms) connection can be idle
       },
       dialectOptions: {
@@ -43,8 +43,8 @@ import { InviteModule } from './invite/invite.module';
           require: true,
           rejectUnauthorized: false,
         },
-        connectTimeout: 20000, // 20 seconds connection timeout
-        requestTimeout: 30000, // 30 seconds request timeout
+        connectTimeout: 60000, // Increase to 60 seconds
+        requestTimeout: 60000, // Increase to 60 seconds
       },
       retry: {
         max: 3, // Maximum retry attempts

@@ -8,6 +8,7 @@ import * as bodyParser from 'body-parser';
 import { setupSwagger } from './config/swagger';
 import { Sequelize } from 'sequelize-typescript';
 import { setupAssociations } from './associations/sequelize.associations';
+import { ensureSchemaUpdates } from './database/ensure-schema';
 import * as express from 'express';
 
 export async function bootstrapApp(app: NestExpressApplication) {
@@ -40,12 +41,25 @@ export async function bootstrapApp(app: NestExpressApplication) {
     prefix: '/uploads/',
   });
 
-  const sequelize = app.get(Sequelize);
-  await sequelize.sync({ force: false, alter: false });
+  try {
+    const sequelize = app.get(Sequelize);
+    console.log('Starting database sync...');
+    
+    // Use gentle sync - only create new tables, don't alter existing ones
+    await sequelize.sync({ force: false, alter: false });
+    console.log('Database sync completed successfully.');
 
-  // Setup associations after Sequelize sync to ensure all models are initialized
-  setupAssociations();
-  console.log('Sequelize associations have been set up successfully.');
+    // Ensure all required columns exist using IF NOT EXISTS
+    // This is safe to run every time - idempotent!
+    await ensureSchemaUpdates(sequelize);
+
+    // Setup associations after Sequelize sync to ensure all models are initialized
+    setupAssociations();
+    console.log('Sequelize associations have been set up successfully.');
+  } catch (error) {
+    console.error('Database sync failed:', error);
+    throw error;
+  }
 
   const swaggerPath = '/api';
   setupSwagger(app, swaggerPath);

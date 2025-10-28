@@ -11,7 +11,6 @@ import { setupSwagger } from './config/swagger';
 import { ValidationPipe } from '@nestjs/common';
 import { Sequelize } from 'sequelize-typescript';
 import { setupAssociations } from './associations/sequelize.associations';
-import { ensureSchemaUpdates } from './database/ensure-schema';
 
 let cachedServer: any;
 
@@ -56,26 +55,20 @@ async function bootstrapServer() {
     // Database setup with proper association timing
     try {
       const sequelize = app.get(Sequelize);
-      console.log('Starting Lambda database sync...');
+      console.log('Connecting to database in Lambda...');
       
-      // Use gentle sync - only create new tables, don't alter existing ones
-      await sequelize.sync({ force: false, alter: false });
-      console.log('Database sync completed successfully.');
-      
-      // Ensure all required columns exist using IF NOT EXISTS
-      // This is safe to run every time - idempotent!
-      await ensureSchemaUpdates(sequelize);
-      
-      // Setup associations after Sequelize sync to ensure all models are initialized
-      setupAssociations();
-      console.log('Sequelize associations have been set up successfully in Lambda.');
-      
-      // Verify database connection
+      // Just authenticate connection - NO sync!
+      // Use migration file (complete-schema-v2.sql) for schema updates
       await sequelize.authenticate();
-      console.log('Database connection verified.');
+      console.log('✅ Database connected successfully in Lambda.');
+      console.log('📋 Note: Use migration file (migrations/complete-schema-v2.sql) for schema updates');
+      
+      // Setup associations after connection
+      setupAssociations();
+      console.log('✅ Sequelize associations have been set up successfully in Lambda.');
       
     } catch (dbError) {
-      console.error('Database setup error:', dbError);
+      console.error('❌ Database connection error in Lambda:', dbError);
       // Don't throw here to allow Lambda to continue, but log the error
     }
 

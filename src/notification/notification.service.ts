@@ -10,6 +10,7 @@ import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { FamilyMemberService } from '../family/family-member.service';
+import { NotificationGateway } from './notification.gateway';
 
 // Optional services
 // import { MailService } from '../mail/mail.service';
@@ -81,6 +82,9 @@ export class NotificationService {
 
     @Inject(forwardRef(() => FamilyMemberService))
     private readonly familyMemberService: FamilyMemberService,
+
+    @Inject(forwardRef(() => NotificationGateway))
+    private readonly notificationGateway: NotificationGateway,
     
     @Optional()
     private readonly mailService?: any, // Using 'any' to avoid type errors for optional services
@@ -109,12 +113,46 @@ export class NotificationService {
 
     await this.recipientModel.bulkCreate(recipientRecords);
 
+    // Send real-time notification via WebSocket to all recipients
+    const notificationData = {
+      id: notification.id,
+      type: notification.type,
+      title: notification.title,
+      message: notification.message,
+      data: notification.data,
+      createdAt: notification.createdAt,
+      isRead: false,
+      status: notification.status || 'pending',
+    };
+
+    // Send to each recipient via WebSocket
+    dto.userIds.forEach((userId) => {
+      this.notificationGateway.sendNotificationToUser(userId.toString(), notificationData);
+      
+      // Also update their unread count
+      this.updateUnreadCountForUser(userId);
+    });
+
+    console.log(`✅ Notification ${notification.id} sent to ${dto.userIds.length} users via WebSocket`);
+
     // Return both notification ID and request ID (referenceId) in the response
     return {
       message: 'Notification created and sent to recipients',
       notificationId: notification.id,
       requestId: notification.referenceId || notification.id // Fallback to notification.id if referenceId is not set
     };
+  }
+
+  // Helper method to update unread count for a user
+  private async updateUnreadCountForUser(userId: number) {
+    const count = await this.recipientModel.count({
+      where: {
+        userId,
+        isRead: false,
+      },
+    });
+    
+    this.notificationGateway.updateUnreadCount(userId.toString(), count);
   }
 
   async getAdminsForFamily(familyCode: string): Promise<number[]> {
@@ -572,10 +610,52 @@ export class NotificationService {
     return { success: true, message: `Request ${action}ed successfully` };
   }
 
-  async getNotificationsForUser(userId: number, showAll = false) {
+  async getNotificationsForUser(userId: number, showAll = false, type?: string) {
+    // Calculate date 15 days ago for filtering association requests
+    const fifteenDaysAgo = new Date();
+    fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
+
+    // Build notification where clause
+    let notificationWhere: any;
+    
+    if (type) {
+      // If specific type requested, filter by that type only
+      if (type === 'FAMILY_ASSOCIATION_REQUEST') {
+        // For association requests: only last 15 days AND not expired
+        notificationWhere = {
+          type: 'FAMILY_ASSOCIATION_REQUEST',
+          createdAt: { [Op.gte]: fifteenDaysAgo },
+          status: { [Op.ne]: 'expired' }
+        };
+      } else {
+        // For other specific types: show all
+        notificationWhere = { type };
+      }
+    } else {
+      // No type filter: apply 15-day rule for association requests
+      notificationWhere = {
+        [Op.or]: [
+          // For FAMILY_ASSOCIATION_REQUEST: only show last 15 days AND not expired
+          {
+            type: 'FAMILY_ASSOCIATION_REQUEST',
+            createdAt: { [Op.gte]: fifteenDaysAgo },
+            status: { [Op.ne]: 'expired' }
+          },
+          // For all other notification types: show all
+          {
+            type: { [Op.ne]: 'FAMILY_ASSOCIATION_REQUEST' }
+          }
+        ]
+      };
+    }
+
     const options: any = {
       where: { userId },
-      include: [{ model: Notification, required: true }],
+      include: [{ 
+        model: Notification, 
+        required: true,
+        where: notificationWhere
+      }],
       order: [['createdAt', 'DESC']],
     };
 
@@ -652,6 +732,40 @@ export class NotificationService {
     });
 
     return { unreadCount };
+  }
+
+  /**
+   * Auto-expire family association requests older than 15 days
+   * This runs as a scheduled job to keep notifications clean
+   */
+  async expireOldAssociationRequests() {
+    try {
+      // Calculate date 15 days ago
+      const fifteenDaysAgo = new Date();
+      fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
+
+      // Find all pending family association requests older than 15 days
+      const expiredCount = await this.notificationModel.update(
+        { status: 'expired' },
+        {
+          where: {
+            type: 'FAMILY_ASSOCIATION_REQUEST',
+            status: 'pending',
+            createdAt: { [Op.lt]: fifteenDaysAgo }
+          }
+        }
+      );
+
+      console.log(`✅ Auto-expired ${expiredCount[0]} old family association requests`);
+      return { 
+        success: true, 
+        expiredCount: expiredCount[0],
+        message: `Expired ${expiredCount[0]} old association requests` 
+      };
+    } catch (error) {
+      console.error('❌ Error expiring old association requests:', error);
+      return { success: false, error: error.message };
+    }
   }
 
   async sendBirthdayAndAnniversaryNotifications() {

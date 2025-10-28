@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { NotificationService } from './notification.service';
+import { NotificationScheduler } from './notification.scheduler';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
 import { CreateNotificationDto } from './dto/create-notification.dto';
 
@@ -23,7 +24,10 @@ import { CreateNotificationDto } from './dto/create-notification.dto';
 @UseGuards(JwtAuthGuard)
 @Controller('notifications')
 export class NotificationController {
-  constructor(private readonly notificationService: NotificationService) {}
+  constructor(
+    private readonly notificationService: NotificationService,
+    private readonly notificationScheduler: NotificationScheduler,
+  ) {}
 
   @Post()
   @ApiOperation({ summary: 'Create a new notification and assign recipients' })
@@ -36,9 +40,13 @@ export class NotificationController {
 
   @Get()
   @ApiOperation({ summary: 'Get notifications for logged-in user' })
-  async getMyNotifications(@Req() req, @Query('all') all: any) {
+  async getMyNotifications(
+    @Req() req, 
+    @Query('all') all: any,
+    @Query('type') type?: string
+  ) {
     const showAll = all === true || all === 'true' || all === '1';
-    return this.notificationService.getNotificationsForUser(req.user.userId, showAll);
+    return this.notificationService.getNotificationsForUser(req.user.userId, showAll, type);
   }
 
   @Post(':id/read')
@@ -98,5 +106,12 @@ export class NotificationController {
       body.action as 'accept' | 'reject',
       req.user.userId,
     );
+  }
+
+  @Post('expire-old-requests')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Manually trigger expiry of old association requests (for testing)' })
+  async expireOldRequests() {
+    return this.notificationScheduler.triggerExpireOldRequests();
   }
 }

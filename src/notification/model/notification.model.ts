@@ -27,10 +27,10 @@ export class Notification extends Model<Notification> {
   message: string;
 
   @Column({
-    type: DataType.ENUM('pending', 'accepted', 'rejected'),
+    type: DataType.ENUM('pending', 'accepted', 'rejected', 'expired'),
     defaultValue: 'pending'
   })
-  status: 'pending' | 'accepted' | 'rejected';
+  status: 'pending' | 'accepted' | 'rejected' | 'expired';
 
   @Column(DataType.INTEGER)
   senderId: number;

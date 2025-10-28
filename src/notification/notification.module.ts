@@ -2,10 +2,12 @@ import { Module, forwardRef } from '@nestjs/common';
 import { SequelizeModule } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { ScheduleModule } from '@nestjs/schedule';
+import { JwtModule } from '@nestjs/jwt';
 
 import { NotificationController } from './notification.controller';
 import { NotificationService } from './notification.service';
 import { NotificationScheduler } from './notification.scheduler';
+import { NotificationGateway } from './notification.gateway';
 
 import { MailService } from '../utils/mail.service';
 import { User } from '../user/model/user.model';
@@ -26,13 +28,18 @@ import { UserModule } from '../user/user.module';
       FamilyMember,
     ]),
     ScheduleModule.forRoot(),
+    JwtModule.register({
+      secret: process.env.JWT_SECRET || 'your-secret-key',
+      signOptions: { expiresIn: '7d' },
+    }),
     forwardRef(() => FamilyModule),
     forwardRef(() => UserModule),
   ],
   controllers: [NotificationController],
   providers: [
     NotificationService, 
-    NotificationScheduler, 
+    NotificationScheduler,
+    NotificationGateway,
     MailService,
     {
       provide: 'SEQUELIZE',
@@ -40,7 +47,8 @@ import { UserModule } from '../user/user.module';
     },
   ],
   exports: [
-    NotificationService, 
+    NotificationService,
+    NotificationGateway,
     MailService,
     SequelizeModule,
   ],

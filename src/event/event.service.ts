@@ -15,6 +15,7 @@ import { Op } from 'sequelize';
 import { EventImage } from './model/event-image.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { UploadService } from '../uploads/upload.service';
+import { EventGateway } from './event.gateway';
  
 @Injectable()
 export class EventService {
@@ -35,6 +36,7 @@ export class EventService {
     private readonly familyMemberModel: typeof FamilyMember,
 
     private readonly notificationService: NotificationService,
+    private readonly eventGateway: EventGateway,
   ) {}
 
   async createEvent(dto: CreateEventDto, imageFiles?: Express.Multer.File[]) {
@@ -81,6 +83,19 @@ export class EventService {
     //   console.error('Failed to create event notifications:', error);
     //   // Don't throw error here - event creation should succeed even if notifications fail
     // }
+
+    // Broadcast new event via WebSocket
+    if (dto.familyCode) {
+      this.eventGateway.broadcastNewEvent(dto.familyCode, {
+        id: event.id,
+        eventTitle: event.eventTitle,
+        eventDate: event.eventDate,
+        eventDescription: event.eventDescription,
+        familyCode: event.familyCode,
+        createdBy: event.createdBy,
+        createdAt: event.createdAt,
+      });
+    }
 
     return {
       message: 'Event created successfully',
@@ -310,6 +325,9 @@ export class EventService {
     dto.createdBy = loggedId;
     await event.update(dto);
 
+    // Broadcast event update via WebSocket
+    this.eventGateway.broadcastEventUpdate(id, event, event.familyCode);
+
     return {
       message: 'Event updated successfully',
       data: event,
@@ -375,6 +393,10 @@ export class EventService {
         error,
       );
     }
+
+    // Broadcast event deletion via WebSocket before destroying
+    const familyCode = event.familyCode;
+    this.eventGateway.broadcastEventDeleted(id, familyCode);
 
     await event.destroy();
     return { message: 'Event deleted successfully' };

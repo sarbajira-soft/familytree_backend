@@ -17,22 +17,24 @@ import { CreatePostDto } from './dto/createpost.dto';
 import { EditPostDto } from './dto/edit-post.dto';
 import { NotificationService } from '../notification/notification.service';
 import { UploadService } from '../uploads/upload.service';
- 
+import { PostGateway } from './post.gateway';
+
 @Injectable()
 export class PostService {
   constructor(
-      @InjectModel(Post)
-      private readonly postModel: typeof Post,
-      @InjectModel(PostLike)
-      private readonly postLikeModel: typeof PostLike,
-      @InjectModel(PostComment)
-      private readonly postCommentModel: typeof PostComment,
-      @InjectModel(UserProfile)
-      private readonly userProfileModel: typeof UserProfile,
-      @InjectModel(User)
-      private readonly userModel: typeof User,
+    @InjectModel(Post)
+    private readonly postModel: typeof Post,
+    @InjectModel(PostLike)
+    private readonly postLikeModel: typeof PostLike,
+    @InjectModel(PostComment)
+    private readonly postCommentModel: typeof PostComment,
+    @InjectModel(UserProfile)
+    private readonly userProfileModel: typeof UserProfile,
+    @InjectModel(User)
+    private readonly userModel: typeof User,
 
-      private readonly notificationService: NotificationService,
+    private readonly notificationService: NotificationService,
+    private readonly postGateway: PostGateway,
   ) {}
 
   async createPost(
@@ -80,7 +82,21 @@ export class PostService {
       }
     }
 
-    // Step 3: Return post details
+    // Step 3: Broadcast new post via WebSocket if familyCode exists
+    if (dto.familyCode) {
+      this.postGateway.broadcastNewPost(dto.familyCode, {
+        id: post.id,
+        caption: post.caption,
+        postImage: this.getPostImageUrl(post.postImage),
+        privacy: post.privacy,
+        familyCode: post.familyCode,
+        status: post.status,
+        createdBy,
+        createdAt: post.createdAt,
+      });
+    }
+
+    // Step 4: Return post details
     return {
       message: 'Post created successfully',
       data: {
@@ -192,6 +208,9 @@ export class PostService {
     if (postJson) {
       postJson.postImage = this.getPostImageUrl(postJson.postImage);
     }
+
+    // Broadcast post update via WebSocket
+    this.postGateway.broadcastPostUpdate(postId, postJson);
 
     return {
       message: 'Post updated successfully',
@@ -364,6 +383,13 @@ export class PostService {
     // Get the updated total like count
     const likeCount = await this.postLikeModel.count({ where: { postId } });
 
+    // Get user name for broadcast
+    const userProfile = await this.userProfileModel.findOne({ where: { userId } });
+    const userName = userProfile ? `${userProfile.firstName} ${userProfile.lastName}` : 'Unknown User';
+
+    // Broadcast like update via WebSocket
+    this.postGateway.broadcastLike(postId, userId, likeCount, !existingLike, userName);
+
     return {
       liked: !existingLike,
       message: existingLike ? 'Like removed' : 'Post liked',
@@ -372,7 +398,27 @@ export class PostService {
   }
 
   async addComment(postId: number, userId: number, comment: string) {
-    return this.postCommentModel.create({ postId, userId, comment });
+    const newComment = await this.postCommentModel.create({ postId, userId, comment });
+
+    // Get user profile for broadcast
+    const userProfile = await this.userProfileModel.findOne({ where: { userId } });
+    const commentWithUser = {
+      id: newComment.id,
+      content: comment,
+      createdAt: newComment.createdAt,
+      user: userProfile ? {
+        firstName: userProfile.firstName,
+        lastName: userProfile.lastName,
+        profile: userProfile.profile
+          ? `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`
+          : null,
+      } : null,
+    };
+
+    // Broadcast new comment via WebSocket
+    this.postGateway.broadcastComment(postId, commentWithUser);
+
+    return newComment;
   }
 
   async getComments(postId: number, page = 1, limit = 10) {
@@ -414,26 +460,26 @@ export class PostService {
     };
   }
 
-async getPost(postId: number) {
-  const post = await this.postModel.findOne({
-    where: { id: postId },
-  });
+  async getPost(postId: number) {
+    const post = await this.postModel.findOne({
+      where: { id: postId },
+    });
 
-  if (!post) {
-    throw new Error(`Post with ID ${postId} not found`);
+    if (!post) {
+      throw new Error(`Post with ID ${postId} not found`);
+    }
+
+    const postJson = post.toJSON() as any;
+    const postImageUrl = this.getPostImageUrl(postJson.postImage);
+
+    return {
+      data: {
+        ...postJson,
+        postImage: postImageUrl
+      },
+      imageUrl: postImageUrl || this.getPostImageUrl('default.png')
+    };
   }
-
-  const postJson = post.toJSON() as any;
-  const postImageUrl = this.getPostImageUrl(postJson.postImage);
-
-  return {
-    data: {
-      ...postJson,
-      postImage: postImageUrl
-    },
-    imageUrl: postImageUrl || this.getPostImageUrl('default.png')
-  };
-}
 
   async getCommentCount(postId: number) {
     const count = await this.postCommentModel.count({ where: { postId } });
@@ -489,10 +535,11 @@ async getPost(postId: number) {
     // Delete the post
     await post.destroy();
 
+    // Broadcast post deletion via WebSocket
+    this.postGateway.broadcastPostDeleted(postId, post.familyCode);
+
     return {
       message: 'Post deleted successfully along with associated comments and likes',
     };
   }
-
 }
-  

@@ -16,8 +16,14 @@ export class PostComment extends Model<PostComment> {
   @Column({ type: DataType.STRING, allowNull: false })
   comment: string;
 
+  @Column({ type: DataType.INTEGER, allowNull: true })
+  parentCommentId: number;
+
   @Default(DataType.NOW)
   @Column(DataType.DATE)
   createdAt: Date;
+
+  @Default(DataType.NOW)
+  @Column(DataType.DATE)
+  updatedAt: Date;
 }
- 

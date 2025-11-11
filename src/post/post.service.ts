@@ -18,9 +18,12 @@ import { EditPostDto } from './dto/edit-post.dto';
 import { NotificationService } from '../notification/notification.service';
 import { UploadService } from '../uploads/upload.service';
 import { PostGateway } from './post.gateway';
+import { BaseCommentService } from '../common/services/base-comment.service';
 
 @Injectable()
 export class PostService {
+  private readonly baseCommentService: BaseCommentService;
+
   constructor(
     @InjectModel(Post)
     private readonly postModel: typeof Post,
@@ -35,7 +38,9 @@ export class PostService {
 
     private readonly notificationService: NotificationService,
     private readonly postGateway: PostGateway,
-  ) {}
+  ) {
+    this.baseCommentService = new BaseCommentService();
+  }
 
   async createPost(
     dto: CreatePostDto,
@@ -448,7 +453,10 @@ export class PostService {
       comments: rows.map((comment: any) => ({
         id: comment.id,
         content: comment.comment,
+        parentCommentId: comment.parentCommentId,
         createdAt: comment.createdAt,
+        updatedAt: comment.updatedAt,
+        userId: comment.userId,
         user: comment.userProfile ? {
           firstName: comment.userProfile.firstName,
           lastName: comment.userProfile.lastName,
@@ -541,5 +549,48 @@ export class PostService {
     return {
       message: 'Post deleted successfully along with associated comments and likes',
     };
+  }
+
+  /**
+   * Edit a post comment - reuses base service
+   */
+  async editPostComment(commentId: number, userId: number, newCommentText: string) {
+    return this.baseCommentService.editComment(
+      this.postCommentModel,
+      commentId,
+      userId,
+      newCommentText,
+      'comment', // Post uses 'comment' field
+    );
+  }
+
+  /**
+   * Delete a post comment - reuses base service
+   */
+  async deletePostComment(commentId: number, userId: number) {
+    return this.baseCommentService.deleteComment(
+      this.postCommentModel,
+      commentId,
+      userId,
+    );
+  }
+
+  /**
+   * Reply to a post comment - reuses base service
+   */
+  async replyToPostComment(
+    postId: number,
+    parentCommentId: number,
+    userId: number,
+    replyText: string,
+  ) {
+    return this.baseCommentService.replyToComment(
+      this.postCommentModel,
+      parentCommentId,
+      userId,
+      replyText,
+      { postId }, // Additional data
+      'comment', // Post uses 'comment' field
+    );
   }
 }

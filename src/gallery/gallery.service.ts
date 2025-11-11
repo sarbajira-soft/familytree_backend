@@ -19,9 +19,12 @@ import { CreateGalleryCommentDto } from './dto/gallery-comment.dto';
 
 import { NotificationService } from '../notification/notification.service';
 import { UploadService } from '../uploads/upload.service';
+import { BaseCommentService } from '../common/services/base-comment.service';
 
 @Injectable()
 export class GalleryService {
+  private readonly baseCommentService: BaseCommentService;
+
   constructor(
     @InjectModel(Gallery)
     private readonly galleryModel: typeof Gallery,
@@ -36,7 +39,9 @@ export class GalleryService {
 
     private readonly notificationService: NotificationService,
     private readonly uploadService: UploadService,
-  ) {}
+  ) {
+    this.baseCommentService = new BaseCommentService();
+  }
 
   private getGalleryImageFilenameFromUrl(url: string): string | null {
     if (!url) return null;
@@ -804,7 +809,10 @@ export class GalleryService {
       comments: rows.map((comment: any) => ({
         id: comment.id,
         comment: comment.comments,
+        parentCommentId: comment.parentCommentId,
         createdAt: comment.createdAt,
+        updatedAt: comment.updatedAt,
+        userId: comment.userId,
         user: comment.userProfile
           ? {
               firstName: comment.userProfile.firstName,
@@ -889,6 +897,49 @@ export class GalleryService {
       familyCode: galleryJson.familyCode || null, // Convert empty string to null in response
       ...(userId !== undefined && { isLiked }),
     };
+  }
+
+  /**
+   * Edit a gallery comment - reuses base service
+   */
+  async editGalleryComment(commentId: number, userId: number, newCommentText: string) {
+    return this.baseCommentService.editComment(
+      this.galleryCommentModel,
+      commentId,
+      userId,
+      newCommentText,
+      'comments', // Gallery uses 'comments' field
+    );
+  }
+
+  /**
+   * Delete a gallery comment - reuses base service
+   */
+  async deleteGalleryComment(commentId: number, userId: number) {
+    return this.baseCommentService.deleteComment(
+      this.galleryCommentModel,
+      commentId,
+      userId,
+    );
+  }
+
+  /**
+   * Reply to a gallery comment - reuses base service
+   */
+  async replyToGalleryComment(
+    galleryId: number,
+    parentCommentId: number,
+    userId: number,
+    replyText: string,
+  ) {
+    return this.baseCommentService.replyToComment(
+      this.galleryCommentModel,
+      parentCommentId,
+      userId,
+      replyText,
+      { galleryId }, // Additional data
+      'comments', // Gallery uses 'comments' field
+    );
   }
 
 }

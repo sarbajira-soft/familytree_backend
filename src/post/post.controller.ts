@@ -24,6 +24,7 @@ import { CreatePostDto } from './dto/createpost.dto';
 import { EditPostDto } from './dto/edit-post.dto';
 import { GetPostByOptionsDto } from './dto/post-options.dto';
 import { AddPostCommentDto } from './dto/post-comment.dto';
+import { EditCommentDto, ReplyCommentDto } from '../common/dto/comment.dto';
 
 import {
   ApiBearerAuth,
@@ -168,6 +169,48 @@ export class PostController {
   async deletePost(@Param('id') id: number, @Req() req) {
     const userId = req.user?.userId;
     return this.postService.deletePost(+id, userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Put('comment/:commentId')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Edit a post comment' })
+  @ApiResponse({ status: 200, description: 'Comment updated successfully' })
+  async editComment(
+    @Param('commentId') commentId: number,
+    @Body() dto: EditCommentDto,
+    @Req() req,
+  ) {
+    return this.postService.editPostComment(+commentId, req.user.userId, dto.comment);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('comment/:commentId')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Delete a post comment' })
+  @ApiResponse({ status: 200, description: 'Comment deleted successfully' })
+  async deleteComment(
+    @Param('commentId') commentId: number,
+    @Req() req,
+  ) {
+    return this.postService.deletePostComment(+commentId, req.user.userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('comment/reply')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Reply to a post comment' })
+  @ApiResponse({ status: 201, description: 'Reply added successfully' })
+  async replyToComment(
+    @Body() dto: ReplyCommentDto & { postId: number },
+    @Req() req,
+  ) {
+    return this.postService.replyToPostComment(
+      dto.postId,
+      dto.parentCommentId,
+      req.user.userId,
+      dto.comment,
+    );
   }
 
 } 

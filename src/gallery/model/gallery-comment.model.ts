@@ -33,6 +33,12 @@ export class GalleryComment extends Model<GalleryComment> {
   })
   comments: String;
 
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: true,
+  })
+  parentCommentId: Number;
+
   @Default(DataType.NOW)
   @Column(DataType.DATE)
   createdAt: Date;

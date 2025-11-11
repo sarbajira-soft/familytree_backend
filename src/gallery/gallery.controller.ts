@@ -25,6 +25,7 @@ import { CreateGalleryDto } from './dto/gallery.dto';
 import { GetGalleryByOptionsDto } from './dto/gallery-options.dto';
 import { ToggleLikeDto } from './dto/gallery-like.dto';
 import { CreateGalleryCommentDto } from './dto/gallery-comment.dto';
+import { EditCommentDto, ReplyCommentDto } from '../common/dto/comment.dto';
 
 import {
   ApiBearerAuth,
@@ -243,6 +244,48 @@ export class GalleryController {
     @Query('userId') userId?: number,
   ) {
     return this.galleryService.getGalleryById(galleryId, userId ? +userId : undefined);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Put('comment/:commentId')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Edit a gallery comment' })
+  @ApiResponse({ status: 200, description: 'Comment updated successfully' })
+  async editComment(
+    @Param('commentId', ParseIntPipe) commentId: number,
+    @Body() dto: EditCommentDto,
+    @Req() req,
+  ) {
+    return this.galleryService.editGalleryComment(commentId, req.user.userId, dto.comment);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('comment/:commentId')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Delete a gallery comment' })
+  @ApiResponse({ status: 200, description: 'Comment deleted successfully' })
+  async deleteComment(
+    @Param('commentId', ParseIntPipe) commentId: number,
+    @Req() req,
+  ) {
+    return this.galleryService.deleteGalleryComment(commentId, req.user.userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('comment/reply')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Reply to a gallery comment' })
+  @ApiResponse({ status: 201, description: 'Reply added successfully' })
+  async replyToComment(
+    @Body() dto: ReplyCommentDto & { galleryId: number },
+    @Req() req,
+  ) {
+    return this.galleryService.replyToGalleryComment(
+      dto.galleryId,
+      dto.parentCommentId,
+      req.user.userId,
+      dto.comment,
+    );
   }
 
 }

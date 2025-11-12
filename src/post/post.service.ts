@@ -405,12 +405,17 @@ export class PostService {
   async addComment(postId: number, userId: number, comment: string) {
     const newComment = await this.postCommentModel.create({ postId, userId, comment });
 
-    // Get user profile for broadcast
+    // Get user profile to include in response
     const userProfile = await this.userProfileModel.findOne({ where: { userId } });
-    const commentWithUser = {
+    
+    // Format response to match GET comments structure
+    const formattedComment = {
       id: newComment.id,
-      content: comment,
+      content: newComment.comment, // Use the actual field from database
+      parentCommentId: newComment.parentCommentId,
       createdAt: newComment.createdAt,
+      updatedAt: newComment.updatedAt,
+      userId: newComment.userId,
       user: userProfile ? {
         firstName: userProfile.firstName,
         lastName: userProfile.lastName,
@@ -420,10 +425,11 @@ export class PostService {
       } : null,
     };
 
-    // Broadcast new comment via WebSocket
-    this.postGateway.broadcastComment(postId, commentWithUser);
+    // Broadcast new comment via WebSocket (using the formatted structure)
+    this.postGateway.broadcastComment(postId, formattedComment);
 
-    return newComment;
+    // Return the formatted comment that matches GET structure
+    return formattedComment;
   }
 
   async getComments(postId: number, page = 1, limit = 10) {
@@ -555,13 +561,35 @@ export class PostService {
    * Edit a post comment - reuses base service
    */
   async editPostComment(commentId: number, userId: number, newCommentText: string) {
-    return this.baseCommentService.editComment(
+    const result = await this.baseCommentService.editComment(
       this.postCommentModel,
       commentId,
       userId,
       newCommentText,
       'comment', // Post uses 'comment' field
     );
+
+    // Get user profile to include in response
+    const userProfile = await this.userProfileModel.findOne({ where: { userId } });
+    
+    // Format response to match GET comments structure
+    const formattedComment = {
+      id: result.data.id,
+      content: result.data.comment, // Use the actual field from database
+      parentCommentId: result.data.parentCommentId,
+      createdAt: result.data.createdAt,
+      updatedAt: result.data.updatedAt,
+      userId: result.data.userId,
+      user: userProfile ? {
+        firstName: userProfile.firstName,
+        lastName: userProfile.lastName,
+        profile: userProfile.profile
+          ? `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`
+          : null,
+      } : null,
+    };
+
+    return formattedComment;
   }
 
   /**
@@ -584,7 +612,7 @@ export class PostService {
     userId: number,
     replyText: string,
   ) {
-    return this.baseCommentService.replyToComment(
+    const result = await this.baseCommentService.replyToComment(
       this.postCommentModel,
       parentCommentId,
       userId,
@@ -592,5 +620,27 @@ export class PostService {
       { postId }, // Additional data
       'comment', // Post uses 'comment' field
     );
+
+    // Get user profile to include in response
+    const userProfile = await this.userProfileModel.findOne({ where: { userId } });
+    
+    // Format response to match GET comments structure
+    const formattedComment = {
+      id: result.data.id,
+      content: result.data.comment, // Use the actual field from database
+      parentCommentId: result.data.parentCommentId,
+      createdAt: result.data.createdAt,
+      updatedAt: result.data.updatedAt,
+      userId: result.data.userId,
+      user: userProfile ? {
+        firstName: userProfile.firstName,
+        lastName: userProfile.lastName,
+        profile: userProfile.profile
+          ? `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`
+          : null,
+      } : null,
+    };
+
+    return formattedComment;
   }
 }

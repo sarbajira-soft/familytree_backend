@@ -2,7 +2,6 @@ import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { RelationshipCustomLabel } from './model/relationship-custom-label.model';
 import { Relationship } from './entities/relationship.model';
-import { RelationshipTranslation } from './entities/relationship-translation.model';
 import { Family } from '../family/model/family.model';
 import { BadRequestException } from '@nestjs/common';
 import { RelationshipsService } from './relationships.service';
@@ -14,8 +13,6 @@ export class RelationshipCustomLabelsService {
     private customLabelModel: typeof RelationshipCustomLabel,
     @InjectModel(Relationship)
     private relationshipModel: typeof Relationship,
-    @InjectModel(RelationshipTranslation)
-    private translationModel: typeof RelationshipTranslation,
     @InjectModel(Family)
     private familyModel: typeof Family,
     private relationshipsService: RelationshipsService,
@@ -35,7 +32,7 @@ export class RelationshipCustomLabelsService {
   }
 
   // Accepts query object with correct param names from controller
-  async getCustomLabel({ relationshipKey, language, creatorId, familyCode }: { relationshipKey: string, language: string, creatorId: string, familyCode: string }): Promise<any> {
+  async getCustomLabel({ relationshipKey, language, creatorId, familyCode, gender }: { relationshipKey: string, language: string, creatorId: string, familyCode: string, gender?: string }): Promise<any> {
     language = this.mapLanguage(language);
     if (!relationshipKey || !language || !creatorId || !familyCode || creatorId === 'undefined' || familyCode === 'undefined' || creatorId === 'NaN' || familyCode === 'NaN') {
       throw new BadRequestException('Missing or invalid required parameters');
@@ -72,15 +69,16 @@ export class RelationshipCustomLabelsService {
     });
     if (label) return label.custom_label;
 
-    // 6. Fallback to default translation
-    const translation = await this.translationModel.findOne({
-      where: { relationshipId, language },
-    });
-    if (translation) return translation.label;
-
-    // 7. Fallback to static description from relationships table (multi-language)
-    if (relationship[`description_${language}`]) return relationship[`description_${language}`];
-    // 8. Fallback to key
+    // 6. Fallback to static description from relationships table (multi-language with gender)
+    // Try gender-specific first, then fallback to female version
+    const genderSuffix = gender?.toLowerCase() === 'male' || gender?.toLowerCase() === 'm' ? '_m' : '_f';
+    if (relationship[`description_${language}${genderSuffix}`]) {
+      return relationship[`description_${language}${genderSuffix}`];
+    }
+    if (relationship[`description_${language}_f`]) {
+      return relationship[`description_${language}_f`];
+    }
+    // 7. Fallback to key
     return relationshipKey;
   }
 
@@ -153,8 +151,7 @@ export class RelationshipCustomLabelsService {
     language = this.mapLanguage(language);
     // 1. Get all relationships
     const relationships = await this.relationshipModel.findAll();
-    // 2. Get all translations for the language
-    const translations = await this.translationModel.findAll({ where: { language } });
+    // 2. No need for separate translations - using embedded columns
     // 3. Get all custom labels for this user/family/language
     let familyId = undefined;
     if (familyCode) {
@@ -168,9 +165,8 @@ export class RelationshipCustomLabelsService {
     // 4. Build a map: { code: label }
     const labelMap: Record<string, string> = {};
     for (const rel of relationships) {
-      // Priority: custom label > translation > gender-specific description > default description > key
+      // Priority: custom label > gender-specific description > default description > key
       const custom = customLabels.find(c => c.relationshipId === rel.id);
-      const translation = translations.find(t => t.relationshipId === rel.id);
 
       // Determine gender suffix. Default to '_f' because 'description_ta' was renamed to 'description_ta_f'.
       let genderSuffix = '_f';
@@ -180,7 +176,6 @@ export class RelationshipCustomLabelsService {
 
       labelMap[rel.key] =
         custom?.custom_label ||
-        translation?.label ||
         rel[`description_${language}${genderSuffix}`] || // Tries description_ta_m or description_ta_f
         rel[`description_${language}_f`] || // Fallback to female if the male one doesn't exist
         rel.description ||
@@ -188,4 +183,4 @@ export class RelationshipCustomLabelsService {
     }
     return labelMap;
   }
-} 
+}

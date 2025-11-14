@@ -4,12 +4,11 @@ import { SequelizeModule } from '@nestjs/sequelize';
 import { RelationshipsController } from './relationships.controller';
 import { RelationshipsService } from './relationships.service';
 import { Relationship } from './entities/relationship.model';
-import { RelationshipTranslation } from './entities/relationship-translation.model';
 import { RelationshipCustomLabelsModule } from './relationship-custom-labels.module';
 
 @Module({
   imports: [
-    SequelizeModule.forFeature([Relationship, RelationshipTranslation]),
+    SequelizeModule.forFeature([Relationship]),
     RelationshipCustomLabelsModule,
   ],
   controllers: [RelationshipsController],

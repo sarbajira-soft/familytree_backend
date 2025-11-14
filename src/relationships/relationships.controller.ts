@@ -12,7 +12,6 @@ import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBody } from '@nestjs/s
 import { RelationshipsService } from './relationships.service';
 import { Relationship } from './entities/relationship.model';
 import { CreateRelationshipDto } from './dto/create-relationship.dto';
-import { CreateTranslationDto } from './dto/create-translation.dto';
 import { UpdateRelationshipDto } from './dto/update-relationship.dto';
 
 @ApiTags('Relationships')
@@ -33,19 +32,10 @@ export class RelationshipsController {
     return this.relationshipsService.createRelationship(createDto);
   }
 
-  @Post(':id/translations')
-  @ApiOperation({ summary: 'Add translation to a relationship' })
-  @ApiParam({ name: 'id', description: 'Relationship ID' })
-  @ApiResponse({ status: 201, description: 'Translation added' })
-  async addTranslation(
-    @Param('id') id: number,
-    @Body() createDto: CreateTranslationDto,
-  ) {
-    return this.relationshipsService.addTranslation(id, createDto);
-  }
+  // Translation endpoint deprecated - use embedded language columns in relationships table
 
   @Get()
-  @ApiOperation({ summary: 'Get all relationships with translations' })
+  @ApiOperation({ summary: 'Get all relationships with embedded language support' })
   @ApiResponse({
     status: 200,
     description: 'List of relationships',
@@ -100,12 +90,18 @@ export class RelationshipsController {
         labels: {
           type: 'object',
           properties: {
-            description_en: { type: 'string', example: 'New English Label' },
-            description_ta: { type: 'string', example: 'புதிய தமிழ் பெயர்' },
-            description_hi: { type: 'string', example: 'नया हिंदी नाम' },
-            description_ma: { type: 'string', example: 'പുതിയ മലയാളം പേര്' },
-            description_ka: { type: 'string', example: 'ಹೊಸ ಕನ್ನಡ ಹೆಸರು' },
-            description_te: { type: 'string', example: 'కొత్త తెలుగు పేరు' }
+            description_en_f: { type: 'string', example: 'Sister' },
+            description_en_m: { type: 'string', example: 'Brother' },
+            description_ta_f: { type: 'string', example: 'அக்கா' },
+            description_ta_m: { type: 'string', example: 'அண்ணா' },
+            description_hi_f: { type: 'string', example: 'बहन' },
+            description_hi_m: { type: 'string', example: 'भाई' },
+            description_ma_f: { type: 'string', example: 'ചേച്ചി' },
+            description_ma_m: { type: 'string', example: 'ചേട്ടൻ' },
+            description_ka_f: { type: 'string', example: 'ಅಕ್ಕ' },
+            description_ka_m: { type: 'string', example: 'ಅಣ್ಣ' },
+            description_te_f: { type: 'string', example: 'అక్క' },
+            description_te_m: { type: 'string', example: 'అన్న' }
           }
         }
       }
@@ -133,7 +129,8 @@ export class RelationshipsController {
   async getLabel(
     @Param('key') key: string,
     @Query('lang') language: string,
+    @Query('gender') gender?: string,
   ): Promise<string> {
-    return this.relationshipsService.getLabel(key, language);
+    return this.relationshipsService.getLabel(key, language, gender);
   }
 }

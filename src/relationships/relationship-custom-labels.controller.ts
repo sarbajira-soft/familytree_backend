@@ -49,6 +49,7 @@ export class RelationshipCustomLabelsController {
     @Query('language') language: string,
     @Query('creatorId') creatorId?: string,
     @Query('familyCode') familyCode?: string,
+    @Query('gender') gender?: string,
   ) {
     // Validate and convert creatorId
     if (!relationshipKey || !language || !creatorId || !familyCode) {
@@ -56,7 +57,7 @@ export class RelationshipCustomLabelsController {
     }
     // Optionally convert creatorId to number if needed by service/model
     // const creatorIdNum = Number(creatorId);
-    const label = await this.service.getCustomLabel({ relationshipKey, language, creatorId, familyCode });
+    const label = await this.service.getCustomLabel({ relationshipKey, language, creatorId, familyCode, gender });
     return { label };
   }
 

@@ -1,5 +1,4 @@
-import { Table, Column, Model, DataType, HasMany } from 'sequelize-typescript';
-import { RelationshipTranslation } from './relationship-translation.model';
+import { Table, Column, Model, DataType } from 'sequelize-typescript';
 
 @Table({ tableName: 'relationships' })
 export class Relationship extends Model {
@@ -96,6 +95,4 @@ export class Relationship extends Model {
   })
   is_auto_generated: boolean;
 
-  @HasMany(() => RelationshipTranslation)
-  translations: RelationshipTranslation[];
 }

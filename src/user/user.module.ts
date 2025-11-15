@@ -2,6 +2,7 @@ import { Module, forwardRef } from '@nestjs/common';
 import { SequelizeModule } from '@nestjs/sequelize';
 import { UserController } from './user.controller';
 import { UserLookupController } from './user-lookup.controller';
+import { UserConsentController } from './user-consent.controller';
 import { UserService } from './user.service';
 
 import { User } from './model/user.model';
@@ -35,7 +36,7 @@ import { UploadModule } from '../uploads/upload.module';
     NotificationModule,
     UploadModule,
   ],
-  controllers: [UserController, UserLookupController],
+  controllers: [UserController, UserLookupController, UserConsentController],
   providers: [UserService, MailService],
   exports: [UserService],
 })

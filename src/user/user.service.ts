@@ -56,7 +56,7 @@ export class UserService {
 
   private generateAccessToken(user: User): string {
     return jwt.sign(
-      { id: user.id, email: user.email, role: user.role },
+      { id: user.id, email: user.email, role: user.role, isAppUser: user.isAppUser, hasAcceptedTerms: user.hasAcceptedTerms },
       process.env.JWT_SECRET,
       { expiresIn: '1d' },
     );
@@ -67,11 +67,20 @@ export class UserService {
       // Input validation
       if (!registerDto.email || !registerDto.password || !registerDto.firstName || 
           !registerDto.lastName || !registerDto.countryCode || !registerDto.mobile) {
+
         throw new BadRequestException({
           statusCode: 400,
           message: 'All required fields must be provided',
           error: 'Bad Request',
           requiredFields: ['email', 'password', 'firstName', 'lastName', 'countryCode', 'mobile']
+        });
+      }
+
+      if (!registerDto.hasAcceptedTerms) {
+        throw new BadRequestException({
+          statusCode: 400,
+          message: 'You must agree to the Terms & Conditions to create an account',
+          error: 'TermsNotAccepted',
         });
       }
 
@@ -129,6 +138,10 @@ export class UserService {
             otp,
             otpExpiresAt,
             role: registerDto.role || 1, // Default to member if not specified
+            isAppUser: true,
+            hasAcceptedTerms: true,
+            termsVersion: registerDto.termsVersion || 'v1.0.0',
+            termsAcceptedAt: new Date(),
           });
         } else {
           // Create new user
@@ -139,6 +152,10 @@ export class UserService {
             otpExpiresAt,
             status: 0, // unverified
             role: registerDto.role || 1, // Default to member
+            isAppUser: true,
+            hasAcceptedTerms: true,
+            termsVersion: registerDto.termsVersion || 'v1.0.0',
+            termsAcceptedAt: new Date(),
           });
           await this.userProfileModel.create({
             userId: user.id,
@@ -487,7 +504,20 @@ export class UserService {
       
       const user = await this.userModel.findOne({
         where: { id },
-        attributes: ['id', 'email', 'mobile', 'countryCode', 'status', 'role', 'createdAt', 'updatedAt'], // Only fetch needed user fields
+        attributes: [
+          'id',
+          'email',
+          'mobile',
+          'countryCode',
+          'status',
+          'role',
+          'isAppUser',
+          'hasAcceptedTerms',
+          'termsVersion',
+          'termsAcceptedAt',
+          'createdAt',
+          'updatedAt',
+        ], // Only fetch needed user fields
         include: [
           {
             model: UserProfile,

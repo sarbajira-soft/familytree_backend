@@ -629,18 +629,17 @@ export class FamilyService {
         }
       }
 
-      // If no userId, prepare for bulk user creation
+      // If no userId, prepare for bulk user creation (non-app user: no email/mobile, no app consent)
       if (!userId) {
-        const tempEmail = `familytree_${Date.now()}_${memberIndex}_${Math.floor(Math.random() * 10000)}@example.com`;
-        const tempMobile = `99999${Math.floor(100000 + Math.random() * 899999)}`;
-        
         usersToCreate.push({
-          email: tempEmail,
-          mobile: tempMobile,
+          email: null,
+          countryCode: null,
+          mobile: null,
           status: 1,
           role: 1,
+          isAppUser: false,
         });
-        
+
         newUserIndexMap.set(memberIndex, usersToCreate.length - 1); // Track position
       }
     }

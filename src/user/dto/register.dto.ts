@@ -1,4 +1,4 @@
-import { IsEmail, IsString, MinLength, IsOptional, IsIn, Matches, IsNotEmpty, Length } from 'class-validator';
+import { IsEmail, IsString, MinLength, IsOptional, IsIn, Matches, IsNotEmpty, Length, IsBoolean } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class RegisterDto {
@@ -49,4 +49,21 @@ export class RegisterDto {
   @IsIn([1, 2, 3])
   @IsOptional()
   role?: number;
+
+  @ApiProperty({
+    example: true,
+    description: 'Flag indicating that the user has read and agreed to the Terms & Conditions',
+  })
+  @IsBoolean()
+  hasAcceptedTerms: boolean;
+
+  @ApiProperty({
+    example: 'v1.0.0',
+    description: 'Version of the Terms & Conditions accepted by the user',
+    required: false,
+    default: 'v1.0.0',
+  })
+  @IsOptional()
+  @IsString()
+  termsVersion?: string;
 }

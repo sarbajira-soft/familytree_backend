@@ -37,6 +37,20 @@ export class User extends Model<User> {
   @Column(DataType.INTEGER)
   role: number; // 1=member, 2=admin, 3=superadmin
 
+  @Default(true)
+  @Column(DataType.BOOLEAN)
+  isAppUser: boolean;
+
+  @Default(false)
+  @Column(DataType.BOOLEAN)
+  hasAcceptedTerms: boolean;
+
+  @Column(DataType.STRING)
+  termsVersion: string;
+
+  @Column(DataType.DATE)
+  termsAcceptedAt: Date;
+
   @Column(DataType.DATE)
   lastLoginAt: Date;
 

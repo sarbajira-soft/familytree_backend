@@ -120,13 +120,40 @@ export class FamilyMemberController {
     return this.familyMemberService.deleteFamilyMember(memberId, familyCode);
   }
 
+  @Put('block/:memberId/:familyCode')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Block family member in a family' })
+  @ApiResponse({ status: 200, description: 'Family member blocked successfully' })
+  async blockMember(
+    @Param('memberId', ParseIntPipe) memberId: number,
+    @Param('familyCode') familyCode: string,
+    @Req() req,
+  ) {
+    const actingUserId = req.user?.userId;
+    return this.familyMemberService.blockFamilyMember(memberId, familyCode, actingUserId);
+  }
+
+  @Put('unblock/:memberId/:familyCode')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Unblock family member in a family' })
+  @ApiResponse({ status: 200, description: 'Family member unblocked successfully' })
+  async unblockMember(
+    @Param('memberId', ParseIntPipe) memberId: number,
+    @Param('familyCode') familyCode: string,
+    @Req() req,
+  ) {
+    const actingUserId = req.user?.userId;
+    return this.familyMemberService.unblockFamilyMember(memberId, familyCode, actingUserId);
+  }
+
   // Get all approved family members by family code
   @Get(':familyCode')
   @UseGuards(JwtAuthGuard)
   @ApiOperation({ summary: 'Get all approved family members by family code' })
   @ApiResponse({ status: 200, description: 'List of family members returned' })
-  async getFamilyMembers(@Param('familyCode') familyCode: string) {
-    return this.familyMemberService.getAllFamilyMembers(familyCode);
+  async getFamilyMembers(@Param('familyCode') familyCode: string, @Req() req) {
+    const requestingUserId = req.user?.userId;
+    return this.familyMemberService.getAllFamilyMembers(familyCode, requestingUserId);
   }
 
   // Get all pending family member requests for logged-in user

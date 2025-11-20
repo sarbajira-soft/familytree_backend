@@ -32,4 +32,14 @@ export class FamilyMember extends Model<FamilyMember> {
   @Default(false)
   @Column({ type: DataType.BOOLEAN, allowNull: false, field: 'isLinkedUsed' })
   isLinkedUsed: boolean;
+
+  @Default(false)
+  @Column({ type: DataType.BOOLEAN, allowNull: false })
+  isBlocked: boolean;
+
+  @Column({ type: DataType.INTEGER, allowNull: true })
+  blockedByUserId: number;
+
+  @Column({ type: DataType.DATE, allowNull: true })
+  blockedAt: Date;
 }

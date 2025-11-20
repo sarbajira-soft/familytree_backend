@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Inject, forwardRef, ForbiddenException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { Op } from 'sequelize';
@@ -416,8 +416,127 @@ export class FamilyMemberService {
     return { message: 'Family member removed successfully' };
   }
 
+  async blockFamilyMember(memberId: number, familyCode: string, actingUserId: number) {
+    // Load family to determine owner/root user
+    const family = await this.familyModel.findOne({ where: { familyCode } });
+    if (!family) {
+      throw new NotFoundException('Family not found');
+    }
+
+    // Prevent blocking the family owner/root
+    if (memberId === family.createdBy) {
+      throw new BadRequestException('Cannot block the family owner');
+    }
+
+    // Prevent blocking self
+    if (memberId === actingUserId) {
+      throw new BadRequestException('You cannot block yourself');
+    }
+
+    const membership = await this.familyMemberModel.findOne({
+      where: { memberId, familyCode },
+    });
+
+    if (!membership) {
+      throw new NotFoundException('Family member not found');
+    }
+
+    // Only admins or the family owner can block members
+    const actingUser = await this.userModel.findByPk(actingUserId);
+    const adminMembership = await this.familyMemberModel.findOne({
+      where: {
+        memberId: actingUserId,
+        familyCode,
+        approveStatus: 'approved',
+      },
+    });
+
+    const isOwner = family.createdBy === actingUserId;
+    const isAdmin = !!(actingUser && adminMembership && (actingUser.role === 2 || actingUser.role === 3));
+
+    if (!isOwner && !isAdmin) {
+      throw new BadRequestException('Access denied: Only family admins can block members');
+    }
+
+    if (membership.isBlocked) {
+      return { message: 'Family member is already blocked', data: membership };
+    }
+
+    await membership.update({
+      isBlocked: true,
+      blockedByUserId: actingUserId,
+      blockedAt: new Date(),
+    });
+
+    return {
+      message: 'Family member blocked successfully',
+      data: membership,
+    };
+  }
+
+  async unblockFamilyMember(memberId: number, familyCode: string, actingUserId: number) {
+    const family = await this.familyModel.findOne({ where: { familyCode } });
+    if (!family) {
+      throw new NotFoundException('Family not found');
+    }
+
+    const membership = await this.familyMemberModel.findOne({
+      where: { memberId, familyCode },
+    });
+
+    if (!membership) {
+      throw new NotFoundException('Family member not found');
+    }
+
+    // Only admins or the family owner can unblock members
+    const actingUser = await this.userModel.findByPk(actingUserId);
+    const adminMembership = await this.familyMemberModel.findOne({
+      where: {
+        memberId: actingUserId,
+        familyCode,
+        approveStatus: 'approved',
+      },
+    });
+
+    const isOwner = family.createdBy === actingUserId;
+    const isAdmin = !!(actingUser && adminMembership && (actingUser.role === 2 || actingUser.role === 3));
+
+    if (!isOwner && !isAdmin) {
+      throw new BadRequestException('Access denied: Only family admins can unblock members');
+    }
+
+    if (!membership.isBlocked) {
+      return { message: 'Family member is not blocked', data: membership };
+    }
+
+    await membership.update({
+      isBlocked: false,
+      blockedByUserId: null,
+      blockedAt: null,
+    });
+
+    return {
+      message: 'Family member unblocked successfully',
+      data: membership,
+    };
+  }
+
   // Get all approved family members by family code
-  async getAllFamilyMembers(familyCode: string) {
+  async getAllFamilyMembers(familyCode: string, requestingUserId?: number) {
+    // If the requesting user is blocked from this family, deny access
+    if (requestingUserId) {
+      const membership = await this.familyMemberModel.findOne({
+        where: {
+          memberId: requestingUserId,
+          familyCode,
+        },
+      });
+
+      if (membership && (membership as any).isBlocked) {
+        throw new ForbiddenException('You have been blocked from this family');
+      }
+    }
+
     // Get all users whose primary family is this familyCode OR who are approved members
     const members = await this.familyMemberModel.findAll({
       where: {

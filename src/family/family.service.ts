@@ -181,6 +181,23 @@ export class FamilyService {
     );
   }
 
+  private async assertUserNotBlockedInFamily(userId: number, familyCode: string): Promise<void> {
+    if (!userId || !familyCode) {
+      return;
+    }
+
+    const membership = await this.familyMemberModel.findOne({
+      where: {
+        memberId: userId,
+        familyCode,
+      },
+    });
+
+    if (membership && (membership as any).isBlocked) {
+      throw new ForbiddenException('You have been blocked from this family');
+    }
+  }
+
   /**
    * Safely parse age value to prevent NaN issues
    */
@@ -430,11 +447,14 @@ export class FamilyService {
   }
 
   // ✅ FIXED METHOD: createFamilyTree with sync logic AND existing user profile updates
-  async createFamilyTree(dto: CreateFamilyTreeDto) {
+  async createFamilyTree(dto: CreateFamilyTreeDto, loggedInUserId: number) {
     const startTime = Date.now();
     console.log(`🚀 Starting createFamilyTree for ${dto.familyCode} with ${dto.members?.length || 0} members`);
     
     const { familyCode, members } = dto;
+
+    // Blocked users cannot modify this family's tree
+    await this.assertUserNotBlockedInFamily(loggedInUserId, familyCode);
 
     // Check if family exists
     const family = await this.familyModel.findOne({ where: { familyCode } });
@@ -977,7 +997,12 @@ export class FamilyService {
     }
   }
 
-  async getFamilyTree(familyCode: string) {
+  async getFamilyTree(familyCode: string, userId?: number) {
+    // If user context is provided, ensure they are not blocked from this family
+    if (userId) {
+      await this.assertUserNotBlockedInFamily(userId, familyCode);
+    }
+
     // First, let's clean up any invalid data
     await this.cleanupInvalidUserIdData();
     
@@ -1366,6 +1391,16 @@ async getAssociatedFamilyPrefixes(userId: number) {
   async getAssociatedFamilyTreeByUserId(userId: number) {
     await this.cleanupInvalidUserIdData();
 
+    // Get list of families where this user is blocked, so we can exclude them
+    const blockedMemberships = await this.familyMemberModel.findAll({
+      where: {
+        memberId: userId,
+        // @ts-ignore - isBlocked is present on the model
+        isBlocked: true,
+      } as any,
+    });
+    const blockedFamilyCodes = new Set<string>(blockedMemberships.map((m: any) => m.familyCode));
+
     // Get user's main and associated family codes
     const userProfile = await this.userProfileModel.findOne({
       where: { userId },
@@ -1379,14 +1414,14 @@ async getAssociatedFamilyPrefixes(userId: number) {
     const allFamilyCodes = new Set<string>();
     
     // Add main family code
-    if (userProfile.familyCode) {
+    if (userProfile.familyCode && !blockedFamilyCodes.has(userProfile.familyCode)) {
       allFamilyCodes.add(userProfile.familyCode);
     }
 
     // Add associated family codes
     if (userProfile.associatedFamilyCodes && Array.isArray(userProfile.associatedFamilyCodes)) {
       userProfile.associatedFamilyCodes.forEach(code => {
-        if (code && !code.startsWith('REL_')) { // Skip relationship-generated codes
+        if (code && !code.startsWith('REL_') && !blockedFamilyCodes.has(code)) { // Skip relationship-generated and blocked codes
           allFamilyCodes.add(code);
         }
       });
@@ -1395,7 +1430,11 @@ async getAssociatedFamilyPrefixes(userId: number) {
     // Get relationships and their family codes
     const relationships = await this.relationshipEdgeService.getUserRelationships(userId);
     for (const rel of relationships) {
-      if (rel.generatedFamilyCode && !rel.generatedFamilyCode.startsWith('REL_')) {
+      if (
+        rel.generatedFamilyCode &&
+        !rel.generatedFamilyCode.startsWith('REL_') &&
+        !blockedFamilyCodes.has(rel.generatedFamilyCode)
+      ) {
         allFamilyCodes.add(rel.generatedFamilyCode);
       }
     }

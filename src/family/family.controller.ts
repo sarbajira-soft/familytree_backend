@@ -215,14 +215,18 @@ export class FamilyController {
       }
     });
     // familyCode should be present in body
-    return this.familyService.createFamilyTree(body);
+    const loggedInUser = req.user;
+    return this.familyService.createFamilyTree(body, loggedInUser.userId);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get('tree/:familyCode')
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Get family tree by family code' })
   @ApiResponse({ status: 200, description: 'Family tree retrieved successfully' })
-  async getFamilyTree(@Param('familyCode') familyCode: string) {
-    return this.familyService.getFamilyTree(familyCode);
+  async getFamilyTree(@Param('familyCode') familyCode: string, @Req() req) {
+    const userId = req.user?.userId;
+    return this.familyService.getFamilyTree(familyCode, userId);
   }
 
   @UseGuards(JwtAuthGuard)

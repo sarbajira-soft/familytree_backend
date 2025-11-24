@@ -143,6 +143,23 @@ export class NotificationService {
     };
   }
 
+  async notifyPostLike(postId: number, likedByUserId: number, likedByName: string, postOwnerId: number) {
+  // Construct notification payload
+  return this.createNotification(
+    {
+      type: 'post_like',
+      title: 'New Like on Your Post',
+      message: `${likedByName} liked your post`,
+      userIds: [postOwnerId],
+      data: { postId, likedByUserId, likedByName },
+      referenceId: postId,
+      familyCode: null, // or if relevant
+    },
+    likedByUserId,
+  );
+}
+
+
   // Helper method to update unread count for a user
   private async updateUnreadCountForUser(userId: number) {
     const count = await this.recipientModel.count({

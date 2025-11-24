@@ -10,7 +10,7 @@ import { User } from '../user/model/user.model';
   imports: [
     PassportModule,
     JwtModule.register({
-      secret: process.env.JWT_SECRET || 'your_secret_key',
+      secret: process.env.JWT_SECRET,
       signOptions: { expiresIn: '1d' },
     }),
     SequelizeModule.forFeature([User]),

@@ -18,29 +18,47 @@ import { JwtService } from '@nestjs/jwt';
   },
   namespace: '/notifications',
 })
-export class NotificationGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class NotificationGateway
+  implements OnGatewayConnection, OnGatewayDisconnect
+{
   @WebSocketServer()
   server: Server;
 
   private readonly logger = new Logger(NotificationGateway.name);
   private userSockets: Map<string, Set<string>> = new Map(); // userId -> Set of socketIds
 
-  constructor(private jwtService: JwtService) {}
+  constructor(private jwtService: JwtService) {
+    this.logger.log(
+      `NotificationGateway using secret: ${process.env.JWT_SECRETy}`,
+    );
+  }
 
   async handleConnection(client: Socket) {
     try {
       // Extract token from handshake
-      const token = client.handshake.auth.token || client.handshake.headers.authorization?.split(' ')[1];
-      
+      this.logger.log(
+        `Handshake auth data: ${JSON.stringify(client.handshake.auth)}`,
+      );
+      this.logger.log(
+        `Handshake headers: ${JSON.stringify(client.handshake.headers)}`,
+      );
+
+      const token =
+        client.handshake.auth.token ||
+        client.handshake.headers.authorization?.split(' ')[1];
+      this.logger.log(`Received token: ${token}`);
       if (!token) {
-        this.logger.warn(`Client ${client.id} attempted to connect without token`);
+        this.logger.warn(
+          `Client ${client.id} attempted to connect without token`,
+        );
         client.disconnect();
         return;
       }
 
       // Verify JWT token
       const payload = await this.jwtService.verifyAsync(token);
-      const userId = payload.sub || payload.userId;
+      this.logger.log(`Verified token payload: ${JSON.stringify(payload)}`);
+      const userId = payload.id || payload.sub || payload.userId;
 
       if (!userId) {
         this.logger.warn(`Client ${client.id} has invalid token payload`);
@@ -61,31 +79,37 @@ export class NotificationGateway implements OnGatewayConnection, OnGatewayDiscon
       client.join(`user:${userId}`);
 
       this.logger.log(`Client ${client.id} connected for user ${userId}`);
-      this.logger.log(`Total connections for user ${userId}: ${this.userSockets.get(userId).size}`);
+      this.logger.log(
+        `Total connections for user ${userId}: ${
+          this.userSockets.get(userId).size
+        }`,
+      );
 
       // Send connection confirmation
-      client.emit('connected', { 
+      client.emit('connected', {
         message: 'Connected to notification service',
-        userId 
+        userId,
       });
-
     } catch (error) {
-      this.logger.error(`Connection error for client ${client.id}:`, error.message);
+      this.logger.error(
+        `Connection error for client ${client.id}:`,
+        error.message,
+      );
       client.disconnect();
     }
   }
 
   handleDisconnect(client: Socket) {
     const userId = client.data.userId;
-    
+
     if (userId && this.userSockets.has(userId)) {
       this.userSockets.get(userId).delete(client.id);
-      
+
       // Clean up empty sets
       if (this.userSockets.get(userId).size === 0) {
         this.userSockets.delete(userId);
       }
-      
+
       this.logger.log(`Client ${client.id} disconnected for user ${userId}`);
     } else {
       this.logger.log(`Client ${client.id} disconnected (no user association)`);
@@ -98,7 +122,7 @@ export class NotificationGateway implements OnGatewayConnection, OnGatewayDiscon
     @MessageBody() data: { userId: string },
   ) {
     const userId = client.data.userId;
-    
+
     if (!userId) {
       client.emit('error', { message: 'Unauthorized' });
       return;
@@ -106,39 +130,48 @@ export class NotificationGateway implements OnGatewayConnection, OnGatewayDiscon
 
     client.join(`user:${userId}`);
     this.logger.log(`User ${userId} subscribed to notifications`);
-    
-    return { 
-      event: 'subscribed', 
-      data: { message: 'Successfully subscribed to notifications' } 
+
+    return {
+      event: 'subscribed',
+      data: { message: 'Successfully subscribed to notifications' },
     };
   }
 
   @SubscribeMessage('unsubscribe-notifications')
   handleUnsubscribe(@ConnectedSocket() client: Socket) {
     const userId = client.data.userId;
-    
+
     if (userId) {
       client.leave(`user:${userId}`);
       this.logger.log(`User ${userId} unsubscribed from notifications`);
     }
-    
-    return { 
-      event: 'unsubscribed', 
-      data: { message: 'Successfully unsubscribed from notifications' } 
+
+    return {
+      event: 'unsubscribed',
+      data: { message: 'Successfully unsubscribed from notifications' },
     };
   }
 
   // Method to send notification to specific user
   sendNotificationToUser(userId: string, notification: any) {
-    this.logger.log(`Sending notification to user ${userId}:`, notification.type);
+    this.logger.log(
+      `Sending notification to user ${userId}:`,
+      notification.type,
+    );
     this.server.to(`user:${userId}`).emit('notification', notification);
   }
 
   // Method to send notification to multiple users
   sendNotificationToUsers(userIds: string[], notification: any) {
-    userIds.forEach(userId => {
+    userIds.forEach((userId) => {
       this.sendNotificationToUser(userId, notification);
     });
+  }
+
+  // Method to send post-like event to a specific user
+  sendPostLikeEvent(userId: string | number, data: any) {
+    this.logger.log(`Sending post-like event to user ${userId}`);
+    this.server.to(`user:${userId}`).emit('post-like', data);
   }
 
   // Method to update unread count for user
@@ -148,8 +181,14 @@ export class NotificationGateway implements OnGatewayConnection, OnGatewayDiscon
   }
 
   // Method to notify notification status change
-  notifyNotificationUpdate(userId: string, notificationId: string, status: string) {
-    this.logger.log(`Notifying user ${userId} of notification ${notificationId} status: ${status}`);
+  notifyNotificationUpdate(
+    userId: string,
+    notificationId: string,
+    status: string,
+  ) {
+    this.logger.log(
+      `Notifying user ${userId} of notification ${notificationId} status: ${status}`,
+    );
     this.server.to(`user:${userId}`).emit('notification-updated', {
       notificationId,
       status,
@@ -163,13 +202,15 @@ export class NotificationGateway implements OnGatewayConnection, OnGatewayDiscon
 
   // Check if user is connected
   isUserConnected(userId: string): boolean {
-    return this.userSockets.has(userId) && this.userSockets.get(userId).size > 0;
+    return (
+      this.userSockets.has(userId) && this.userSockets.get(userId).size > 0
+    );
   }
 
   // Get all connected socket IDs for a user
   getUserSockets(userId: string): string[] {
-    return this.userSockets.has(userId) 
-      ? Array.from(this.userSockets.get(userId)) 
+    return this.userSockets.has(userId)
+      ? Array.from(this.userSockets.get(userId))
       : [];
   }
 }

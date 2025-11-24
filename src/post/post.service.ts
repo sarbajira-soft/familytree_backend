@@ -2,7 +2,6 @@ import {
   Injectable,
   BadRequestException,
   NotFoundException,
-  ForbiddenException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
@@ -19,6 +18,7 @@ import { NotificationService } from '../notification/notification.service';
 import { UploadService } from '../uploads/upload.service';
 import { PostGateway } from './post.gateway';
 import { BaseCommentService } from '../common/services/base-comment.service';
+import { NotificationGateway } from 'src/notification/notification.gateway';
 
 @Injectable()
 export class PostService {
@@ -37,15 +37,13 @@ export class PostService {
     private readonly userModel: typeof User,
 
     private readonly notificationService: NotificationService,
+    private readonly notificationGateway: NotificationGateway,
     private readonly postGateway: PostGateway,
   ) {
     this.baseCommentService = new BaseCommentService();
   }
 
-  async createPost(
-    dto: CreatePostDto,
-    createdBy: number,
-  ) {
+  async createPost(dto: CreatePostDto, createdBy: number) {
     // Extract just the filename if it's a full URL
     let postImage = dto.postImage;
     if (postImage && postImage.startsWith('http')) {
@@ -69,8 +67,13 @@ export class PostService {
     });
 
     // Step 2: Send notification only if familyCode exists (for private/family posts)
-    if (dto.familyCode && (dto.privacy === 'private' || dto.privacy === 'family')) {
-      const memberIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
+    if (
+      dto.familyCode &&
+      (dto.privacy === 'private' || dto.privacy === 'family')
+    ) {
+      const memberIds = await this.notificationService.getAdminsForFamily(
+        dto.familyCode,
+      );
 
       if (memberIds.length > 0) {
         await this.notificationService.createNotification(
@@ -121,7 +124,9 @@ export class PostService {
     dto: CreatePostDto | EditPostDto,
     newImage?: Express.Multer.File | string,
   ) {
-    const post = await this.postModel.findOne({ where: { id: postId, createdBy: userId } });
+    const post = await this.postModel.findOne({
+      where: { id: postId, createdBy: userId },
+    });
 
     if (!post) {
       throw new NotFoundException('Post not found or access denied.');
@@ -133,7 +138,7 @@ export class PostService {
     // If new image is uploaded, process it
     if (newImage) {
       const uploadService = new UploadService();
-      
+
       // 1. Delete the old image if it exists
       if (oldImage) {
         try {
@@ -145,9 +150,10 @@ export class PostService {
               await uploadService.deleteFile(oldImageUrl);
             } else {
               // Local file deletion
-              const uploadPath = process.env.POST_PHOTO_UPLOAD_PATH || './uploads/posts';
+              const uploadPath =
+                process.env.POST_PHOTO_UPLOAD_PATH || './uploads/posts';
               const imagePath = path.join(uploadPath, path.basename(oldImage));
-              
+
               if (fs.existsSync(imagePath)) {
                 fs.unlinkSync(imagePath);
               }
@@ -158,13 +164,13 @@ export class PostService {
           // Continue with update even if old image deletion fails
         }
       }
-      
+
       // 2. Check if newImage is a file (Multer.File) or a string (URL)
       if (typeof newImage !== 'string') {
         try {
           // 3. Upload the new image to S3 if it's a file
           const imageUrl = await uploadService.uploadFile(newImage, 'posts');
-          
+
           // 4. Extract just the filename from the URL
           try {
             const url = new URL(imageUrl);
@@ -209,7 +215,7 @@ export class PostService {
     // Get the updated post with the full image URL
     const updatedPost = await this.postModel.findByPk(postId);
     const postJson = updatedPost?.toJSON() as any;
-    
+
     if (postJson) {
       postJson.postImage = this.getPostImageUrl(postJson.postImage);
     }
@@ -247,9 +253,12 @@ export class PostService {
    * @param oldImageFilename The filename of the old image
    * @returns boolean indicating if the images are the same
    */
-  private async isSameImage(newImage: Express.Multer.File, oldImageFilename: string | null): Promise<boolean> {
+  private async isSameImage(
+    newImage: Express.Multer.File,
+    oldImageFilename: string | null,
+  ): Promise<boolean> {
     if (!oldImageFilename) return false;
-    
+
     try {
       // Extract just the filename without path if it's a full URL
       let filename = oldImageFilename;
@@ -263,7 +272,7 @@ export class PostService {
       // Compare filenames (without timestamps if any)
       const oldName = filename.split('_').pop()?.split('.')[0];
       const newName = newImage.originalname.split('.')[0];
-      
+
       return oldName === newName;
     } catch (error) {
       console.error('Error comparing images:', error);
@@ -277,7 +286,7 @@ export class PostService {
     createdBy?: number,
     postId?: number,
     caption?: string,
-    userId?: number
+    userId?: number,
   ) {
     const whereClause: any = {};
 
@@ -286,7 +295,9 @@ export class PostService {
     if (privacy) {
       if (privacy === 'private' || privacy === 'family') {
         if (!familyCode) {
-          throw new BadRequestException('familyCode is required for private/family privacy');
+          throw new BadRequestException(
+            'familyCode is required for private/family privacy',
+          );
         }
         whereClause.privacy = privacy;
         whereClause.familyCode = familyCode;
@@ -316,7 +327,9 @@ export class PostService {
     });
 
     const baseUrl = process.env.BASE_URL || '';
-    const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
+    const profilePath =
+      process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') ||
+      'uploads/profile';
 
     const formatted = await Promise.all(
       posts.map(async (post) => {
@@ -343,7 +356,7 @@ export class PostService {
         // Format user info
         const user = postJson.userProfile;
         const fullName = user ? `${user.firstName} ${user.lastName}` : null;
-        
+
         // Get profile image URL - check if it's already a full URL
         let profileImage = user?.profile || null;
         if (profileImage) {
@@ -368,32 +381,86 @@ export class PostService {
             profile: profileImage,
           },
         };
-      })
+      }),
     );
 
     return formatted;
   }
 
   async toggleLikePost(postId: number, userId: number) {
-    const existingLike = await this.postLikeModel.findOne({ where: { postId, userId } });
+    const existingLike = await this.postLikeModel.findOne({
+      where: { postId, userId },
+    });
 
     if (existingLike) {
-      // User already liked it, so remove like
       await existingLike.destroy();
     } else {
-      // User did not like yet, create like
       await this.postLikeModel.create({ postId, userId });
     }
 
-    // Get the updated total like count
+    // LIKE COUNT
     const likeCount = await this.postLikeModel.count({ where: { postId } });
 
-    // Get user name for broadcast
-    const userProfile = await this.userProfileModel.findOne({ where: { userId } });
-    const userName = userProfile ? `${userProfile.firstName} ${userProfile.lastName}` : 'Unknown User';
+    // USER NAME
+    const userProfile = await this.userProfileModel.findOne({
+      where: { userId },
+    });
+    const userName = userProfile
+      ? `${userProfile.firstName} ${userProfile.lastName}`
+      : 'Unknown User';
 
-    // Broadcast like update via WebSocket
-    this.postGateway.broadcastLike(postId, userId, likeCount, !existingLike, userName);
+    // POST OWNER
+    const post = await this.postModel.findByPk(postId);
+    if (!post) return;
+
+    const postOwnerId = post.createdBy;
+
+    // SEND NOTIFICATION ONLY IF LIKE AND NOT SELF-LIKE
+    if (!existingLike && postOwnerId !== userId) {
+      // 1️⃣ Emit standard notification
+      await this.notificationService.notifyPostLike(
+        postId,
+        userId,
+        userName,
+        postOwnerId,
+      );
+
+
+      this.notificationGateway.sendNotificationToUser(postOwnerId.toString(), {
+        type: 'post_like',
+        postId,
+        likedByUserId: userId,
+        likedByName: userName,
+        message: `${userName} liked your post`,
+        createdAt: new Date(),
+      });
+
+      // 2️⃣ Emit post-like event (your frontend expects this)
+      this.notificationGateway.server
+        .to(`user:${postOwnerId}`)
+        .emit('post-like', {
+          postId,
+          userId,
+          userName,
+          message: `${userName} liked your post`,
+          time: new Date(),
+        });
+
+      // 3️⃣ Update unread count (optional)
+      this.notificationGateway.updateUnreadCount(postOwnerId.toString(), likeCount);
+    }
+
+    
+
+
+    // Broadcast to all users for real-time like update
+    this.postGateway.broadcastLike(
+      postId,
+      userId,
+      likeCount,
+      !existingLike,
+      userName,
+    );
 
     return {
       liked: !existingLike,
@@ -403,11 +470,17 @@ export class PostService {
   }
 
   async addComment(postId: number, userId: number, comment: string) {
-    const newComment = await this.postCommentModel.create({ postId, userId, comment });
+    const newComment = await this.postCommentModel.create({
+      postId,
+      userId,
+      comment,
+    });
 
     // Get user profile to include in response
-    const userProfile = await this.userProfileModel.findOne({ where: { userId } });
-    
+    const userProfile = await this.userProfileModel.findOne({
+      where: { userId },
+    });
+
     // Format response to match GET comments structure
     const formattedComment = {
       id: newComment.id,
@@ -416,13 +489,15 @@ export class PostService {
       createdAt: newComment.createdAt,
       updatedAt: newComment.updatedAt,
       userId: newComment.userId,
-      user: userProfile ? {
-        firstName: userProfile.firstName,
-        lastName: userProfile.lastName,
-        profile: userProfile.profile
-          ? `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`
-          : null,
-      } : null,
+      user: userProfile
+        ? {
+            firstName: userProfile.firstName,
+            lastName: userProfile.lastName,
+            profile: userProfile.profile
+              ? `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`
+              : null,
+          }
+        : null,
     };
 
     // Broadcast new comment via WebSocket (using the formatted structure)
@@ -436,7 +511,8 @@ export class PostService {
     const offset = (page - 1) * limit;
     const baseUrl = process.env.BASE_URL || '';
     const profileUploadPath =
-      process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
+      process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') ||
+      'uploads/profile';
 
     const { rows, count } = await this.postCommentModel.findAndCountAll({
       where: { postId },
@@ -463,13 +539,15 @@ export class PostService {
         createdAt: comment.createdAt,
         updatedAt: comment.updatedAt,
         userId: comment.userId,
-        user: comment.userProfile ? {
-          firstName: comment.userProfile.firstName,
-          lastName: comment.userProfile.lastName,
-          profile: comment.userProfile.profile
-            ? `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${comment.userProfile.profile}`
-            : null,
-        } : null,
+        user: comment.userProfile
+          ? {
+              firstName: comment.userProfile.firstName,
+              lastName: comment.userProfile.lastName,
+              profile: comment.userProfile.profile
+                ? `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${comment.userProfile.profile}`
+                : null,
+            }
+          : null,
       })),
     };
   }
@@ -489,9 +567,9 @@ export class PostService {
     return {
       data: {
         ...postJson,
-        postImage: postImageUrl
+        postImage: postImageUrl,
       },
-      imageUrl: postImageUrl || this.getPostImageUrl('default.png')
+      imageUrl: postImageUrl || this.getPostImageUrl('default.png'),
     };
   }
 
@@ -506,7 +584,9 @@ export class PostService {
   }
 
   async deletePost(postId: number, userId: number) {
-    const post = await this.postModel.findOne({ where: { id: postId, createdBy: userId } });
+    const post = await this.postModel.findOne({
+      where: { id: postId, createdBy: userId },
+    });
 
     if (!post) {
       throw new NotFoundException('Post not found or access denied.');
@@ -524,7 +604,7 @@ export class PostService {
       try {
         const uploadService = new UploadService();
         const imageUrl = this.getPostImageUrl(imageFilename);
-        
+
         if (imageUrl) {
           // Check if it's an S3 URL or local file
           if (imageUrl.includes('amazonaws.com')) {
@@ -532,9 +612,13 @@ export class PostService {
             await uploadService.deleteFile(imageUrl);
           } else {
             // Local file deletion
-            const uploadPath = process.env.POST_PHOTO_UPLOAD_PATH || './uploads/posts';
-            const imagePath = path.join(uploadPath, path.basename(imageFilename));
-            
+            const uploadPath =
+              process.env.POST_PHOTO_UPLOAD_PATH || './uploads/posts';
+            const imagePath = path.join(
+              uploadPath,
+              path.basename(imageFilename),
+            );
+
             if (fs.existsSync(imagePath)) {
               fs.unlinkSync(imagePath);
             }
@@ -553,14 +637,19 @@ export class PostService {
     this.postGateway.broadcastPostDeleted(postId, post.familyCode);
 
     return {
-      message: 'Post deleted successfully along with associated comments and likes',
+      message:
+        'Post deleted successfully along with associated comments and likes',
     };
   }
 
   /**
    * Edit a post comment - reuses base service
    */
-  async editPostComment(commentId: number, userId: number, newCommentText: string) {
+  async editPostComment(
+    commentId: number,
+    userId: number,
+    newCommentText: string,
+  ) {
     const result = await this.baseCommentService.editComment(
       this.postCommentModel,
       commentId,
@@ -570,8 +659,10 @@ export class PostService {
     );
 
     // Get user profile to include in response
-    const userProfile = await this.userProfileModel.findOne({ where: { userId } });
-    
+    const userProfile = await this.userProfileModel.findOne({
+      where: { userId },
+    });
+
     // Format response to match GET comments structure
     const formattedComment = {
       id: result.data.id,
@@ -580,13 +671,15 @@ export class PostService {
       createdAt: result.data.createdAt,
       updatedAt: result.data.updatedAt,
       userId: result.data.userId,
-      user: userProfile ? {
-        firstName: userProfile.firstName,
-        lastName: userProfile.lastName,
-        profile: userProfile.profile
-          ? `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`
-          : null,
-      } : null,
+      user: userProfile
+        ? {
+            firstName: userProfile.firstName,
+            lastName: userProfile.lastName,
+            profile: userProfile.profile
+              ? `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`
+              : null,
+          }
+        : null,
     };
 
     return formattedComment;
@@ -622,8 +715,10 @@ export class PostService {
     );
 
     // Get user profile to include in response
-    const userProfile = await this.userProfileModel.findOne({ where: { userId } });
-    
+    const userProfile = await this.userProfileModel.findOne({
+      where: { userId },
+    });
+
     // Format response to match GET comments structure
     const formattedComment = {
       id: result.data.id,
@@ -632,13 +727,15 @@ export class PostService {
       createdAt: result.data.createdAt,
       updatedAt: result.data.updatedAt,
       userId: result.data.userId,
-      user: userProfile ? {
-        firstName: userProfile.firstName,
-        lastName: userProfile.lastName,
-        profile: userProfile.profile
-          ? `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`
-          : null,
-      } : null,
+      user: userProfile
+        ? {
+            firstName: userProfile.firstName,
+            lastName: userProfile.lastName,
+            profile: userProfile.profile
+              ? `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`
+              : null,
+          }
+        : null,
     };
 
     return formattedComment;

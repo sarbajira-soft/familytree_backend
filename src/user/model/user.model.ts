@@ -26,7 +26,7 @@ export class User extends Model<User> {
   @Column(DataType.DATE)
   otpExpiresAt: Date;
 
-  @Column(DataType.STRING)
+  @Column(DataType.TEXT)
   accessToken: string;
 
   @Default(0)

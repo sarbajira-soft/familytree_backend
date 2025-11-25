@@ -526,30 +526,75 @@ export class FamilyService {
 
     console.log('✅ Members in tree:', memberIdsInTree);
 
-    // Remove family members who are not in the new tree
+    // Remove non-admin family members who are not in the new tree
     if (memberIdsInTree.length > 0) {
-      const deletedMembers = await this.familyMemberModel.destroy({
+      const membershipsToDelete = await this.familyMemberModel.findAll({
         where: {
           familyCode,
-          memberId: { [Op.notIn]: memberIdsInTree }
-        }
+          memberId: { [Op.notIn]: memberIdsInTree },
+        },
+        include: [
+          {
+            model: this.userModel,
+            as: 'user',
+            required: false,
+          },
+        ],
       });
-      console.log(`✅ Removed ${deletedMembers} family members not in new tree`);
+
+      // Keep admin users (role 2 or 3) even if they are not present in the tree
+      const memberIdsToDelete = membershipsToDelete
+        .filter((m: any) => !m.user || (m.user.role !== 2 && m.user.role !== 3))
+        .map((m: any) => m.memberId);
+
+      const deletedMembers = memberIdsToDelete.length
+        ? await this.familyMemberModel.destroy({
+            where: {
+              familyCode,
+              memberId: { [Op.in]: memberIdsToDelete },
+            },
+          })
+        : 0;
+
+      console.log(`✅ Removed ${deletedMembers} non-admin family members not in new tree`);
     } else {
-      // If no existing members in tree, remove all members except creator
+      // If no existing members in tree, remove all non-admin members except creator
       const familyCreator = await this.familyModel.findOne({ 
         where: { familyCode },
         attributes: ['createdBy']
       });
       
       if (familyCreator) {
-        const deletedMembers = await this.familyMemberModel.destroy({
+        const membershipsToDelete = await this.familyMemberModel.findAll({
           where: {
             familyCode,
-            memberId: { [Op.ne]: familyCreator.createdBy }
-          }
+            memberId: { [Op.ne]: familyCreator.createdBy },
+          },
+          include: [
+            {
+              model: this.userModel,
+              as: 'user',
+              required: false,
+            },
+          ],
         });
-        console.log(`✅ Removed ${deletedMembers} members from family_member table (keeping only creator)`);
+
+        const memberIdsToDelete = membershipsToDelete
+          .filter((m: any) => !m.user || (m.user.role !== 2 && m.user.role !== 3))
+          .map((m: any) => m.memberId);
+
+        const deletedMembers = memberIdsToDelete.length
+          ? await this.familyMemberModel.destroy({
+              where: {
+                familyCode,
+                memberId: { [Op.in]: memberIdsToDelete },
+              },
+            })
+          : 0;
+
+        console.log(
+          `✅ Removed ${deletedMembers} non-admin members from family_member table (keeping creator and admins)`,
+        );
       }
     }
 

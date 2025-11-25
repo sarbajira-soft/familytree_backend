@@ -4,6 +4,7 @@ import { AppModule } from './app.module';
 import { Sequelize } from 'sequelize-typescript';
 import { bootstrapApp } from './bootstrap';
 
+
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
   await bootstrapApp(app);

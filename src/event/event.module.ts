@@ -16,7 +16,7 @@ import { FamilyMember } from '../family/model/family-member.model';
     SequelizeModule.forFeature([Event, User, UserProfile, EventImage, FamilyMember]),
     NotificationModule, // Import NotificationModule to use NotificationService
     JwtModule.register({
-      secret: process.env.JWT_SECRET || 'your-secret-key',
+      secret: process.env.JWT_SECRET,
       signOptions: { expiresIn: '7d' },
     }),
   ],

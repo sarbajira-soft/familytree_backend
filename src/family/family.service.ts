@@ -1440,7 +1440,6 @@ async getAssociatedFamilyPrefixes(userId: number) {
     const blockedMemberships = await this.familyMemberModel.findAll({
       where: {
         memberId: userId,
-        // @ts-ignore - isBlocked is present on the model
         isBlocked: true,
       } as any,
     });

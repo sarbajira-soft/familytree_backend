@@ -28,10 +28,12 @@ import { UserModule } from '../user/user.module';
       FamilyMember,
     ]),
     ScheduleModule.forRoot(),
-    JwtModule.register({
-      secret: process.env.JWT_SECRET || 'your-secret-key',
+    JwtModule.registerAsync({
+    useFactory: () => ({
+      secret: process.env.JWT_SECRET,
       signOptions: { expiresIn: '7d' },
     }),
+  }),
     forwardRef(() => FamilyModule),
     forwardRef(() => UserModule),
   ],

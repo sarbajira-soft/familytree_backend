@@ -425,7 +425,6 @@ export class PostService {
         postOwnerId,
       );
 
-
       this.notificationGateway.sendNotificationToUser(postOwnerId.toString(), {
         type: 'post_like',
         postId,
@@ -447,11 +446,11 @@ export class PostService {
         });
 
       // 3️⃣ Update unread count (optional)
-      this.notificationGateway.updateUnreadCount(postOwnerId.toString(), likeCount);
+      this.notificationGateway.updateUnreadCount(
+        postOwnerId.toString(),
+        likeCount,
+      );
     }
-
-    
-
 
     // Broadcast to all users for real-time like update
     this.postGateway.broadcastLike(
@@ -476,15 +475,60 @@ export class PostService {
       comment,
     });
 
-    // Get user profile to include in response
+    // Fetch user
     const userProfile = await this.userProfileModel.findOne({
       where: { userId },
     });
+    const userName = userProfile
+      ? `${userProfile.firstName} ${userProfile.lastName}`
+      : 'Unknown User';
 
-    // Format response to match GET comments structure
+    // Get Post Owner
+    const post = await this.postModel.findByPk(postId);
+    if (!post) return;
+
+    const postOwnerId = post.createdBy;
+
+    // 1️⃣ SEND NOTIFICATION ONLY IF NOT SELF-COMMENT
+    if (postOwnerId !== userId) {
+      await this.notificationService.notifyComment(
+        postId,
+        userId,
+        userName,
+        postOwnerId,
+        comment,
+      );
+
+      // Real-time notification
+      this.notificationGateway.sendNotificationToUser(postOwnerId.toString(), {
+        type: 'post_comment',
+        postId,
+        comment,
+        commentedByUserId: userId,
+        commentedByName: userName,
+        message: `${userName} commented on your post`,
+        createdAt: new Date(),
+      });
+
+      // Frontend-specific event
+      this.notificationGateway.server
+        .to(`user:${postOwnerId}`)
+        .emit('post-comment', {
+          postId,
+          userId,
+          userName,
+          comment,
+          message: `${userName} commented on your post`,
+          time: new Date(),
+        });
+
+    }
+
+
+    // 2️⃣ Prepare formatted comment for UI
     const formattedComment = {
       id: newComment.id,
-      content: newComment.comment, // Use the actual field from database
+      content: newComment.comment,
       parentCommentId: newComment.parentCommentId,
       createdAt: newComment.createdAt,
       updatedAt: newComment.updatedAt,
@@ -500,10 +544,9 @@ export class PostService {
         : null,
     };
 
-    // Broadcast new comment via WebSocket (using the formatted structure)
+    // 3️⃣ Broadcast comment to everyone watching the post
     this.postGateway.broadcastComment(postId, formattedComment);
 
-    // Return the formatted comment that matches GET structure
     return formattedComment;
   }
 

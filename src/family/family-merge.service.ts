@@ -145,7 +145,12 @@ export class FamilyMergeService {
     };
   }
 
-  async createMergeRequest(primaryFamilyCode: string, secondaryFamilyCode: string, adminUserId: number) {
+  async createMergeRequest(
+    primaryFamilyCode: string,
+    secondaryFamilyCode: string,
+    adminUserId: number,
+    anchorConfig?: any,
+  ) {
     if (!adminUserId) {
       throw new ForbiddenException('Missing user context');
     }
@@ -191,6 +196,7 @@ export class FamilyMergeService {
       requestedByAdminId: adminUserId,
       primaryStatus: 'open',
       secondaryStatus: 'pending',
+      anchorConfig: anchorConfig || null,
     });
 
     // Notify admins of the primary family (decision makers)
@@ -441,6 +447,27 @@ export class FamilyMergeService {
     };
   }
 
+  // Lightweight preview for an arbitrary familyCode, used by secondary admin popup
+  async getFamilyPreviewForAnchor(familyCode: string, adminUserId: number) {
+    if (!familyCode) {
+      throw new BadRequestException('familyCode is required');
+    }
+    // Ensure caller is an admin somewhere (basic guard)
+    const user = await this.userModel.findByPk(adminUserId);
+    if (!user || (user.role !== 2 && user.role !== 3)) {
+      throw new ForbiddenException('Only admins can preview families for merge');
+    }
+    const fam = await this.familyModel.findOne({ where: { familyCode } });
+    if (!fam) {
+      throw new NotFoundException('Family not found');
+    }
+    const preview = await this.buildFamilyPreview(familyCode, adminUserId);
+    return {
+      familyCode,
+      ...preview,
+    };
+  }
+
   async getMergeAnalysis(requestId: number, adminUserId: number) {
     const request = await this.getMergeRequestForAdmin(requestId, adminUserId);
 
@@ -591,6 +618,30 @@ export class FamilyMergeService {
 
       if (bestMatch && bestScore >= 20) {
         const b = bestMatch.candidate;
+
+        // Strict demographic gate: require exact match on name, gender, age, and generation
+        const aNameStrict = this.normalizeName(a.name);
+        const bNameStrict = this.normalizeName(b.name);
+        const hasValidName = !!aNameStrict && !!bNameStrict;
+        const sameName = hasValidName && aNameStrict === bNameStrict;
+
+        const aGender = a.gender ?? null;
+        const bGender = b.gender ?? null;
+        const sameGender = aGender !== null && bGender !== null && aGender === bGender;
+
+        const aAgeStrict = typeof a.age === 'number' ? a.age : null;
+        const bAgeStrict = typeof b.age === 'number' ? b.age : null;
+        const sameAge = aAgeStrict !== null && bAgeStrict !== null && aAgeStrict === bAgeStrict;
+
+        const aGenStrict = typeof a.generation === 'number' ? a.generation : null;
+        const bGenStrict = typeof b.generation === 'number' ? b.generation : null;
+        const sameGeneration = aGenStrict !== null && bGenStrict !== null && aGenStrict === bGenStrict;
+
+        if (!(sameName && sameGender && sameAge && sameGeneration)) {
+          // Does not satisfy strict match criteria -> treat as no-match for this secondary person
+          return;
+        }
+
         matchedBPersonIds.add(b.personId);
 
         let level: 'exact' | 'probable' | 'possible';
@@ -708,6 +759,38 @@ export class FamilyMergeService {
       await request.save();
     }
 
+    // Mark required chain: direct parents of the secondary admin must be carried into the merge
+    const secondaryAdmin = familyB.find((p) => p && p.isAdmin && p.personId != null);
+    const requiredSecondaryParentIds = new Set<number>();
+
+    if (secondaryAdmin && Array.isArray(secondaryAdmin.parents) && secondaryAdmin.parents.length > 0) {
+      for (const pid of secondaryAdmin.parents as number[]) {
+        if (typeof pid === 'number') {
+          requiredSecondaryParentIds.add(pid);
+        }
+      }
+    }
+
+    if (requiredSecondaryParentIds.size > 0) {
+      // Tag matches where the secondary person is one of the required parents
+      matches.forEach((m: any) => {
+        const secId = m?.secondary?.personId;
+        if (secId && requiredSecondaryParentIds.has(secId)) {
+          m.requiredChain = 'secondaryAdminParent';
+          if (m.secondary) {
+            m.secondary.requiredChain = 'secondaryAdminParent';
+          }
+        }
+      });
+
+      // Tag newPersons entries that are required parents in Family B
+      newPersons.forEach((p: any) => {
+        if (p && requiredSecondaryParentIds.has(p.personId)) {
+          p.requiredChain = 'secondaryAdminParent';
+        }
+      });
+    }
+
     const crisisAnalysis = await this.detectCrisisScenarios(request.id, familyA, familyB, matches);
 
     return {
@@ -715,6 +798,7 @@ export class FamilyMergeService {
       data: {
         primaryFamilyCode: request.primaryFamilyCode,
         secondaryFamilyCode: request.secondaryFamilyCode,
+        anchorConfig: (request as any).anchorConfig || null,
         generationOffset: {
           suggestedOffset,
           counts: Array.from(offsetCounts.entries()).map(([offset, count]) => ({ offset, count })),
@@ -820,6 +904,13 @@ export class FamilyMergeService {
     } else {
       state.state = enrichedState;
       await state.save();
+    }
+
+    // If an anchorConfig was provided in meta, persist it to the merge request for future analysis loads
+    const anchorConfig = enrichedState?.meta?.anchorConfig;
+    if (anchorConfig !== undefined) {
+      (request as any).anchorConfig = anchorConfig;
+      await request.save();
     }
 
     return {

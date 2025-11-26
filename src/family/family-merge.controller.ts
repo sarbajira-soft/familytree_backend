@@ -38,14 +38,27 @@ export class FamilyMergeController {
   @ApiResponse({ status: 201, description: 'Merge request created successfully' })
   async createMergeRequest(
     @Req() req,
-    @Body() body: { primaryFamilyCode: string; secondaryFamilyCode: string },
+    @Body() body: { primaryFamilyCode: string; secondaryFamilyCode: string; anchorConfig?: any },
   ) {
     const userId: number = req.user?.userId;
     return this.familyMergeService.createMergeRequest(
       body.primaryFamilyCode,
       body.secondaryFamilyCode,
       userId,
+      body.anchorConfig,
     );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('preview/:familyCode')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get lightweight family preview for anchor selection' })
+  async getFamilyPreviewForAnchor(
+    @Req() req,
+    @Param('familyCode') familyCode: string,
+  ) {
+    const userId: number = req.user?.userId;
+    return this.familyMergeService.getFamilyPreviewForAnchor(familyCode, userId);
   }
 
   @UseGuards(JwtAuthGuard)

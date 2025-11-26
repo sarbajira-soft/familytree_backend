@@ -38,4 +38,7 @@ export class FamilyMergeRequest extends Model<FamilyMergeRequest> {
 
   @Column({ type: DataType.BOOLEAN, defaultValue: false })
   isNoMatchMerge: boolean; // Flag for no match scenario
+
+  @Column({ type: DataType.JSONB, allowNull: true })
+  anchorConfig?: any; // Optional anchor mapping between primary and secondary
 }

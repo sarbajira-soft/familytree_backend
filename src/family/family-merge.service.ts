@@ -168,7 +168,9 @@ export class FamilyMergeService {
       throw new NotFoundException('Secondary family not found');
     }
 
-    await this.assertUserIsAdminOfFamily(adminUserId, primaryFamilyCode);
+    // In this flow, the logged-in admin belongs to the secondary family (requestor),
+    // and they are requesting to merge into the primary family (target).
+    await this.assertUserIsAdminOfFamily(adminUserId, secondaryFamilyCode);
 
     // Prevent duplicate open/accepted requests for the same pair
     const existing = await this.familyMergeModel.findOne({
@@ -239,8 +241,12 @@ export class FamilyMergeService {
       return { message: 'No families found for admin', data: [] };
     }
 
+    // Show requests where this admin belongs to either the primary or secondary family
     const where: any = {
-      primaryFamilyCode: { [Op.in]: adminFamilyCodes },
+      [Op.or]: [
+        { primaryFamilyCode: { [Op.in]: adminFamilyCodes } },
+        { secondaryFamilyCode: { [Op.in]: adminFamilyCodes } },
+      ],
     };
     if (status) {
       where.primaryStatus = status;
@@ -259,11 +265,9 @@ export class FamilyMergeService {
     adminUserId: number,
     newStatus: 'accepted' | 'rejected',
   ) {
-    const request = await this.familyMergeModel.findByPk(requestId);
-    if (!request) {
-      throw new NotFoundException('Merge request not found');
-    }
+    const request = await this.getMergeRequestForAdmin(requestId, adminUserId);
 
+    // Only primary family admins are allowed to change the status
     await this.assertUserIsAdminOfFamily(adminUserId, request.primaryFamilyCode);
 
     if (request.primaryStatus !== 'open') {
@@ -320,7 +324,24 @@ export class FamilyMergeService {
       throw new NotFoundException('Merge request not found');
     }
 
-    await this.assertUserIsAdminOfFamily(adminUserId, request.primaryFamilyCode);
+    // Allow admins of either the primary or the secondary family to access this request
+    const user = await this.userModel.findByPk(adminUserId);
+    if (!user || (user.role !== 2 && user.role !== 3)) {
+      throw new ForbiddenException('Only admins can manage family merge requests');
+    }
+
+    const membership = await this.familyMemberModel.findOne({
+      where: {
+        memberId: adminUserId,
+        familyCode: { [Op.in]: [request.primaryFamilyCode, request.secondaryFamilyCode] },
+        approveStatus: 'approved',
+      },
+    });
+
+    if (!membership) {
+      throw new ForbiddenException('Admin must belong to the primary or secondary family');
+    }
+
     return request;
   }
 
@@ -773,6 +794,9 @@ export class FamilyMergeService {
   async saveMergeState(requestId: number, adminUserId: number, statePayload: any) {
     const request = await this.getMergeRequestForAdmin(requestId, adminUserId);
 
+    // Only the primary family admin is allowed to modify merge state/decisions
+    await this.assertUserIsAdminOfFamily(adminUserId, request.primaryFamilyCode);
+
     let state = await this.familyMergeStateModel.findOne({
       where: { mergeRequestId: requestId },
     });
@@ -806,6 +830,9 @@ export class FamilyMergeService {
 
   async executeMerge(requestId: number, adminUserId: number) {
     const request = await this.getMergeRequestForAdmin(requestId, adminUserId);
+
+    // Only primary family admins can execute the merge
+    await this.assertUserIsAdminOfFamily(adminUserId, request.primaryFamilyCode);
 
     if (request.primaryStatus === 'merged') {
       throw new BadRequestException('Merge has already been executed for this request');

@@ -1311,7 +1311,11 @@ export class FamilyService {
       });
     });
 
-    // Convert to Map format for generation consistency fix
+    // Convert to Map format for relationship cleanup and final deduplication
+    // IMPORTANT: We intentionally do NOT call fixGenerationConsistency here.
+    // The frontend is the source of truth for generation values when saving
+    // the tree (via createFamilyTree), so we preserve the stored generations
+    // as-is to keep the visual layout stable across reloads.
     const allPeople = new Map();
     people.forEach(person => {
       allPeople.set(person.id, {
@@ -1323,20 +1327,17 @@ export class FamilyService {
       });
     });
 
-    // Apply generation consistency fix
-    this.fixGenerationConsistency(allPeople);
-
-    // Convert back to array format with corrected generations
+    // Convert back to array format with cleaned relationship sets but
+    // original generation values from the database
     const correctedPeople = Array.from(allPeople.values()).map(person => ({
       ...person,
-      // FIXED: Final duplicate cleanup using Set
       parents: [...new Set(Array.from(person.parents))],
       children: [...new Set(Array.from(person.children))],
       spouses: [...new Set(Array.from(person.spouses))],
       siblings: [...new Set(Array.from(person.siblings))]
     }));
 
-    // FINAL DEDUPLICATION: Remove duplicate people by ID
+    // FINAL DEDUPLICATION: Remove duplicate people by ID while preserving generation
     const finalPeople = correctedPeople.reduce((unique, person) => {
       const existingIndex = unique.findIndex(u => u.id === person.id);
       if (existingIndex === -1) {

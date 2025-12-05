@@ -72,7 +72,7 @@ export class FamilyMemberService {
         email: dto.email,
         countryCode: dto.countryCode,
         mobile: dto.mobile,
-        password: await bcrypt.hash(dto.password, 10),
+        password: await bcrypt.hash(dto.password, 12),
         status: dto.status ?? 1,
         role: dto.role ?? 1,
         createdBy: creatorId,

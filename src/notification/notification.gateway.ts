@@ -11,13 +11,30 @@ import { Server, Socket } from 'socket.io';
 import { Logger, UseGuards } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 
+
+
+const allowedNotificationOrigins = (process.env.ALLOWED_ORIGINS || '')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter((origin) => origin.length > 0);
+
 @WebSocketGateway({
   cors: {
-    origin: '*', // Configure this properly in production
+    origin:
+      allowedNotificationOrigins.length > 0
+        ? allowedNotificationOrigins
+        : false, // Configure this properly in production
     credentials: true,
   },
   namespace: '/notifications',
 })
+// @WebSocketGateway({
+//   cors: {
+//     origin: '*', // Configure this properly in production
+//     credentials: true,
+//   },
+//   namespace: '/notifications',
+// })
 export class NotificationGateway
   implements OnGatewayConnection, OnGatewayDisconnect
 {
@@ -28,25 +45,18 @@ export class NotificationGateway
   private userSockets: Map<string, Set<string>> = new Map(); // userId -> Set of socketIds
 
   constructor(private jwtService: JwtService) {
-    this.logger.log(
-      `NotificationGateway using secret: ${process.env.JWT_SECRETy}`,
-    );
+    // this.logger.log(
+    //   `NotificationGateway using secret: ${process.env.JWT_SECRET}`,
+    // );
   }
 
   async handleConnection(client: Socket) {
     try {
       // Extract token from handshake
-      this.logger.log(
-        `Handshake auth data: ${JSON.stringify(client.handshake.auth)}`,
-      );
-      this.logger.log(
-        `Handshake headers: ${JSON.stringify(client.handshake.headers)}`,
-      );
 
       const token =
         client.handshake.auth.token ||
         client.handshake.headers.authorization?.split(' ')[1];
-      this.logger.log(`Received token: ${token}`);
       if (!token) {
         this.logger.warn(
           `Client ${client.id} attempted to connect without token`,

@@ -34,6 +34,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { generateFileName, imageFileFilter } from '../utils/upload.utils';
 import { MergeUserDto } from './dto/merge-user.dto';
 import { UploadService } from '../uploads/upload.service';
+import { log } from 'console';
 
  
 @ApiTags('User Module')
@@ -41,13 +42,19 @@ import { UploadService } from '../uploads/upload.service';
 export class UserController {
   constructor(
     private readonly userService: UserService,
-    private readonly uploadService: UploadService
+    private readonly uploadService: UploadService,
   ) {}
 
   @Post('register')
   @ApiOperation({ summary: 'Register a new user' })
-  @ApiResponse({ status: 201, description: 'User registered successfully. OTP sent to email.' })
-  @ApiResponse({ status: 400, description: 'Bad request... Email or mobile number already registered.' })
+  @ApiResponse({
+    status: 201,
+    description: 'User registered successfully. OTP sent to email.',
+  })
+  @ApiResponse({
+    status: 400,
+    description: 'Bad request... Email or mobile number already registered.',
+  })
   @ApiBody({ type: RegisterDto })
   async register(@Body() registerDto: RegisterDto) {
     try {
@@ -62,7 +69,7 @@ export class UserController {
         statusCode: 400,
         message: 'Registration failed. Please check your input data.',
         error: error.message || 'Bad Request',
-        details: error.response?.message || undefined
+        details: error.response?.message || undefined,
       });
     }
   }
@@ -90,7 +97,10 @@ export class UserController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Resend OTP to email' })
   @ApiResponse({ status: 200, description: 'New OTP sent to email' })
-  @ApiResponse({ status: 400, description: 'User not found or already verified' })
+  @ApiResponse({
+    status: 400,
+    description: 'User not found or already verified',
+  })
   @ApiBody({ type: ResendOtpDto })
   async resendOtp(@Body() resendOtpDto: ResendOtpDto) {
     return this.userService.resendOtp(resendOtpDto);
@@ -117,7 +127,10 @@ export class UserController {
   }
 
   @Post('merge')
-  @ApiOperation({ summary: 'Merge current user data into existing user and delete current user' })
+  @ApiOperation({
+    summary:
+      'Merge current user data into existing user and delete current user',
+  })
   @ApiBody({ type: MergeUserDto })
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -127,7 +140,11 @@ export class UserController {
     if (!loggedInUser || (loggedInUser.role !== 2 && loggedInUser.role !== 3)) {
       throw new ForbiddenException('Only admin users can perform this action');
     }
-    return this.userService.mergeUserData(existingId, currentId, notificationId);
+    return this.userService.mergeUserData(
+      existingId,
+      currentId,
+      notificationId,
+    );
   }
 
   @UseGuards(JwtAuthGuard)
@@ -140,8 +157,10 @@ export class UserController {
   async getMyProfile(@Req() req) {
     const loggedInUser = req.user;
     console.log(loggedInUser);
-    
-    const userdata = await this.userService.getUserProfile(Number(loggedInUser.userId));
+
+    const userdata = await this.userService.getUserProfile(
+      Number(loggedInUser.userId),
+    );
     return {
       message: 'Profile fetched successfully',
       data: userdata,
@@ -159,9 +178,9 @@ export class UserController {
   async getProfile(@Req() req, @Param('id', ParseIntPipe) id: number) {
     const loggedInUser = req.user;
     const targetUserId = Number(id);
-  
-    // Always allow admin
-    if (loggedInUser.role === 2 || loggedInUser.role === 3 ) {
+
+    // Always allow self for any role
+    if (loggedInUser.userId === targetUserId) {
       const userdata = await this.userService.getUserProfile(id);
       return {
         message: 'Profile fetched successfully',
@@ -169,40 +188,75 @@ export class UserController {
         currentUser: loggedInUser,
       };
     }
-  
-    // If member, allow if self or same family
-    if (loggedInUser.role === 1) {
-      if (loggedInUser.userId === targetUserId) {
-        // Self
-        const userdata = await this.userService.getUserProfile(id);
-        return {
-          message: 'Profile fetched successfully',
-          data: userdata,
-          currentUser: loggedInUser,
-        };
-      } else {
-        // Check if both are in the same family
-        const targetUser = await this.userService.getUserProfile(id);
-        const myProfile = await this.userService.getUserProfile(loggedInUser.userId);
-  
-        const myFamilyCode = myProfile?.userProfile?.familyCode;
-        const targetFamilyCode = targetUser?.userProfile?.familyCode;
-  
-        if (myFamilyCode && targetFamilyCode && myFamilyCode === targetFamilyCode) {
-          return {
-            message: 'Profile fetched successfully',
-            data: targetUser,
-            currentUser: loggedInUser,
-          };
-        } else {
-          throw new BadRequestException({message:'Access denied: You can only view profiles in your family'});
-        }
-      }
+
+    // For any other user, require same familyCode
+    const [myProfile, targetUser] = await Promise.all([
+      this.userService.getUserProfile(loggedInUser.userId),
+      this.userService.getUserProfile(id),
+    ]);
+
+    const myFamilyCode = myProfile?.userProfile?.familyCode;
+    const targetFamilyCode = targetUser?.userProfile?.familyCode;
+
+    if (myFamilyCode && targetFamilyCode && myFamilyCode === targetFamilyCode) {
+      return {
+        message: 'Profile fetched successfully',
+        data: targetUser,
+        currentUser: loggedInUser,
+      };
     }
-  
-    // Default: deny
-    throw new BadRequestException({message:'Access denied'});
+
+    throw new BadRequestException({
+      message: 'Access denied: You can only view profiles in your family',
+    });
   }
+  // async getProfile(@Req() req, @Param('id', ParseIntPipe) id: number) {
+  //   const loggedInUser = req.user;
+  //   const targetUserId = Number(id);
+
+  //   // Always allow self for any role
+  //   if (loggedInUser.userId === targetUserId) {
+  //     const userdata = await this.userService.getUserProfile(id);
+  //     return {
+  //       message: 'Profile fetched successfully',
+  //       data: userdata,
+  //       currentUser: loggedInUser,
+  //     };
+  //   }
+
+  //   // If member, allow if self or same family
+  //   if (loggedInUser.role === 1) {
+  //     if (loggedInUser.userId === targetUserId) {
+  //       // Self
+  //       const userdata = await this.userService.getUserProfile(id);
+  //       return {
+  //         message: 'Profile fetched successfully',
+  //         data: userdata,
+  //         currentUser: loggedInUser,
+  //       };
+  //     } else {
+  //       // Check if both are in the same family
+  //       const targetUser = await this.userService.getUserProfile(id);
+  //       const myProfile = await this.userService.getUserProfile(loggedInUser.userId);
+
+  //       const myFamilyCode = myProfile?.userProfile?.familyCode;
+  //       const targetFamilyCode = targetUser?.userProfile?.familyCode;
+
+  //       if (myFamilyCode && targetFamilyCode && myFamilyCode === targetFamilyCode) {
+  //         return {
+  //           message: 'Profile fetched successfully',
+  //           data: targetUser,
+  //           currentUser: loggedInUser,
+  //         };
+  //       } else {
+  //         throw new BadRequestException({message:'Access denied: You can only view profiles in your family'});
+  //       }
+  //     }
+  //   }
+
+  //   // Default: deny
+  //   throw new BadRequestException({message:'Access denied'});
+  // }
 
   @UseGuards(JwtAuthGuard)
   @Put('profile/update/:id')
@@ -215,7 +269,10 @@ export class UserController {
   )
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Update user profile with optional image' })
-  @ApiResponse({ status: 200, description: 'User profile updated successfully' })
+  @ApiResponse({
+    status: 200,
+    description: 'User profile updated successfully',
+  })
   @ApiBearerAuth()
   @ApiSecurity('application-token')
   @ApiConsumes('multipart/form-data')
@@ -231,10 +288,10 @@ export class UserController {
     const targetUserId = Number(id);
 
     // Role 1 can only update their own profile
-    if (loggedInUser.role === 1 && loggedInUser.userId !== targetUserId) {
-      throw new BadRequestException({message:'Access denied: Members can only update their own profile'});
-    }
-    
+    // if (loggedInUser.role === 1 && loggedInUser.userId !== targetUserId) {
+    //   throw new BadRequestException({message:'Access denied: Members can only update their own profile'});
+    // }
+
     // Clean up empty strings in the body
     Object.keys(body).forEach((key) => {
       if (body[key] === '') {
@@ -247,45 +304,45 @@ export class UserController {
       // Upload to S3 and get the URL
       body.profile = await this.uploadService.uploadFile(file, 'profile');
     }
-    
-    return this.userService.updateProfile(targetUserId, body);
+
+    return this.userService.updateProfile(targetUserId, body, loggedInUser);
   }
 
-  @Put('profile/update/public/:id')
-  @UseInterceptors(
-    FileInterceptor('profile', {
-      storage: memoryStorage(),
-      fileFilter: imageFileFilter,
-      limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
-    }),
-  )
-  @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Update user profile with optional image (public endpoint)' })
-  @ApiResponse({ status: 200, description: 'User profile updated successfully' })
-  @ApiConsumes('multipart/form-data')
-  async updateProfilePublic(
-    @Param('id') id: number,
-    @UploadedFile() file: Express.Multer.File,
-    @Body() body: UpdateProfileDto,
-  ) {
-    // Convert param to number just in case
-    const targetUserId = Number(id);
-    
-    // Clean up empty strings in the body
-    Object.keys(body).forEach((key) => {
-      if (body[key] === '') {
-        body[key] = undefined;
-      }
-    });
+  // @Put('profile/update/public/:id')
+  // @UseInterceptors(
+  //   FileInterceptor('profile', {
+  //     storage: memoryStorage(),
+  //     fileFilter: imageFileFilter,
+  //     limits: { fileSize: 5 * 1024 * 1024 }, // 5MB max
+  //   }),
+  // )
+  // @HttpCode(HttpStatus.OK)
+  // @ApiOperation({ summary: 'Update user profile with optional image (public endpoint)' })
+  // @ApiResponse({ status: 200, description: 'User profile updated successfully' })
+  // @ApiConsumes('multipart/form-data')
+  // async updateProfilePublic(
+  //   @Param('id') id: number,
+  //   @UploadedFile() file: Express.Multer.File,
+  //   @Body() body: UpdateProfileDto,
+  // ) {
+  //   // Convert param to number just in case
+  //   const targetUserId = Number(id);
 
-    // Handle file upload to S3 if file exists
-    if (file) {
-      // Upload to S3 and get the URL
-      body.profile = await this.uploadService.uploadFile(file, 'profile');
-    }
-    
-    return this.userService.updateProfile(targetUserId, body);
-  }
+  //   // Clean up empty strings in the body
+  //   Object.keys(body).forEach((key) => {
+  //     if (body[key] === '') {
+  //       body[key] = undefined;
+  //     }
+  //   });
+
+  //   // Handle file upload to S3 if file exists
+  //   if (file) {
+  //     // Upload to S3 and get the URL
+  //     body.profile = await this.uploadService.uploadFile(file, 'profile');
+  //   }
+
+  //   return this.userService.updateProfile(targetUserId, body , loggedInUser = null );
+  // }
 
   @UseGuards(JwtAuthGuard)
   @Delete(':id')

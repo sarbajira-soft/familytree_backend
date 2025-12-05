@@ -2,6 +2,7 @@ import {
   Injectable,
   BadRequestException,
   NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
@@ -280,6 +281,24 @@ export class PostService {
     }
   }
 
+  private async isUserInFamily(
+    userId: number,
+    familyCode: string,
+  ): Promise<boolean> {
+    if (!userId || !familyCode) {
+      return false;
+    }
+
+    const profile = await this.userProfileModel.findOne({
+      where: {
+        userId,
+        familyCode,
+      },
+    });
+
+    return !!profile;
+  }
+  
   async getPostByOptions(
     privacy?: 'public' | 'private' | 'family',
     familyCode?: string,
@@ -292,20 +311,35 @@ export class PostService {
 
     if (postId) whereClause.id = postId;
 
-    if (privacy) {
-      if (privacy === 'private' || privacy === 'family') {
-        if (!familyCode) {
-          throw new BadRequestException(
-            'familyCode is required for private/family privacy',
-          );
-        }
-        whereClause.privacy = privacy;
-        whereClause.familyCode = familyCode;
-      } else if (privacy === 'public') {
-        whereClause.privacy = 'public';
-      } else {
-        throw new BadRequestException('Invalid privacy value');
+    // if (privacy) {
+    //   if (privacy === 'private' || privacy === 'family') {
+    //     if (!familyCode) {
+    //       throw new BadRequestException(
+    //         'familyCode is required for private/family privacy',
+    //       );
+    //     }
+    //     whereClause.privacy = privacy;
+    //     whereClause.familyCode = familyCode;
+    //   } else if (privacy === 'public') {
+    //     whereClause.privacy = 'public';
+    //   } else {
+    //     throw new BadRequestException('Invalid privacy value');
+    //   }
+    // }
+    if (privacy === 'private' || privacy === 'family') {
+      if (!familyCode) {
+        throw new BadRequestException(
+          'familyCode is required for private/family privacy',
+        );
       }
+
+      const isMember = await this.isUserInFamily(userId, familyCode);
+      if (!isMember) {
+        throw new ForbiddenException('Not allowed to view this family feed');
+      }
+
+      whereClause.privacy = privacy;
+      whereClause.familyCode = familyCode;
     }
 
     if (createdBy) whereClause.createdBy = createdBy;
@@ -521,9 +555,7 @@ export class PostService {
           message: `${userName} commented on your post`,
           time: new Date(),
         });
-
     }
-
 
     // 2️⃣ Prepare formatted comment for UI
     const formattedComment = {

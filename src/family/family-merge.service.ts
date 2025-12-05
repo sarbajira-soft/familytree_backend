@@ -352,7 +352,7 @@ export class FamilyMergeService {
   }
 
   private async buildFamilyPreview(familyCode: string, adminUserId: number) {
-    const tree = await this.familyService.getFamilyTree(familyCode, adminUserId);
+    const tree = await this.familyService.getFamilyTree(familyCode, adminUserId, true);
     const people = Array.isArray((tree as any).people) ? (tree as any).people : [];
 
     const userIds = Array.from(

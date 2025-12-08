@@ -241,22 +241,32 @@ export class EventService {
     }
 
     // Handle image updates
-    if (imageFiles || imagesToRemove || dto.eventImages) {
+    const hasNewImageFiles = Array.isArray(imageFiles) && imageFiles.length > 0;
+    const hasImagesToRemove = Array.isArray(imagesToRemove) && imagesToRemove.length > 0;
+
+    // dto.eventImages can be a single string or an array of strings (URLs)
+    let eventImagesInput: any[] = [];
+    if (dto.eventImages) {
+      eventImagesInput = Array.isArray(dto.eventImages)
+        ? dto.eventImages
+        : [dto.eventImages];
+    }
+    const hasEventImages = eventImagesInput.length > 0;
+
+    // Only run image logic if there is an actual change request
+    if (hasNewImageFiles || hasImagesToRemove || hasEventImages) {
       const oldImages = event.images || [];
       const uploadDir = process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
 
-      // Extract existing image URLs from dto.eventImages (if they are URLs, not binary files)
+      // Extract existing image filenames from dto.eventImages (if they are URLs)
       const existingImageUrls: string[] = [];
-      if (dto.eventImages && Array.isArray(dto.eventImages)) {
-        dto.eventImages.forEach((img: any) => {
-          if (typeof img === 'string' && (img.startsWith('http://') || img.startsWith('https://'))) {
-            // Extract filename from URL
-            const urlParts = img.split('/');
-            const filename = urlParts[urlParts.length - 1];
-            existingImageUrls.push(filename);
-          }
-        });
-      }
+      eventImagesInput.forEach((img: any) => {
+        if (typeof img === 'string' && (img.startsWith('http://') || img.startsWith('https://'))) {
+          const urlParts = img.split('/');
+          const filename = urlParts[urlParts.length - 1];
+          existingImageUrls.push(filename);
+        }
+      });
 
       // Remove images that are not in the existingImageUrls list (unless they are in imagesToRemove)
       const imagesToKeep = oldImages.filter(img => {
@@ -295,7 +305,7 @@ export class EventService {
       }
 
       // Add new images from uploaded files
-      if (imageFiles && imageFiles.length > 0) {
+      if (hasNewImageFiles) {
         try {
           // Upload files to S3 and get URLs
           const uploadPromises = imageFiles.map(file => 

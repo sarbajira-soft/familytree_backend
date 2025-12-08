@@ -2,10 +2,10 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsIn, IsNotEmpty, IsOptional, IsString, ValidateIf } from 'class-validator';
 
 export class CreatePostDto {
-  @ApiProperty({ example: 'My new post' })
+  @ApiPropertyOptional({ example: 'My new post' })
   @IsString()
-  @IsNotEmpty()
-  caption: string;
+  @IsOptional()
+  caption?: string;
 
   @ApiProperty({ 
     example: 'FAM123',

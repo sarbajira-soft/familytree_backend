@@ -199,7 +199,7 @@ export class GalleryService {
         galleryTitle: dto.galleryTitle,
         galleryDescription: dto.galleryDescription,
         privacy,
-        familyCode: privacy === 'private' ? dto.familyCode : '',
+        familyCode: privacy === 'private' ? dto.familyCode : null,
         status: dto.status ?? 1,
         createdBy,
       };

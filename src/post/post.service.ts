@@ -57,13 +57,25 @@ export class PostService {
       }
     }
 
+    // Normalize caption and enforce that at least caption or image is present
+    const rawCaption = dto.caption?.trim();
+    const hasCaption = !!rawCaption;
+    const hasImage = !!postImage;
+
+    if (!hasCaption && !hasImage) {
+      throw new BadRequestException('Either caption or image is required');
+    }
+
+    // DB column caption is NOT NULL, so store empty string when we only have an image
+    const captionToStore = hasCaption ? rawCaption : '';
+
     // Step 1: Create post
     const post = await this.postModel.create({
-      caption: dto.caption,
+      caption: captionToStore,
       familyCode: dto.familyCode || null,
       createdBy,
       status: dto.status ?? 1,
-      postImage: postImage || null,
+      postImage: hasImage ? postImage : null,
       privacy: dto.privacy ?? 'public',
     });
 
@@ -197,9 +209,27 @@ export class PostService {
       }
     }
 
-    // Prepare update data
+    // Work out the final caption and image values after this update
+    const finalPostImage = newImageFilename !== null ? newImageFilename : post.postImage;
+
+    let finalCaption: string;
+    if (dto.caption !== undefined) {
+      const trimmed = dto.caption?.trim();
+      finalCaption = trimmed || '';
+    } else {
+      finalCaption = post.caption ?? '';
+    }
+
+    const hasCaption = !!finalCaption;
+    const hasImage = !!finalPostImage;
+
+    if (!hasCaption && !hasImage) {
+      throw new BadRequestException('Either caption or image is required');
+    }
+
+    // Prepare update data using the normalized values
     const updateData: any = {
-      caption: dto.caption ?? post.caption,
+      caption: finalCaption,
       privacy: dto.privacy ?? post.privacy,
       familyCode: dto.familyCode ?? post.familyCode,
       status: dto.status ?? post.status,

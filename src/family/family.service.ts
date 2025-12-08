@@ -1451,10 +1451,14 @@ export class FamilyService {
         return [...new Set(cleanedIds)];
       };
 
-      person.parents = cleanArray(person.parents);
-      person.children = cleanArray(person.children);
-      person.spouses = cleanArray(person.spouses);
-      person.siblings = cleanArray(person.siblings);
+      const selfId = person.id;
+
+      // Remove any self-references from relationship arrays to avoid
+      // corrupt parent/child cycles (e.g. a person listed as their own child)
+      person.parents = cleanArray(person.parents).filter((id) => id !== selfId);
+      person.children = cleanArray(person.children).filter((id) => id !== selfId);
+      person.spouses = cleanArray(person.spouses).filter((id) => id !== selfId);
+      person.siblings = cleanArray(person.siblings).filter((id) => id !== selfId);
       // FIXED: Ensure bidirectional parent-child relationships
       person.parents.forEach((parentId) => {
         const parent = people.find((p) => p.id === parentId);
@@ -1499,6 +1503,10 @@ export class FamilyService {
               ...personChildrenSet,
               ...spouseChildrenSet,
             ]);
+
+            // Prevent self-references from being treated as children
+            allChildrenSet.delete(person.id);
+            allChildrenSet.delete(spouseId);
 
             // Update both parents with clean arrays
             person.children = Array.from(allChildrenSet);

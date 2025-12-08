@@ -1527,6 +1527,90 @@ export class FamilyService {
           }
         }
       });
+
+      // CLEANUP: Prevent impossible relationships where a person is both
+      // a spouse and a parent/child of the same person. This can happen
+      // when corrupted data is saved and would otherwise create invalid
+      // edges in the tree.
+      if (person.spouses && person.spouses.length > 0) {
+        const parentsSet = new Set(person.parents || []);
+        const childrenSet = new Set(person.children || []);
+
+        person.spouses = person.spouses.filter((spouseId) => {
+          const isInvalid =
+            parentsSet.has(spouseId) || childrenSet.has(spouseId);
+
+          if (isInvalid) {
+            const spouse = people.find((p) => p.id === spouseId);
+            if (spouse && Array.isArray(spouse.spouses)) {
+              spouse.spouses = spouse.spouses.filter(
+                (id) => id !== person.id,
+              );
+            }
+          }
+
+          return !isInvalid;
+        });
+      }
+    });
+
+    // Ensure no person ends up with more than two parents. When there are
+    // more than two, prefer parents whose generations are closest to one
+    // level above the child.
+    people.forEach((person) => {
+      if (!Array.isArray(person.parents) || person.parents.length <= 2) {
+        return;
+      }
+
+      const childGeneration =
+        typeof person.generation === 'number' ? person.generation : null;
+
+      const parentInfos = person.parents
+        .map((parentId) => {
+          const parent = people.find((p) => p.id === parentId);
+          return parent
+            ? { id: parentId, generation: parent.generation as number | null }
+            : null;
+        })
+        .filter((p) => p !== null) as { id: number; generation: number | null }[];
+
+      if (parentInfos.length <= 2) {
+        return;
+      }
+
+      const score = (parentGen: number | null): number => {
+        if (childGeneration === null || parentGen === null) {
+          return 1000;
+        }
+
+        const diff = childGeneration - parentGen;
+
+        if (diff < 0) {
+          // Parent appears younger than child, heavily penalize
+          return 500 + Math.abs(diff);
+        }
+
+        // Ideal is one generation above the child (diff === 1)
+        return Math.abs(diff - 1);
+      };
+
+      parentInfos.sort((a, b) => score(a.generation) - score(b.generation));
+
+      const keepIds = new Set(parentInfos.slice(0, 2).map((p) => p.id));
+      const removeIds = parentInfos.slice(2).map((p) => p.id);
+
+      person.parents = person.parents.filter((id) => keepIds.has(id));
+
+      // Remove the child from dropped parents' children arrays so that the
+      // second pass does not re-introduce the relationship.
+      removeIds.forEach((parentId) => {
+        const parent = people.find((p) => p.id === parentId);
+        if (parent && Array.isArray(parent.children)) {
+          parent.children = parent.children.filter(
+            (childId) => childId !== person.id,
+          );
+        }
+      });
     });
 
     // Second pass to ensure all bidirectional relationships

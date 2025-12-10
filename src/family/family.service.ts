@@ -1303,7 +1303,7 @@ export class FamilyService {
           if (userProfile.profile.startsWith('http')) {
             img = userProfile.profile; // Already a full URL
           } else {
-            img = `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`;
+            img = `${process.env.S3_BUCKET_URL /* || 'https://familytreeupload.s3.eu-north-1.amazonaws.com' */}/profile/${userProfile.profile}`;
           }
         }
 
@@ -1394,7 +1394,7 @@ export class FamilyService {
           if (userProfile.profile.startsWith('http')) {
             img = userProfile.profile; // Already a full URL
           } else {
-            img = `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`;
+            img = `${process.env.S3_BUCKET_URL /* || 'https://familytreeupload.s3.eu-north-1.amazonaws.com' */}/profile/${userProfile.profile}`;
           }
         }
         return {

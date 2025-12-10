@@ -600,7 +600,7 @@ export class PostService {
             firstName: userProfile.firstName,
             lastName: userProfile.lastName,
             profile: userProfile.profile
-              ? `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`
+              ? `${process.env.S3_BUCKET_URL /* || 'https://familytreeupload.s3.eu-north-1.amazonaws.com' */}/profile/${userProfile.profile}`
               : null,
           }
         : null,
@@ -610,51 +610,6 @@ export class PostService {
     this.postGateway.broadcastComment(postId, formattedComment);
 
     return formattedComment;
-  }
-
-  async getComments(postId: number, page = 1, limit = 10) {
-    const offset = (page - 1) * limit;
-    const baseUrl = process.env.BASE_URL || '';
-    const profileUploadPath =
-      process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') ||
-      'uploads/profile';
-
-    const { rows, count } = await this.postCommentModel.findAndCountAll({
-      where: { postId },
-      order: [['createdAt', 'DESC']],
-      limit,
-      offset,
-      include: [
-        {
-          model: this.userProfileModel,
-          as: 'userProfile',
-          attributes: ['firstName', 'lastName', 'profile'],
-        },
-      ],
-    });
-
-    return {
-      total: count,
-      page,
-      limit,
-      comments: rows.map((comment: any) => ({
-        id: comment.id,
-        content: comment.comment,
-        parentCommentId: comment.parentCommentId,
-        createdAt: comment.createdAt,
-        updatedAt: comment.updatedAt,
-        userId: comment.userId,
-        user: comment.userProfile
-          ? {
-              firstName: comment.userProfile.firstName,
-              lastName: comment.userProfile.lastName,
-              profile: comment.userProfile.profile
-                ? `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${comment.userProfile.profile}`
-                : null,
-            }
-          : null,
-      })),
-    };
   }
 
   async getPost(postId: number) {
@@ -675,6 +630,49 @@ export class PostService {
         postImage: postImageUrl,
       },
       imageUrl: postImageUrl || this.getPostImageUrl('default.png'),
+    };
+  }
+
+  async getComments(postId: number, page = 1, limit = 10) {
+    const offset = (page - 1) * limit;
+
+    const { rows, count } = await this.postCommentModel.findAndCountAll({
+      where: { postId },
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset,
+      include: [
+        {
+          model: this.userProfileModel,
+          as: 'userProfile',
+          attributes: ['firstName', 'lastName', 'profile'],
+        },
+      ],
+    });
+
+    const comments = rows.map((comment: any) => ({
+      id: comment.id,
+      content: comment.comment,
+      parentCommentId: comment.parentCommentId,
+      createdAt: comment.createdAt,
+      updatedAt: comment.updatedAt,
+      userId: comment.userId,
+      user: comment.userProfile
+        ? {
+            firstName: comment.userProfile.firstName,
+            lastName: comment.userProfile.lastName,
+            profile: comment.userProfile.profile
+              ? `${process.env.S3_BUCKET_URL /* || 'https://familytreeupload.s3.eu-north-1.amazonaws.com' */}/profile/${comment.userProfile.profile}`
+              : null,
+          }
+        : null,
+    }));
+
+    return {
+      total: count,
+      page,
+      limit,
+      comments,
     };
   }
 
@@ -781,7 +779,7 @@ export class PostService {
             firstName: userProfile.firstName,
             lastName: userProfile.lastName,
             profile: userProfile.profile
-              ? `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`
+              ? `${process.env.S3_BUCKET_URL}/profile/${userProfile.profile}`
               : null,
           }
         : null,
@@ -837,7 +835,7 @@ export class PostService {
             firstName: userProfile.firstName,
             lastName: userProfile.lastName,
             profile: userProfile.profile
-              ? `https://familytreeupload.s3.eu-north-1.amazonaws.com/profile/${userProfile.profile}`
+              ? `${process.env.S3_BUCKET_URL}/profile/${userProfile.profile}`
               : null,
           }
         : null,

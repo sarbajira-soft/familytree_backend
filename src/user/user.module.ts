@@ -14,7 +14,8 @@ import { Religion } from '../religion/model/religion.model';
 import { Language } from '../language/model/language.model';
 import { Gothram } from '../gothram/model/gothram.model';
 import { MailService } from '../utils/mail.service';
- 
+import { MedusaCustomerSyncService } from '../medusa/medusa-customer-sync.service';
+
 import { NotificationModule } from '../notification/notification.module';
 import { Notification } from '../notification/model/notification.model';
 import { UploadModule } from '../uploads/upload.module';
@@ -37,7 +38,7 @@ import { UploadModule } from '../uploads/upload.module';
     UploadModule,
   ],
   controllers: [UserController, UserLookupController, UserConsentController],
-  providers: [UserService, MailService],
+  providers: [UserService, MailService, MedusaCustomerSyncService],
   exports: [UserService],
 })
 export class UserModule {}

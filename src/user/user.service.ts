@@ -22,6 +22,7 @@ import { Religion } from '../religion/model/religion.model';
 import { Language } from '../language/model/language.model';
 import { Gothram } from '../gothram/model/gothram.model';
 import { Notification } from '../notification/model/notification.model';
+import { MedusaCustomerSyncService } from '../medusa/medusa-customer-sync.service';
 
 @Injectable()
 export class UserService {
@@ -48,6 +49,7 @@ export class UserService {
     private notificationService: NotificationService,
     @Inject(forwardRef(() => UploadService))
     private uploadService: UploadService,
+    private medusaCustomerSyncService: MedusaCustomerSyncService,
   ) {}
 
   private generateOtp(): string {
@@ -144,6 +146,8 @@ export class UserService {
       const hashedPassword = await bcrypt.hash(registerDto.password, 12);
 
       try {
+        let user: User = existingUnverifiedUser;
+
         if (existingUnverifiedUser) {
           // Update existing unverified user
           await existingUnverifiedUser.update({
@@ -159,7 +163,7 @@ export class UserService {
           });
         } else {
           // Create new user
-          const user = await this.userModel.create({
+          user = await this.userModel.create({
             ...registerDto,
             password: hashedPassword,
             otp,
@@ -176,6 +180,28 @@ export class UserService {
             firstName: registerDto.firstName,
             lastName: registerDto.lastName,
           });
+        }
+
+        try {
+          if (user?.isAppUser && registerDto.email) {
+            const syncRes = await this.medusaCustomerSyncService.upsertCustomer({
+              customer_id: user.medusaCustomerId,
+              email: registerDto.email,
+              first_name: registerDto.firstName,
+              last_name: registerDto.lastName,
+              phone: `${registerDto.countryCode || ''}${registerDto.mobile || ''}`,
+              password: registerDto.password,
+              metadata: {
+                app_user_id: user.id,
+              },
+            });
+
+            if (syncRes?.customer_id && user.medusaCustomerId !== syncRes.customer_id) {
+              await user.update({ medusaCustomerId: syncRes.customer_id });
+            }
+          }
+        } catch (e) {
+          console.error('Medusa customer sync failed:', e?.message || e);
         }
 
         // Send OTP email
@@ -521,6 +547,21 @@ export class UserService {
       otpExpiresAt: null,
     });
 
+    try {
+      if (user.isAppUser && user.email) {
+        const syncRes = await this.medusaCustomerSyncService.updatePassword(
+          user.email,
+          newPassword,
+        );
+
+        if (syncRes?.customer_id && user.medusaCustomerId !== syncRes.customer_id) {
+          await user.update({ medusaCustomerId: syncRes.customer_id });
+        }
+      }
+    } catch (e) {
+      console.error('Medusa password sync failed:', e?.message || e);
+    }
+
     return {
       message: 'Password reset successfully',
     };
@@ -614,289 +655,6 @@ export class UserService {
     }
   }
 
-  // async updateProfile(
-  //   userId: number,
-  //   dto: UpdateProfileDto,
-  //   actor: { userId: number; role: number; isAppUser: boolean }
-  // ) {
-  //   try {
-  //     // Fetch both user and user profile
-  //     const user = await this.userModel.findByPk(userId);
-  //     const userProfile = await this.userProfileModel.findOne({
-  //       where: { userId },
-  //     });
-
-  //     if (!user || !userProfile) {
-  //       throw new BadRequestException({ message: 'User not found' });
-  //     }
-
-  //     // Store the original profile image to delete later if needed
-  //     const originalProfileImage = userProfile.profile;
-
-  //     // If a new profile image is provided (not empty and different from current)
-  //     if (dto.profile && dto.profile !== '') {
-  //       // Extract just the filename if a full URL is provided
-  //       let profileFilename = dto.profile;
-  //       if (dto.profile.includes('/')) {
-  //         // If it's a URL, extract the filename from the last segment
-  //         profileFilename = dto.profile.split('/').pop() || dto.profile;
-  //       }
-
-  //       // If there's an existing image, delete it from S3
-  //       if (originalProfileImage && originalProfileImage !== '') {
-  //         try {
-  //           console.log(
-  //             'Deleting old profile image from S3:',
-  //             originalProfileImage,
-  //           );
-  //           // Only delete if the old image is different from the new one
-  //           if (originalProfileImage !== profileFilename) {
-  //             await this.uploadService.deleteFile(
-  //               originalProfileImage,
-  //               'profile',
-  //             );
-  //             console.log('Successfully deleted old profile image');
-  //           }
-  //         } catch (error) {
-  //           console.error('Error deleting old profile image from S3:', error);
-  //           // Continue with the update even if deletion fails
-  //         }
-  //       }
-
-  //       // Save the new profile image filename to the user profile
-  //       userProfile.profile = profileFilename;
-  //       await userProfile.save();
-  //       console.log('Updated profile image in database:', profileFilename);
-  //     }
-
-  //     // Validate family code
-  //     if (dto.familyCode) {
-  //       const existingFamily = await this.familyModel.findOne({
-  //         where: { familyCode: dto.familyCode },
-  //       });
-  //       if (!existingFamily) {
-  //         throw new BadRequestException({
-  //           message: 'Invalid family code. Please enter a valid family code.',
-  //         });
-  //       }
-  //     }
-
-  //     const { email, countryCode, mobile, role, status, password } = dto;
-
-  //     // Handle password update - hash the password if provided
-  //     if (password !== undefined && password !== '') {
-  //       const hashedPassword = await bcrypt.hash(password, 12);
-  //       user.password = hashedPassword;
-  //     }
-
-  //     // Handle email update - allow same email, but check for conflicts with other users
-  //     if (email !== undefined && email !== user.email) {
-  //       const emailExists = await this.userModel.findOne({
-  //         where: {
-  //           email,
-  //           id: { [Op.ne]: userId },
-  //           status: { [Op.ne]: 3 }, // Exclude deleted users
-  //         },
-  //       });
-  //       if (emailExists) {
-  //         throw new BadRequestException({
-  //           message: 'Email already in use by another user',
-  //         });
-  //       }
-  //       user.email = email;
-  //     }
-
-  //     // Handle mobile number update - allow same mobile, but check for conflicts with other users
-  //     if (
-  //       mobile !== undefined &&
-  //       countryCode !== undefined &&
-  //       (mobile !== user.mobile || countryCode !== user.countryCode)
-  //     ) {
-  //       const mobileExists = await this.userModel.findOne({
-  //         where: {
-  //           mobile,
-  //           countryCode,
-  //           id: { [Op.ne]: userId },
-  //           status: { [Op.ne]: 3 }, // Exclude deleted users
-  //         },
-  //       });
-  //       if (mobileExists) {
-  //         throw new BadRequestException({
-  //           message: 'Mobile number already in use by another user',
-  //         });
-  //       }
-  //       user.mobile = mobile;
-  //       user.countryCode = countryCode;
-  //     }
-
-  //     // Direct assignments (no uniqueness checks needed)
-  //     if (role !== undefined) user.role = role;
-  //     if (status !== undefined) user.status = status;
-
-  //     await user.save();
-
-  //     // Update user profile fields
-  //     const profileUpdates = {};
-  //     const profileFields = [
-  //       'firstName',
-  //       'lastName',
-  //       'gender',
-  //       'dob',
-  //       'age',
-  //       'maritalStatus',
-  //       'marriageDate',
-  //       'spouseName',
-  //       'childrenNames',
-  //       'fatherName',
-  //       'motherName',
-  //       'religionId',
-  //       'languageId',
-  //       'caste',
-  //       'gothramId',
-  //       'kuladevata',
-  //       'region',
-  //       'hobbies',
-  //       'likes',
-  //       'dislikes',
-  //       'favoriteFoods',
-  //       'contactNumber',
-  //       'countryId',
-  //       'address',
-  //       'bio',
-  //       'familyCode',
-  //     ];
-
-  //     profileFields.forEach((field) => {
-  //       if (dto[field] !== undefined) {
-  //         profileUpdates[field] = dto[field];
-  //       }
-  //     });
-
-  //     // Update the profile if there are any changes
-  //     if (Object.keys(profileUpdates).length > 0) {
-  //       await userProfile.update(profileUpdates);
-  //     }
-
-  //     // Handle profile image cleanup - only if we're not using S3 URL
-  //     if (dto.profile && !dto.profile.startsWith('http')) {
-  //       const newFile = path.basename(dto.profile);
-  //       if (newFile && userProfile.profile && userProfile.profile !== newFile) {
-  //         const uploadPath =
-  //           process.env.UPLOAD_FOLDER_PATH || './uploads/profile';
-  //         const oldImagePath = path.join(uploadPath, userProfile.profile);
-  //         try {
-  //           if (fs.existsSync(oldImagePath)) {
-  //             fs.unlinkSync(oldImagePath);
-  //           }
-  //         } catch (err) {
-  //           console.warn(`Failed to remove old profile image: ${err.message}`);
-  //         }
-  //       }
-  //     }
-
-  //     // Update user profile with the new family code if provided
-  //     if (dto.familyCode) {
-  //       // Update the family code in the user profile
-  //       userProfile.familyCode = dto.familyCode;
-
-  //       // Check if user is already a member of this family
-  //       const existing = await this.familyMemberModel.findOne({
-  //         where: { memberId: userId, familyCode: dto.familyCode },
-  //       });
-
-  //       if (!existing) {
-  //         await this.familyMemberModel.create({
-  //           memberId: userId,
-  //           familyCode: dto.familyCode,
-  //           creatorId: null,
-  //           approveStatus: 'approved', // Auto-approve since user is updating their own profile
-  //         });
-
-  //         const adminUserIds =
-  //           await this.notificationService.getAdminsForFamily(dto.familyCode);
-  //         if (adminUserIds && adminUserIds.length > 0) {
-  //           await this.notificationService.createNotification(
-  //             {
-  //               type: 'FAMILY_MEMBER_JOINED',
-  //               title: 'Family Member Joined',
-  //               message: `User ${userProfile.firstName || ''} ${
-  //                 userProfile.lastName || ''
-  //               } has joined the family.`,
-  //               familyCode: dto.familyCode,
-  //               referenceId: userId,
-  //               userIds: adminUserIds,
-  //             },
-  //             userId,
-  //           );
-  //         }
-  //       }
-  //     }
-
-  //     // Save the updated profile
-  //     await userProfile.save();
-
-  //     // Get the updated user with profile and related data
-  //     const updatedUser = await this.userModel.findByPk(userId, {
-  //       include: [
-  //         {
-  //           model: UserProfile,
-  //           as: 'userProfile',
-  //           include: [
-  //             {
-  //               model: FamilyMember,
-  //               as: 'familyMember',
-  //               attributes: ['familyCode', 'approveStatus'],
-  //             },
-  //             {
-  //               model: Religion,
-  //               as: 'religion',
-  //               attributes: ['id', 'name'],
-  //             },
-  //             {
-  //               model: Language,
-  //               as: 'language',
-  //               attributes: ['id', 'name', 'isoCode'],
-  //             },
-  //             {
-  //               model: Gothram,
-  //               as: 'gothram',
-  //               attributes: ['id', 'name'],
-  //             },
-  //           ],
-  //         },
-  //       ],
-  //     });
-
-  //     // Convert profile image to URL if it exists
-  //     // Convert profile filename to full URL for the response
-  //     if (updatedUser.userProfile?.profile) {
-  //       updatedUser.userProfile.profile = this.uploadService.getFileUrl(
-  //         updatedUser.userProfile.profile,
-  //         'profile',
-  //       );
-  //     }
-
-  //     return {
-  //       message: 'Profile updated successfully',
-  //       data: {
-  //         ...updatedUser.toJSON(),
-  //         userProfile: updatedUser.userProfile?.toJSON(),
-  //       },
-  //     };
-  //   } catch (err) {
-  //     console.error('Update Profile Error:', err);
-  //     if (err?.name === 'SequelizeValidationError') {
-  //       throw new BadRequestException({
-  //         message: 'Validation error',
-  //         errors: err.errors.map((e) => e.message),
-  //       });
-  //     }
-  //     throw new BadRequestException({
-  //       message: err?.message || 'Something went wrong',
-  //     });
-  //   }
-  // }
-
   async updateProfile(
     userId: number,
     dto: UpdateProfileDto,
@@ -914,6 +672,8 @@ export class UserService {
       if (!targetUser || !targetProfile) {
         throw new BadRequestException({ message: 'User not found' });
       }
+
+      const originalEmail = targetUser.email;
 
       // -----------------------------
       // PERMISSION LOGIC
@@ -983,10 +743,7 @@ export class UserService {
           originalProfileImage !== newFilename
         ) {
           try {
-            await this.uploadService.deleteFile(
-              originalProfileImage,
-              'profile',
-            );
+            await this.uploadService.deleteFile(originalProfileImage, 'profile');
           } catch (e) {
             console.warn('Failed to delete old profile image:', e);
           }
@@ -1180,6 +937,41 @@ export class UserService {
       }
 
       await targetProfile.save();
+
+      try {
+        if (targetUser.isAppUser && targetUser.email) {
+          const syncPayload: Record<string, unknown> = {
+            customer_id: targetUser.medusaCustomerId,
+            email: targetUser.email,
+            first_name: targetProfile.firstName,
+            last_name: targetProfile.lastName,
+            phone: targetUser.mobile
+              ? `${targetUser.countryCode || ''}${targetUser.mobile}`
+              : undefined,
+            metadata: {
+              app_user_id: targetUser.id,
+            },
+          };
+
+          if (originalEmail && originalEmail !== targetUser.email) {
+            syncPayload.previous_email = originalEmail;
+          }
+
+          if (password && isSelf) {
+            syncPayload.password = password;
+          }
+
+          const syncRes = await this.medusaCustomerSyncService.upsertCustomer(
+            syncPayload,
+          );
+
+          if (syncRes?.customer_id && targetUser.medusaCustomerId !== syncRes.customer_id) {
+            await targetUser.update({ medusaCustomerId: syncRes.customer_id });
+          }
+        }
+      } catch (e) {
+        console.error('Medusa customer sync failed:', e?.message || e);
+      }
 
       // -----------------------------
       // RETURN UPDATED USER

@@ -61,6 +61,9 @@ export class User extends Model<User> {
   @Column(DataType.INTEGER)
   createdBy: number;
 
+  @Column({ type: DataType.STRING, allowNull: true })
+  medusaCustomerId: string;
+
   userProfile?: UserProfile;
   familyMemberships?: FamilyMember[];
   familyTreeEntries?: FamilyTree[];

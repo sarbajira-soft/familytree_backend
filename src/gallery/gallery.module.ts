@@ -10,6 +10,8 @@ import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { NotificationModule } from '../notification/notification.module';
 import { UploadModule } from '../uploads/upload.module';
+import { BlockingModule } from '../blocking/blocking.module';
+import { FamilyMember } from '../family/model/family-member.model';
  
 @Module({
   imports: [
@@ -19,9 +21,11 @@ import { UploadModule } from '../uploads/upload.module';
       GalleryLike, 
       GalleryComment, 
       User, 
-      UserProfile
+      UserProfile,
+      FamilyMember,
     ]),
     NotificationModule,
+    BlockingModule,
     forwardRef(() => UploadModule)
   ],
   controllers: [GalleryController],

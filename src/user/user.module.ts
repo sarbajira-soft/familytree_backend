@@ -19,10 +19,12 @@ import { MedusaCustomerSyncService } from '../medusa/medusa-customer-sync.servic
 import { NotificationModule } from '../notification/notification.module';
 import { Notification } from '../notification/model/notification.model';
 import { UploadModule } from '../uploads/upload.module';
+import { BlockingModule } from '../blocking/blocking.module';
 
 @Module({
   imports: [
     forwardRef(() => UploadModule),
+    BlockingModule,
     SequelizeModule.forFeature([
       User,
       UserProfile,

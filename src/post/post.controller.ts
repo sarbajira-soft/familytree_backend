@@ -136,13 +136,24 @@ export class PostController {
     return this.postService.addComment(postId, req.user.userId, dto.comment);
   }
 
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Get(':postId/comments')
   async getComments(
-    @Param('postId') postId: number,
-    @Query('page') page = 1,
-    @Query('limit') limit = 10,
+    @Param('postId') postId: string,
+    @Query('page') page = '1',
+    @Query('limit') limit = '10',
+    @Req() req,
   ) {
-    return this.postService.getComments(postId, page, limit);
+    const postIdNum = Number(postId);
+    const pageNum = Number(page) || 1;
+    const limitNum = Number(limit) || 10;
+    return this.postService.getComments(
+      postIdNum,
+      pageNum,
+      limitNum,
+      req.user.userId,
+    );
   }
 
   @Get(':postId/comments/count')
@@ -158,8 +169,9 @@ export class PostController {
   @Get(':postId')
   async getPost(
     @Param('postId') postId: number,
+    @Req() req,
   ) {
-    return this.postService.getPost(postId);
+    return this.postService.getPost(postId, req.user?.userId);
   }
 
   @UseGuards(JwtAuthGuard)

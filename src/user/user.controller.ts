@@ -29,12 +29,14 @@ import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ResendOtpDto } from './dto/resend-otp.dto';
 import { ForgetPasswordDto } from './dto/forget-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { TogglePrivacyDto } from './dto/toggle-privacy.dto';
 import { ApiConsumes, ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiBody, ApiSecurity } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { generateFileName, imageFileFilter } from '../utils/upload.utils';
 import { MergeUserDto } from './dto/merge-user.dto';
 import { UploadService } from '../uploads/upload.service';
 import { log } from 'console';
+import { BlockingService } from '../blocking/blocking.service';
 
  
 @ApiTags('User Module')
@@ -43,6 +45,7 @@ export class UserController {
   constructor(
     private readonly userService: UserService,
     private readonly uploadService: UploadService,
+    private readonly blockingService: BlockingService,
   ) {}
 
   @Post('register')
@@ -169,6 +172,18 @@ export class UserController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Patch('privacy')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Toggle private account setting (self only)' })
+  @ApiResponse({ status: 200, description: 'Privacy updated' })
+  @ApiBearerAuth()
+  @ApiSecurity('application-token')
+  async setPrivacy(@Req() req, @Body() dto: TogglePrivacyDto) {
+    const loggedInUser = req.user;
+    return this.userService.setPrivacy(Number(loggedInUser.userId), dto.isPrivate);
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get('profile/:id')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Get user profile' })
@@ -187,6 +202,14 @@ export class UserController {
         data: userdata,
         currentUser: loggedInUser,
       };
+    }
+
+    const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      Number(loggedInUser.userId),
+      targetUserId,
+    );
+    if (usersBlockedEitherWay) {
+      throw new ForbiddenException('Access denied');
     }
 
     // For any other user, require same familyCode

@@ -16,6 +16,7 @@ import { NotificationModule } from './notification/notification.module';
 import { ProductModule } from './product/product.module';
 import { EventModule } from './event/event.module';
 import { InviteModule } from './invite/invite.module';
+import { BlockingModule } from './blocking/blocking.module';
 
 @Module({
   imports: [
@@ -59,6 +60,7 @@ import { InviteModule } from './invite/invite.module';
     GalleryModule,
     PostModule,
     NotificationModule,
+    BlockingModule,
     RelationshipsModule,
     ProductModule,
     EventModule,

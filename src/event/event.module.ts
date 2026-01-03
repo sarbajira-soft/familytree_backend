@@ -10,11 +10,13 @@ import { UserProfile } from '../user/model/user-profile.model';
 import { NotificationModule } from '../notification/notification.module';
 import { EventImage } from './model/event-image.model';
 import { FamilyMember } from '../family/model/family-member.model';
+import { BlockingModule } from '../blocking/blocking.module';
  
 @Module({
   imports: [
     SequelizeModule.forFeature([Event, User, UserProfile, EventImage, FamilyMember]),
     NotificationModule, // Import NotificationModule to use NotificationService
+    BlockingModule,
     JwtModule.register({
       secret: process.env.JWT_SECRET,
       signOptions: { expiresIn: '7d' },

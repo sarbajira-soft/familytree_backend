@@ -238,11 +238,6 @@ export class FamilyService {
       },
     });
 
-    // If there is a membership record and user is blocked, always deny
-    if (membership && (membership as any).isBlocked) {
-      throw new ForbiddenException('You have been blocked from this family');
-    }
-
     // If user is an approved member of this family, allow
     if (membership && (membership as any).approveStatus === 'approved') {
       return;

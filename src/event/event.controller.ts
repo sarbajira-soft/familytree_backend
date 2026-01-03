@@ -78,7 +78,7 @@ export class EventController {
       body.createdBy = loggedInUser.userId;
     }
 
-    return this.eventService.createEvent(body, files || []);
+    return this.eventService.createEvent(body, files || [], loggedInUser.userId);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -143,11 +143,13 @@ export class EventController {
     return this.eventService.getUpcomingByFamilyCode(familyCode);
   }
 
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Get(':id')
   @ApiOperation({ summary: 'Get event by ID' })
   @ApiResponse({ status: 200, description: 'Event found' })
-  getEventById(@Param('id') id: number) {
-    return this.eventService.getById(id);
+  getEventById(@Req() req, @Param('id') id: number) {
+    return this.eventService.getById(id, req.user?.userId);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -255,9 +257,11 @@ export class EventController {
     return this.eventService.deleteEventImage(imageId, loggedInUser.userId);
   }
 
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Get(':id/images')
   @ApiOperation({ summary: 'Get all images for an event' })
-  async getEventImages(@Param('id') id: number) {
-    return this.eventService.getEventImages(id);
+  async getEventImages(@Req() req, @Param('id') id: number) {
+    return this.eventService.getEventImages(id, req.user?.userId);
   }
 }

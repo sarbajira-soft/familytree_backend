@@ -95,6 +95,13 @@ export class UserProfile extends Model<UserProfile> {
   @Column(DataType.TEXT)
   bio: string;
 
+  @Column({
+    type: DataType.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+  })
+  isPrivate: boolean;
+
   @Column(DataType.STRING)
   familyCode: string; // Main family code (birth family)
 

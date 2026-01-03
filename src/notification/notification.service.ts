@@ -11,6 +11,7 @@ import { UserProfile } from '../user/model/user-profile.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { FamilyMemberService } from '../family/family-member.service';
 import { NotificationGateway } from './notification.gateway';
+import { BlockingService } from '../blocking/blocking.service';
 
 // Optional services
 // import { MailService } from '../mail/mail.service';
@@ -92,6 +93,9 @@ export class NotificationService {
     @Inject(forwardRef(() => NotificationGateway))
     private readonly notificationGateway: NotificationGateway,
 
+    @Inject(forwardRef(() => BlockingService))
+    private readonly blockingService: BlockingService,
+
     @Optional()
     private readonly mailService?: any, // Using 'any' to avoid type errors for optional services
 
@@ -99,7 +103,65 @@ export class NotificationService {
     private readonly uploadService?: any, // Removed family service injection to avoid circular dependency
   ) {}
 
+  private async filterRecipientsForBlocks(
+    triggeredBy: number | null,
+    familyCode: string | null | undefined,
+    recipientIds: number[],
+  ): Promise<number[]> {
+    if (!recipientIds || recipientIds.length === 0) {
+      return [];
+    }
+
+    let ids = Array.from(new Set(recipientIds.map((x) => Number(x)).filter(Boolean)));
+
+    // Admin family-block: blocked members receive no family notifications
+    if (familyCode) {
+      const memberships = await this.familyMemberModel.findAll({
+        where: {
+          familyCode,
+          memberId: ids,
+        } as any,
+        attributes: ['memberId', 'isBlocked'],
+      });
+
+      const blocked = new Set<number>(
+        memberships
+          .filter((m: any) => !!(m as any).isBlocked)
+          .map((m: any) => Number((m as any).memberId)),
+      );
+
+      ids = ids.filter((id) => !blocked.has(id));
+    }
+
+    // User-to-user blocking: no notifications between blocked pairs
+    if (triggeredBy) {
+      const blockedUserIds = await this.blockingService.getBlockedUserIdsForUser(
+        Number(triggeredBy),
+      );
+      if (blockedUserIds.length > 0) {
+        const blockedSet = new Set<number>(blockedUserIds);
+        ids = ids.filter((id) => !blockedSet.has(id));
+      }
+    }
+
+    return ids;
+  }
+
   async createNotification(dto: CreateNotificationDto, triggeredBy: number) {
+    const filteredUserIds = await this.filterRecipientsForBlocks(
+      triggeredBy ?? null,
+      dto.familyCode,
+      dto.userIds || [],
+    );
+
+    if (filteredUserIds.length === 0) {
+      return {
+        message: 'Notification suppressed (no eligible recipients)',
+        notificationId: null,
+        requestId: null,
+      };
+    }
+
     const notification = await this.notificationModel.create({
       type: dto.type,
       title: dto.title,
@@ -110,7 +172,7 @@ export class NotificationService {
       data: (dto as any).data || {},
     });
 
-    const recipientRecords = dto.userIds.map((userId) => ({
+    const recipientRecords = filteredUserIds.map((userId) => ({
       notificationId: notification.id,
       userId,
     }));
@@ -130,7 +192,7 @@ export class NotificationService {
     };
 
     // Send to each recipient via WebSocket
-    dto.userIds.forEach((userId) => {
+    filteredUserIds.forEach((userId) => {
       this.notificationGateway.sendNotificationToUser(
         userId.toString(),
         notificationData,
@@ -141,7 +203,7 @@ export class NotificationService {
     });
 
     console.log(
-      `✅ Notification ${notification.id} sent to ${dto.userIds.length} users via WebSocket`,
+      `✅ Notification ${notification.id} sent to ${filteredUserIds.length} users via WebSocket`,
     );
 
     // Return both notification ID and request ID (referenceId) in the response
@@ -810,6 +872,21 @@ export class NotificationService {
     showAll = false,
     type?: string,
   ) {
+    const blockedUserIds = await this.blockingService.getBlockedUserIdsForUser(
+      userId,
+    );
+    const blockedUserIdSet = new Set<number>(blockedUserIds);
+
+    const blockedFamilyCodes = new Set<string>();
+    const memberships = await this.familyMemberModel.findAll({
+      where: { memberId: userId } as any,
+      attributes: ['familyCode', 'isBlocked'],
+    });
+    for (const m of memberships as any[]) {
+      if ((m as any).isBlocked && (m as any).familyCode) {
+        blockedFamilyCodes.add(String((m as any).familyCode));
+      }
+    }
     // Calculate date 15 days ago for filtering association requests
     const fifteenDaysAgo = new Date();
     fifteenDaysAgo.setDate(fifteenDaysAgo.getDate() - 15);
@@ -866,7 +943,33 @@ export class NotificationService {
 
     const notifications = await this.recipientModel.findAll(options);
 
-    const result = notifications.map((notifRecipient) => {
+    const triggeredByIds = Array.from(
+      new Set(
+        notifications
+          .map((nr: any) => Number(nr?.notification?.triggeredBy))
+          .filter(Boolean),
+      ),
+    );
+
+    const triggeredByProfiles = triggeredByIds.length
+      ? await this.UserProfileModel.findAll({
+          where: { userId: triggeredByIds } as any,
+          attributes: ['userId', 'firstName', 'lastName', 'profile'],
+        })
+      : [];
+    const profileByUserId = new Map<number, any>(
+      (triggeredByProfiles as any[]).map((p: any) => [Number(p.userId), p]),
+    );
+
+    const baseUrl = process.env.S3_BUCKET_URL || process.env.BASE_URL || 'http://localhost:3000';
+
+    const result = notifications
+      .filter((notifRecipient: any) => {
+        const fc = notifRecipient?.notification?.familyCode;
+        if (!fc) return true;
+        return !blockedFamilyCodes.has(String(fc));
+      })
+      .map((notifRecipient) => {
       const mapped = {
         id: notifRecipient.notificationId,
         title: notifRecipient.notification.title,
@@ -881,6 +984,20 @@ export class NotificationService {
         referenceId: notifRecipient.notification.referenceId,
         readAt: notifRecipient.readAt,
       };
+
+      const triggeredBy = Number(notifRecipient?.notification?.triggeredBy);
+      if (triggeredBy && triggeredBy !== userId && !blockedUserIdSet.has(triggeredBy)) {
+        const p = profileByUserId.get(triggeredBy);
+        const name = p ? `${p.firstName ?? ''} ${p.lastName ?? ''}`.trim() : null;
+        const profile = p?.profile ? `${baseUrl}/profile/${p.profile}` : null;
+        (mapped as any).triggeredByUser = {
+          userId: triggeredBy,
+          name: name || null,
+          profile,
+        };
+      } else {
+        (mapped as any).triggeredByUser = null;
+      }
 
       // Debug log to see what status we're returning
       if (notifRecipient.notification.type === 'FAMILY_ASSOCIATION_REQUEST') {

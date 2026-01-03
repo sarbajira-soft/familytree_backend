@@ -562,16 +562,11 @@ export class UserService {
       console.error('Medusa password sync failed:', e?.message || e);
     }
 
-    return {
-      message: 'Password reset successfully',
-    };
+    return { message: 'Password reset successful' };
   }
 
   async getUserProfile(id: number | string) {
     try {
-      console.log(`[getUserProfile] Starting query for user ID: ${id}`);
-      const startTime = Date.now();
-
       const user = await this.userModel.findOne({
         where: { id },
         attributes: [
@@ -587,12 +582,12 @@ export class UserService {
           'termsAcceptedAt',
           'createdAt',
           'updatedAt',
-        ], // Only fetch needed user fields
+        ],
         include: [
           {
             model: UserProfile,
             as: 'userProfile',
-            required: false, // LEFT JOIN instead of INNER JOIN
+            required: false,
             include: [
               {
                 model: FamilyMember,
@@ -625,12 +620,6 @@ export class UserService {
 
       if (!user) throw new NotFoundException('User profile not found');
 
-      const queryTime = Date.now() - startTime;
-      console.log(
-        `[getUserProfile] Query completed in ${queryTime}ms for user ID: ${id}`,
-      );
-
-      // Convert profile filename to full URL if it exists and isn't already a URL
       if (user.userProfile?.profile) {
         user.userProfile.profile = this.uploadService.getFileUrl(
           user.userProfile.profile,
@@ -638,11 +627,6 @@ export class UserService {
         );
       }
 
-      console.log(
-        `[getUserProfile] Total execution time: ${
-          Date.now() - startTime
-        }ms for user ID: ${id}`,
-      );
       return user;
     } catch (error) {
       console.error('Error in getUserProfile:', error);
@@ -655,15 +639,26 @@ export class UserService {
     }
   }
 
+  async setPrivacy(userId: number, isPrivate: boolean) {
+    const profile = await this.userProfileModel.findOne({ where: { userId } });
+    if (!profile) {
+      throw new NotFoundException('User profile not found');
+    }
+
+    await profile.update({ isPrivate: !!isPrivate } as any);
+
+    return {
+      message: 'Privacy updated successfully',
+      data: { userId, isPrivate: !!profile.isPrivate },
+    };
+  }
+
   async updateProfile(
     userId: number,
     dto: UpdateProfileDto,
     actor: { userId: number; role: number; isAppUser: boolean },
   ) {
     try {
-      // -----------------------------
-      // LOAD USER & PROFILE
-      // -----------------------------
       const targetUser = await this.userModel.findByPk(userId);
       const targetProfile = await this.userProfileModel.findOne({
         where: { userId },

@@ -17,6 +17,7 @@ import { Notification } from './model/notification.model';
 import { NotificationRecipient } from './model/notification-recipients.model';
 import { FamilyModule } from '../family/family.module';
 import { UserModule } from '../user/user.module';
+import { BlockingModule } from '../blocking/blocking.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { UserModule } from '../user/user.module';
   }),
     forwardRef(() => FamilyModule),
     forwardRef(() => UserModule),
+    BlockingModule,
   ],
   controllers: [NotificationController],
   providers: [

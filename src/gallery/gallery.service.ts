@@ -20,6 +20,8 @@ import { CreateGalleryCommentDto } from './dto/gallery-comment.dto';
 import { NotificationService } from '../notification/notification.service';
 import { UploadService } from '../uploads/upload.service';
 import { BaseCommentService } from '../common/services/base-comment.service';
+import { FamilyMember } from '../family/model/family-member.model';
+import { BlockingService } from '../blocking/blocking.service';
 
 @Injectable()
 export class GalleryService {
@@ -37,10 +39,33 @@ export class GalleryService {
     @InjectModel(UserProfile)
     private readonly userProfileModel: typeof UserProfile,
 
+    @InjectModel(FamilyMember)
+    private readonly familyMemberModel: typeof FamilyMember,
+
     private readonly notificationService: NotificationService,
     private readonly uploadService: UploadService,
+
+    private readonly blockingService: BlockingService,
   ) {
     this.baseCommentService = new BaseCommentService();
+  }
+
+  private async assertUserCanAccessFamilyContent(userId: number, familyCode: string): Promise<void> {
+    if (!userId || !familyCode) {
+      throw new ForbiddenException('Not allowed to access this family content');
+    }
+
+    const membership = await this.familyMemberModel.findOne({
+      where: { memberId: userId, familyCode },
+    });
+
+    if (!membership || (membership as any).approveStatus !== 'approved') {
+      throw new ForbiddenException('Not allowed to access this family content');
+    }
+
+    if ((membership as any).isBlocked) {
+      throw new ForbiddenException('You have been blocked from this family');
+    }
   }
 
   private getGalleryImageFilenameFromUrl(url: string): string | null {
@@ -189,6 +214,10 @@ export class GalleryService {
     const privacy = dto.privacy ?? 'public';
     if (privacy === 'private' && !dto.familyCode) {
       throw new BadRequestException('familyCode is required for private privacy');
+    }
+
+    if (privacy === 'private' && dto.familyCode) {
+      await this.assertUserCanAccessFamilyContent(createdBy, dto.familyCode);
     }
 
     const transaction = await this.galleryModel.sequelize.transaction();
@@ -347,6 +376,7 @@ export class GalleryService {
         if (!familyCode) {
           throw new BadRequestException('familyCode is required for private privacy');
         }
+        await this.assertUserCanAccessFamilyContent(userId, familyCode);
         whereClause.privacy = privacy;
         whereClause.familyCode = familyCode;
       } else if (privacy === 'public') {
@@ -358,6 +388,21 @@ export class GalleryService {
 
     if (createdBy) whereClause.createdBy = createdBy;
 
+    const blockedUserIds = userId
+      ? await this.blockingService.getBlockedUserIdsForUser(userId)
+      : [];
+
+    if (blockedUserIds.length > 0) {
+      whereClause.createdBy = {
+        ...(whereClause.createdBy ? { [Op.eq]: whereClause.createdBy } : {}),
+        [Op.notIn]: blockedUserIds,
+      };
+    }
+
+    const profileVisibilityWhere = userId
+      ? { [Op.or]: [{ isPrivate: false }, { userId }] }
+      : { isPrivate: false };
+
     const galleries = await this.galleryModel.findAll({
       where: whereClause,
       include: [
@@ -368,6 +413,8 @@ export class GalleryService {
         {
           model: this.userProfileModel,
           as: 'userProfile',
+          required: true,
+          where: profileVisibilityWhere,
           attributes: ['firstName', 'lastName', 'profile'],
         },
       ],
@@ -421,6 +468,7 @@ export class GalleryService {
           ...(userId !== undefined && { isLiked }),
           familyCode: galleryJson.familyCode || null, // Convert empty string to null in response
           user: {
+            userId: galleryJson.createdBy,
             name: fullName,
             profile: profileImage,
           },
@@ -432,6 +480,23 @@ export class GalleryService {
   }
 
   async toggleLikeGallery(galleryId: number, userId: number) {
+    const gallery = await this.galleryModel.findByPk(galleryId);
+    if (!gallery) {
+      throw new NotFoundException('Gallery not found');
+    }
+
+    if (gallery.familyCode && gallery.privacy === 'private') {
+      await this.assertUserCanAccessFamilyContent(userId, gallery.familyCode);
+    }
+
+    const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      userId,
+      gallery.createdBy,
+    );
+    if (usersBlockedEitherWay && gallery.createdBy !== userId) {
+      throw new ForbiddenException('Not allowed');
+    }
+
     const existingLike = await this.galleryLikeModel.findOne({
       where: { galleryId, userId },
     });
@@ -462,6 +527,23 @@ export class GalleryService {
   }
 
   async addGalleryComment(dto: CreateGalleryCommentDto, userId: number) {
+    const gallery = await this.galleryModel.findByPk(dto.galleryId);
+    if (!gallery) {
+      throw new NotFoundException('Gallery not found');
+    }
+
+    if (gallery.familyCode && gallery.privacy === 'private') {
+      await this.assertUserCanAccessFamilyContent(userId, gallery.familyCode);
+    }
+
+    const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      userId,
+      gallery.createdBy,
+    );
+    if (usersBlockedEitherWay && gallery.createdBy !== userId) {
+      throw new ForbiddenException('You cannot comment due to blocking');
+    }
+
     const comment = await this.galleryCommentModel.create({
       galleryId: dto.galleryId,
       userId,
@@ -786,6 +868,11 @@ export class GalleryService {
   }
 
   async getGalleryComments(galleryId: number, page = 1, limit = 10) {
+    const gallery = await this.galleryModel.findByPk(galleryId);
+    if (!gallery) {
+      throw new NotFoundException('Gallery not found');
+    }
+
     const offset = (page - 1) * limit;
 
     const { rows, count } = await this.galleryCommentModel.findAndCountAll({
@@ -815,6 +902,7 @@ export class GalleryService {
         userId: comment.userId,
         user: comment.userProfile
           ? {
+              userId: comment.userId,
               firstName: comment.userProfile.firstName,
               lastName: comment.userProfile.lastName,
               profile: this.constructGalleryImageUrl(comment.userProfile.profile, 'profile'),
@@ -855,6 +943,23 @@ export class GalleryService {
 
     if (!gallery) {
       throw new NotFoundException('Gallery not found');
+    }
+
+    if (gallery.familyCode && gallery.privacy === 'private') {
+      if (!userId) {
+        throw new ForbiddenException('Not allowed to view this gallery');
+      }
+      await this.assertUserCanAccessFamilyContent(userId, gallery.familyCode);
+    }
+
+    if (userId) {
+      const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+        userId,
+        gallery.createdBy,
+      );
+      if (usersBlockedEitherWay && gallery.createdBy !== userId) {
+        throw new NotFoundException('Gallery not found');
+      }
     }
 
     const galleryJson = gallery.toJSON();

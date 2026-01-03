@@ -16,6 +16,7 @@ import { EventImage } from './model/event-image.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { UploadService } from '../uploads/upload.service';
 import { EventGateway } from './event.gateway';
+import { BlockingService } from '../blocking/blocking.service';
  
 @Injectable()
 export class EventService {
@@ -37,9 +38,43 @@ export class EventService {
 
     private readonly notificationService: NotificationService,
     private readonly eventGateway: EventGateway,
+
+    private readonly blockingService: BlockingService,
   ) {}
 
-  async createEvent(dto: CreateEventDto, imageFiles?: Express.Multer.File[]) {
+  private async assertUserCanAccessFamilyContent(
+    userId: number,
+    familyCode: string,
+  ): Promise<void> {
+    if (!userId || !familyCode) {
+      throw new ForbiddenException('Not allowed to access this family content');
+    }
+
+    const membership = await this.familyMemberModel.findOne({
+      where: { memberId: userId, familyCode },
+    });
+
+    if (!membership || (membership as any).approveStatus !== 'approved') {
+      throw new ForbiddenException('Not allowed to access this family content');
+    }
+
+    if ((membership as any).isBlocked) {
+      throw new ForbiddenException('You have been blocked from this family');
+    }
+  }
+
+  async createEvent(
+    dto: CreateEventDto,
+    imageFiles?: Express.Multer.File[],
+    requestingUserId?: number,
+  ) {
+    if (dto.familyCode) {
+      const actor = requestingUserId ?? dto.createdBy ?? dto.userId;
+      if (actor) {
+        await this.assertUserCanAccessFamilyContent(actor, dto.familyCode);
+      }
+    }
+
     const event = await this.eventModel.create(dto);
     const uploadService = new UploadService();
 
@@ -146,16 +181,29 @@ export class EventService {
     let events;
     if (userId) {
       // Get user's family code from familymembers table with approved status
-      const familyMember = await this.familyMemberModel.findOne({ 
-        where: { 
+      const familyMember = await this.familyMemberModel.findOne({
+        where: {
           memberId: userId,
-          approveStatus: 'approved'
-        } 
+          approveStatus: 'approved',
+        },
       });
       if (familyMember && familyMember.familyCode) {
+        if ((familyMember as any).isBlocked) {
+          throw new ForbiddenException('You have been blocked from this family');
+        }
+
+        const blockedUserIds = await this.blockingService.getBlockedUserIdsForUser(
+          userId,
+        );
+
         events = await this.eventModel.findAll({ 
-          where: { familyCode: familyMember.familyCode },
-          include: [EventImage] 
+          where: {
+            familyCode: familyMember.familyCode,
+            ...(blockedUserIds.length > 0
+              ? { createdBy: { [Op.notIn]: blockedUserIds } }
+              : {}),
+          },
+          include: [EventImage],
         });
       } else {
         events = [];
@@ -175,6 +223,19 @@ export class EventService {
   }
 
   async getEventsForUser(userId: number) {
+    const familyMember = await this.familyMemberModel.findOne({
+      where: {
+        memberId: userId,
+        approveStatus: 'approved',
+      },
+    });
+
+    if (familyMember && (familyMember as any).familyCode) {
+      if ((familyMember as any).isBlocked) {
+        throw new ForbiddenException('You have been blocked from this family');
+      }
+    }
+
     const events = await this.eventModel.findAll({
       where: { 
         createdBy: userId,
@@ -202,9 +263,21 @@ export class EventService {
     });
   }
 
-  async getById(id: number) {
+  async getById(id: number, requestingUserId?: number) {
     const event = await this.eventModel.findByPk(id, { include: [EventImage] });
     if (!event) throw new NotFoundException('Event not found');
+
+    if (requestingUserId && event.familyCode) {
+      await this.assertUserCanAccessFamilyContent(requestingUserId, event.familyCode);
+      const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+        requestingUserId,
+        event.createdBy,
+      );
+      if (usersBlockedEitherWay && event.createdBy !== requestingUserId) {
+        throw new NotFoundException('Event not found');
+      }
+    }
+
     const eventJson = event.toJSON();
     const eventImages = eventJson.images?.map(img => this.constructEventImageUrl(img.imageUrl)) || [];
     delete eventJson.user;
@@ -223,6 +296,10 @@ export class EventService {
   ) {
     const event = await this.eventModel.findByPk(id, { include: [EventImage] });
     if (!event) throw new NotFoundException('Event not found');
+
+    if (loggedId && event.familyCode) {
+      await this.assertUserCanAccessFamilyContent(loggedId, event.familyCode);
+    }
 
     // Check authorization: only creator or admin/superadmin can update
     if (loggedId) {
@@ -348,6 +425,10 @@ export class EventService {
     const event = await this.eventModel.findByPk(id, { include: [EventImage] });
     if (!event) throw new NotFoundException('Event not found');
 
+    if (loggedId && event.familyCode) {
+      await this.assertUserCanAccessFamilyContent(loggedId, event.familyCode);
+    }
+
     // Check authorization: only creator or admin/superadmin can delete
     if (loggedId) {
       const user = await this.userModel.findByPk(loggedId);
@@ -453,18 +534,29 @@ export class EventService {
     let events = [];
 
     if (userId) {
-      const familyMember = await this.familyMemberModel.findOne({ 
-        where: { 
+      const familyMember = await this.familyMemberModel.findOne({
+        where: {
           memberId: userId,
-          approveStatus: 'approved'
-        } 
+          approveStatus: 'approved',
+        },
       });
       if (familyMember && familyMember.familyCode) {
+        if ((familyMember as any).isBlocked) {
+          throw new ForbiddenException('You have been blocked from this family');
+        }
+
+        const blockedUserIds = await this.blockingService.getBlockedUserIdsForUser(
+          userId,
+        );
+
         events = await this.eventModel.findAll({
           where: {
             eventDate: { [Op.gt]: today },
             status: 1,
             familyCode: familyMember.familyCode,
+            ...(blockedUserIds.length > 0
+              ? { createdBy: { [Op.notIn]: blockedUserIds } }
+              : {}),
           },
           include: [EventImage],
           order: [['eventDate', 'ASC']],
@@ -501,13 +593,16 @@ export class EventService {
     let familyCode = null;
 
     if (userId) {
-      const familyMember = await this.familyMemberModel.findOne({ 
-        where: { 
+      const familyMember = await this.familyMemberModel.findOne({
+        where: {
           memberId: userId,
-          approveStatus: 'approved'
-        } 
+          approveStatus: 'approved',
+        },
       });
       if (familyMember && familyMember.familyCode) {
+        if ((familyMember as any).isBlocked) {
+          throw new ForbiddenException('You have been blocked from this family');
+        }
         familyCode = familyMember.familyCode;
       }
     }
@@ -535,10 +630,18 @@ export class EventService {
       type: QueryTypes.SELECT
     });
 
+    const blockedUserIds = userId
+      ? await this.blockingService.getBlockedUserIdsForUser(userId)
+      : [];
+    const blockedSet = new Set<number>(blockedUserIds);
+
     const upcomingBirthdays = [];
 
     // Process birthdays
     for (const member of familyMembers) {
+      if (blockedSet.has(Number(member.memberId))) {
+        continue;
+      }
       if (member.dob) {
         // Parse date as local date to avoid timezone issues
         const dobString = typeof member.dob === 'string' ? member.dob.split('T')[0] : member.dob.toISOString().split('T')[0]; // Get YYYY-MM-DD part
@@ -569,6 +672,7 @@ export class EventService {
             status: 1,
             eventType: 'birthday',
             memberDetails: {
+              userId: member.memberId,
               firstName: member.firstName,
               lastName: member.lastName,
               profileImage: this.constructProfileImageUrl(member.profile),
@@ -627,10 +731,18 @@ export class EventService {
       type: QueryTypes.SELECT
     });
 
+    const blockedUserIds = userId
+      ? await this.blockingService.getBlockedUserIdsForUser(userId)
+      : [];
+    const blockedSet = new Set<number>(blockedUserIds);
+
     const upcomingAnniversaries = [];
 
     // Process marriage anniversaries
     for (const member of familyMembers) {
+      if (blockedSet.has(Number(member.memberId))) {
+        continue;
+      }
       if (member.marriageDate) {
         // Parse date as local date to avoid timezone issues
         const marriageDateString = typeof member.marriageDate === 'string' ? member.marriageDate.split('T')[0] : member.marriageDate.toISOString().split('T')[0]; // Get YYYY-MM-DD part
@@ -662,6 +774,7 @@ export class EventService {
             status: 1,
             eventType: 'anniversary',
             memberDetails: {
+              userId: member.memberId,
               firstName: member.firstName,
               lastName: member.lastName,
               profileImage: this.constructProfileImageUrl(member.profile),
@@ -874,6 +987,10 @@ export class EventService {
     const event = await this.eventModel.findByPk(eventId);
     if (!event) throw new NotFoundException('Event not found');
 
+    if (loggedId && event.familyCode) {
+      await this.assertUserCanAccessFamilyContent(loggedId, event.familyCode);
+    }
+
     // Check authorization: only creator or admin/superadmin can add images
     if (loggedId) {
       const user = await this.userModel.findByPk(loggedId);
@@ -905,6 +1022,10 @@ export class EventService {
     const image = await this.eventImageModel.findByPk(imageId, { include: [Event] });
     if (!image) throw new NotFoundException('Image not found');
 
+    if (loggedId && (image as any).event?.familyCode) {
+      await this.assertUserCanAccessFamilyContent(loggedId, (image as any).event.familyCode);
+    }
+
     // Check authorization: only creator or admin/superadmin can delete images
     if (loggedId) {
       const user = await this.userModel.findByPk(loggedId);
@@ -930,7 +1051,9 @@ export class EventService {
     return { message: 'Image deleted successfully' };
   }
 
-  async getEventImages(eventId: number) {
+  async getEventImages(eventId: number, requestingUserId?: number) {
+    // Reuse getById to enforce family-block + user-to-user block visibility
+    await this.getById(eventId, requestingUserId);
     const images = await this.eventImageModel.findAll({ where: { eventId } });
     return images.map(img => ({ id: img.id, imageUrl: this.constructEventImageUrl(img.imageUrl) }));
   }

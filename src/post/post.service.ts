@@ -8,6 +8,7 @@ import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
 import * as fs from 'fs';
 import * as path from 'path';
+
 import { Post } from './model/post.model';
 import { PostLike } from './model/post-like.model';
 import { PostComment } from './model/post-comment.model';
@@ -20,6 +21,8 @@ import { UploadService } from '../uploads/upload.service';
 import { PostGateway } from './post.gateway';
 import { BaseCommentService } from '../common/services/base-comment.service';
 import { NotificationGateway } from 'src/notification/notification.gateway';
+import { BlockingService } from '../blocking/blocking.service';
+import { FamilyMember } from '../family/model/family-member.model';
 
 @Injectable()
 export class PostService {
@@ -37,11 +40,52 @@ export class PostService {
     @InjectModel(User)
     private readonly userModel: typeof User,
 
+    @InjectModel(FamilyMember)
+    private readonly familyMemberModel: typeof FamilyMember,
+
     private readonly notificationService: NotificationService,
     private readonly notificationGateway: NotificationGateway,
     private readonly postGateway: PostGateway,
+
+    private readonly blockingService: BlockingService,
   ) {
     this.baseCommentService = new BaseCommentService();
+  }
+
+  private async assertUserCanAccessFamilyContent(userId: number, familyCode: string): Promise<void> {
+    if (!userId || !familyCode) {
+      throw new ForbiddenException('Not allowed to access this family content');
+    }
+
+    const membership = await this.familyMemberModel.findOne({
+      where: { memberId: userId, familyCode },
+    });
+
+    if (!membership || (membership as any).approveStatus !== 'approved') {
+      throw new ForbiddenException('Not allowed to access this family content');
+    }
+
+    if ((membership as any).isBlocked) {
+      throw new ForbiddenException('You have been blocked from this family');
+    }
+  }
+
+  private getPostImageUrl(filename: string | null): string | null {
+    if (!filename) return null;
+
+    // If the filename is already a full URL, return it as is
+    if (filename.startsWith('http://') || filename.startsWith('https://')) {
+      return filename;
+    }
+
+    // If S3 is configured, construct S3 URL
+    if (process.env.S3_BUCKET_NAME && process.env.REGION) {
+      return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/posts/${filename}`;
+    }
+
+    // Fallback to local URL
+    const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
+    return `${baseUrl}/uploads/posts/${filename}`;
   }
 
   async createPost(dto: CreatePostDto, createdBy: number) {
@@ -68,6 +112,11 @@ export class PostService {
 
     // DB column caption is NOT NULL, so store empty string when we only have an image
     const captionToStore = hasCaption ? rawCaption : '';
+
+    // Enforce admin family-block policy for family/private content
+    if (dto.familyCode && (dto.privacy === 'private' || dto.privacy === 'family')) {
+      await this.assertUserCanAccessFamilyContent(createdBy, dto.familyCode);
+    }
 
     // Step 1: Create post
     const post = await this.postModel.create({
@@ -260,75 +309,6 @@ export class PostService {
     };
   }
 
-  private getPostImageUrl(filename: string | null): string | null {
-    if (!filename) return null;
-
-    // If the filename is already a full URL, return it as is
-    if (filename.startsWith('http://') || filename.startsWith('https://')) {
-      return filename;
-    }
-
-    // If S3 is configured, construct S3 URL
-    if (process.env.S3_BUCKET_NAME && process.env.REGION) {
-      return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/posts/${filename}`;
-    }
-
-    // Fallback to local URL
-    const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
-    return `${baseUrl}/uploads/posts/${filename}`;
-  }
-
-  /**
-   * Checks if the new image is the same as the old one
-   * @param newImage The new image file
-   * @param oldImageFilename The filename of the old image
-   * @returns boolean indicating if the images are the same
-   */
-  private async isSameImage(
-    newImage: Express.Multer.File,
-    oldImageFilename: string | null,
-  ): Promise<boolean> {
-    if (!oldImageFilename) return false;
-
-    try {
-      // Extract just the filename without path if it's a full URL
-      let filename = oldImageFilename;
-      try {
-        const url = new URL(oldImageFilename);
-        filename = url.pathname.split('/').pop() || oldImageFilename;
-      } catch (e) {
-        // Not a URL, use as is
-      }
-
-      // Compare filenames (without timestamps if any)
-      const oldName = filename.split('_').pop()?.split('.')[0];
-      const newName = newImage.originalname.split('.')[0];
-
-      return oldName === newName;
-    } catch (error) {
-      console.error('Error comparing images:', error);
-      return false; // If there's an error, assume they're different to be safe
-    }
-  }
-
-  private async isUserInFamily(
-    userId: number,
-    familyCode: string,
-  ): Promise<boolean> {
-    if (!userId || !familyCode) {
-      return false;
-    }
-
-    const profile = await this.userProfileModel.findOne({
-      where: {
-        userId,
-        familyCode,
-      },
-    });
-
-    return !!profile;
-  }
-  
   async getPostByOptions(
     privacy?: 'public' | 'private' | 'family',
     familyCode?: string,
@@ -341,21 +321,6 @@ export class PostService {
 
     if (postId) whereClause.id = postId;
 
-    // if (privacy) {
-    //   if (privacy === 'private' || privacy === 'family') {
-    //     if (!familyCode) {
-    //       throw new BadRequestException(
-    //         'familyCode is required for private/family privacy',
-    //       );
-    //     }
-    //     whereClause.privacy = privacy;
-    //     whereClause.familyCode = familyCode;
-    //   } else if (privacy === 'public') {
-    //     whereClause.privacy = 'public';
-    //   } else {
-    //     throw new BadRequestException('Invalid privacy value');
-    //   }
-    // }
     if (privacy === 'private' || privacy === 'family') {
       if (!familyCode) {
         throw new BadRequestException(
@@ -363,13 +328,12 @@ export class PostService {
         );
       }
 
-      const isMember = await this.isUserInFamily(userId, familyCode);
-      if (!isMember) {
-        throw new ForbiddenException('Not allowed to view this family feed');
-      }
+      await this.assertUserCanAccessFamilyContent(userId, familyCode);
 
       whereClause.privacy = privacy;
       whereClause.familyCode = familyCode;
+    } else if (privacy === 'public') {
+      whereClause.privacy = 'public';
     }
 
     if (createdBy) whereClause.createdBy = createdBy;
@@ -378,12 +342,32 @@ export class PostService {
       whereClause.caption = { [Op.iLike]: `%${caption}%` };
     }
 
+    // User-to-user blocking: hide blocked users' posts in any feed
+    const blockedUserIds = userId
+      ? await this.blockingService.getBlockedUserIdsForUser(userId)
+      : [];
+    if (blockedUserIds.length > 0) {
+      whereClause.createdBy = {
+        ...(whereClause.createdBy ? { [Op.eq]: whereClause.createdBy } : {}),
+        [Op.notIn]: blockedUserIds,
+      };
+    }
+
+    // Private account enforcement:
+    // - If viewer is logged in: allow posts from non-private users, plus the viewer's own posts
+    // - If viewer is not logged in: only allow non-private users
+    const profileVisibilityWhere = userId
+      ? { [Op.or]: [{ isPrivate: false }, { userId }] }
+      : { isPrivate: false };
+
     const posts = await this.postModel.findAll({
       where: whereClause,
       include: [
         {
           model: this.userProfileModel,
           as: 'userProfile',
+          required: true,
+          where: profileVisibilityWhere,
           attributes: ['firstName', 'lastName', 'profile'],
         },
       ],
@@ -441,6 +425,7 @@ export class PostService {
           commentCount,
           isLiked,
           user: {
+            userId: postJson.createdBy,
             name: fullName,
             profile: profileImage,
           },
@@ -452,6 +437,14 @@ export class PostService {
   }
 
   async toggleLikePost(postId: number, userId: number) {
+    const post = await this.postModel.findByPk(postId);
+    if (!post) return;
+
+    // Admin family-block: deny interactions on family/private posts if blocked
+    if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
+      await this.assertUserCanAccessFamilyContent(userId, post.familyCode);
+    }
+
     const existingLike = await this.postLikeModel.findOne({
       where: { postId, userId },
     });
@@ -473,14 +466,15 @@ export class PostService {
       ? `${userProfile.firstName} ${userProfile.lastName}`
       : 'Unknown User';
 
-    // POST OWNER
-    const post = await this.postModel.findByPk(postId);
-    if (!post) return;
-
     const postOwnerId = post.createdBy;
 
+    const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      userId,
+      postOwnerId,
+    );
+
     // SEND NOTIFICATION ONLY IF LIKE AND NOT SELF-LIKE
-    if (!existingLike && postOwnerId !== userId) {
+    if (!existingLike && postOwnerId !== userId && !usersBlockedEitherWay) {
       // 1️⃣ Emit standard notification
       await this.notificationService.notifyPostLike(
         postId,
@@ -533,6 +527,24 @@ export class PostService {
   }
 
   async addComment(postId: number, userId: number, comment: string) {
+    const post = await this.postModel.findByPk(postId);
+    if (!post) return;
+
+    // Admin family-block: deny interactions on family/private posts if blocked
+    if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
+      await this.assertUserCanAccessFamilyContent(userId, post.familyCode);
+    }
+
+    const postOwnerId = post.createdBy;
+    const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      userId,
+      postOwnerId,
+    );
+
+    if (usersBlockedEitherWay && postOwnerId !== userId) {
+      throw new ForbiddenException('You cannot comment due to blocking');
+    }
+
     const newComment = await this.postCommentModel.create({
       postId,
       userId,
@@ -547,14 +559,8 @@ export class PostService {
       ? `${userProfile.firstName} ${userProfile.lastName}`
       : 'Unknown User';
 
-    // Get Post Owner
-    const post = await this.postModel.findByPk(postId);
-    if (!post) return;
-
-    const postOwnerId = post.createdBy;
-
     // 1️⃣ SEND NOTIFICATION ONLY IF NOT SELF-COMMENT
-    if (postOwnerId !== userId) {
+    if (postOwnerId !== userId && !usersBlockedEitherWay) {
       await this.notificationService.notifyComment(
         postId,
         userId,
@@ -597,6 +603,7 @@ export class PostService {
       userId: newComment.userId,
       user: userProfile
         ? {
+            userId: newComment.userId,
             firstName: userProfile.firstName,
             lastName: userProfile.lastName,
             profile: userProfile.profile
@@ -612,13 +619,23 @@ export class PostService {
     return formattedComment;
   }
 
-  async getPost(postId: number) {
+  async getPost(postId: number, requestingUserId?: number) {
     const post = await this.postModel.findOne({
       where: { id: postId },
     });
 
     if (!post) {
       throw new Error(`Post with ID ${postId} not found`);
+    }
+
+    if (
+      post.familyCode &&
+      (post.privacy === 'private' || post.privacy === 'family')
+    ) {
+      if (!requestingUserId) {
+        throw new ForbiddenException('Not allowed to view this post');
+      }
+      await this.assertUserCanAccessFamilyContent(requestingUserId, post.familyCode);
     }
 
     const postJson = post.toJSON() as any;
@@ -633,11 +650,41 @@ export class PostService {
     };
   }
 
-  async getComments(postId: number, page = 1, limit = 10) {
+  async getComments(
+    postId: number,
+    page = 1,
+    limit = 10,
+    requestingUserId?: number,
+  ) {
+    const post = await this.postModel.findByPk(postId);
+    if (!post) {
+      throw new NotFoundException('Post not found');
+    }
+
+    if (
+      requestingUserId &&
+      post.familyCode &&
+      (post.privacy === 'private' || post.privacy === 'family')
+    ) {
+      await this.assertUserCanAccessFamilyContent(
+        requestingUserId,
+        post.familyCode,
+      );
+    }
+
     const offset = (page - 1) * limit;
 
+    const blockedUserIds = requestingUserId
+      ? await this.blockingService.getBlockedUserIdsForUser(requestingUserId)
+      : [];
+
     const { rows, count } = await this.postCommentModel.findAndCountAll({
-      where: { postId },
+      where: {
+        postId,
+        ...(blockedUserIds.length > 0
+          ? { userId: { [Op.notIn]: blockedUserIds } }
+          : {}),
+      },
       order: [['createdAt', 'DESC']],
       limit,
       offset,
@@ -659,6 +706,7 @@ export class PostService {
       userId: comment.userId,
       user: comment.userProfile
         ? {
+            userId: comment.userId,
             firstName: comment.userProfile.firstName,
             lastName: comment.userProfile.lastName,
             profile: comment.userProfile.profile
@@ -753,6 +801,26 @@ export class PostService {
     userId: number,
     newCommentText: string,
   ) {
+    const comment = await this.postCommentModel.findByPk(commentId);
+    if (!comment) {
+      throw new NotFoundException('Comment not found');
+    }
+    const post = await this.postModel.findByPk((comment as any).postId);
+    if (!post) {
+      throw new NotFoundException('Post not found');
+    }
+    if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
+      await this.assertUserCanAccessFamilyContent(userId, post.familyCode);
+    }
+
+    const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      userId,
+      post.createdBy,
+    );
+    if (usersBlockedEitherWay && post.createdBy !== userId) {
+      throw new ForbiddenException('You cannot edit comment due to blocking');
+    }
+
     const result = await this.baseCommentService.editComment(
       this.postCommentModel,
       commentId,
@@ -776,6 +844,7 @@ export class PostService {
       userId: result.data.userId,
       user: userProfile
         ? {
+            userId: result.data.userId,
             firstName: userProfile.firstName,
             lastName: userProfile.lastName,
             profile: userProfile.profile
@@ -792,6 +861,26 @@ export class PostService {
    * Delete a post comment - reuses base service
    */
   async deletePostComment(commentId: number, userId: number) {
+    const comment = await this.postCommentModel.findByPk(commentId);
+    if (!comment) {
+      throw new NotFoundException('Comment not found');
+    }
+    const post = await this.postModel.findByPk((comment as any).postId);
+    if (!post) {
+      throw new NotFoundException('Post not found');
+    }
+    if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
+      await this.assertUserCanAccessFamilyContent(userId, post.familyCode);
+    }
+
+    const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      userId,
+      post.createdBy,
+    );
+    if (usersBlockedEitherWay && post.createdBy !== userId) {
+      throw new ForbiddenException('You cannot delete comment due to blocking');
+    }
+
     return this.baseCommentService.deleteComment(
       this.postCommentModel,
       commentId,
@@ -808,6 +897,22 @@ export class PostService {
     userId: number,
     replyText: string,
   ) {
+    const post = await this.postModel.findByPk(postId);
+    if (!post) {
+      throw new NotFoundException('Post not found');
+    }
+    if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
+      await this.assertUserCanAccessFamilyContent(userId, post.familyCode);
+    }
+
+    const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      userId,
+      post.createdBy,
+    );
+    if (usersBlockedEitherWay && post.createdBy !== userId) {
+      throw new ForbiddenException('You cannot comment due to blocking');
+    }
+
     const result = await this.baseCommentService.replyToComment(
       this.postCommentModel,
       parentCommentId,
@@ -832,6 +937,7 @@ export class PostService {
       userId: result.data.userId,
       user: userProfile
         ? {
+            userId: result.data.userId,
             firstName: userProfile.firstName,
             lastName: userProfile.lastName,
             profile: userProfile.profile

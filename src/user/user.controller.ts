@@ -233,53 +233,60 @@ export class UserController {
       message: 'Access denied: You can only view profiles in your family',
     });
   }
-  // async getProfile(@Req() req, @Param('id', ParseIntPipe) id: number) {
-  //   const loggedInUser = req.user;
-  //   const targetUserId = Number(id);
 
-  //   // Always allow self for any role
-  //   if (loggedInUser.userId === targetUserId) {
-  //     const userdata = await this.userService.getUserProfile(id);
-  //     return {
-  //       message: 'Profile fetched successfully',
-  //       data: userdata,
-  //       currentUser: loggedInUser,
-  //     };
-  //   }
+  @UseGuards(JwtAuthGuard)
+  @Get('gift-address/:id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Get minimal user address info for gifting' })
+  @ApiResponse({ status: 200, description: 'Gifting address data' })
+  @ApiBearerAuth()
+  @ApiSecurity('application-token')
+  async getGiftAddress(
+    @Req() req,
+    @Param('id', ParseIntPipe) id: number,
+  ) {
+    const loggedInUser = req.user;
+    const targetUserId = Number(id);
 
-  //   // If member, allow if self or same family
-  //   if (loggedInUser.role === 1) {
-  //     if (loggedInUser.userId === targetUserId) {
-  //       // Self
-  //       const userdata = await this.userService.getUserProfile(id);
-  //       return {
-  //         message: 'Profile fetched successfully',
-  //         data: userdata,
-  //         currentUser: loggedInUser,
-  //       };
-  //     } else {
-  //       // Check if both are in the same family
-  //       const targetUser = await this.userService.getUserProfile(id);
-  //       const myProfile = await this.userService.getUserProfile(loggedInUser.userId);
+    if (loggedInUser.userId === targetUserId) {
+      const data = await this.userService.getUserAddressForGifting(id);
+      return {
+        message: 'Gifting address fetched successfully',
+        data,
+        currentUser: loggedInUser,
+      };
+    }
 
-  //       const myFamilyCode = myProfile?.userProfile?.familyCode;
-  //       const targetFamilyCode = targetUser?.userProfile?.familyCode;
+    const usersBlockedEitherWay =
+      await this.blockingService.isUserBlockedEitherWay(
+        Number(loggedInUser.userId),
+        targetUserId,
+      );
+    if (usersBlockedEitherWay) {
+      throw new ForbiddenException('Access denied');
+    }
 
-  //       if (myFamilyCode && targetFamilyCode && myFamilyCode === targetFamilyCode) {
-  //         return {
-  //           message: 'Profile fetched successfully',
-  //           data: targetUser,
-  //           currentUser: loggedInUser,
-  //         };
-  //       } else {
-  //         throw new BadRequestException({message:'Access denied: You can only view profiles in your family'});
-  //       }
-  //     }
-  //   }
+    const [myProfile, targetUser] = await Promise.all([
+      this.userService.getUserProfile(loggedInUser.userId),
+      this.userService.getUserProfile(id),
+    ]);
 
-  //   // Default: deny
-  //   throw new BadRequestException({message:'Access denied'});
-  // }
+    const myFamilyCode = myProfile?.userProfile?.familyCode;
+    const targetFamilyCode = targetUser?.userProfile?.familyCode;
+
+    if (myFamilyCode && targetFamilyCode && myFamilyCode === targetFamilyCode) {
+      const data = await this.userService.getUserAddressForGifting(id);
+      return {
+        message: 'Gifting address fetched successfully',
+        data,
+        currentUser: loggedInUser,
+      };
+    }
+
+    throw new BadRequestException({
+      message: 'Access denied: You can only view addresses in your family',
+    });
+  }
 
   @UseGuards(JwtAuthGuard)
   @Put('profile/update/:id')

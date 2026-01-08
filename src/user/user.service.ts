@@ -639,6 +639,50 @@ export class UserService {
     }
   }
 
+  async getUserAddressForGifting(id: number | string) {
+    try {
+      const user = await this.userModel.findOne({
+        where: { id },
+        attributes: ['id', 'email', 'mobile', 'countryCode'],
+        include: [
+          {
+            model: UserProfile,
+            as: 'userProfile',
+            required: false,
+            attributes: ['firstName', 'lastName', 'address', 'contactNumber', 'familyCode'],
+          },
+        ],
+      });
+
+      if (!user) {
+        throw new NotFoundException('User profile not found');
+      }
+
+      const fullPhone =
+        user.userProfile?.contactNumber ||
+        (user.countryCode && user.mobile
+          ? `${user.countryCode}${user.mobile}`
+          : user.mobile);
+
+      return {
+        id: user.id,
+        firstName: user.userProfile?.firstName || null,
+        lastName: user.userProfile?.lastName || null,
+        address: user.userProfile?.address || null,
+        contactNumber: fullPhone || null,
+        familyCode: user.userProfile?.familyCode || null,
+      };
+    } catch (error) {
+      console.error('Error in getUserAddressForGifting:', error);
+      throw new BadRequestException({
+        statusCode: 500,
+        message: 'Failed to fetch gifting address',
+        error: 'Server Error',
+        details: error.message,
+      });
+    }
+  }
+
   async setPrivacy(userId: number, isPrivate: boolean) {
     const profile = await this.userProfileModel.findOne({ where: { userId } });
     if (!profile) {

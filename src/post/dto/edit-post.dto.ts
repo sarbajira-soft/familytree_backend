@@ -33,4 +33,11 @@ export class EditPostDto {
   })
   @IsOptional()
   postImage?: string;
+
+  @ApiPropertyOptional({
+    description: 'Post video (mp4). Provide a filename or URL after multipart upload',
+    type: 'string',
+  })
+  @IsOptional()
+  postVideo?: string;
 } 

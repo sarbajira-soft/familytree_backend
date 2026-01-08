@@ -1,0 +1,2 @@
+ALTER TABLE IF EXISTS public.ft_post
+  ADD COLUMN IF NOT EXISTS "postVideo" VARCHAR(255);

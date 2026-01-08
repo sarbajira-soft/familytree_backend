@@ -1,6 +1,18 @@
 // src/common/upload/upload.service.ts
 import { Injectable } from '@nestjs/common';
-import { S3Client, PutObjectCommand, DeleteObjectCommand, ObjectCannedACL  } from '@aws-sdk/client-s3';
+import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
+  CreateMultipartUploadCommand,
+  DeleteObjectCommand,
+  ListPartsCommand,
+  S3Client,
+  PutObjectCommand,
+  UploadPartCommand,
+  type CompletedPart,
+  type ListPartsCommandOutput,
+} from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { extname } from 'path';
 import { v4 as uuid } from 'uuid';
 
@@ -16,6 +28,115 @@ export class UploadService {
         secretAccessKey: process.env.SECRET_ACCESS_KEY,
       },
     });
+  }
+
+  async createMultipartUpload(
+    originalFileName: string,
+    contentType: string,
+    folder: string,
+  ): Promise<{ uploadId: string; key: string; fileName: string }> {
+    const fileExt = extname(originalFileName);
+    const fileName = `${uuid()}${fileExt}`;
+    const key = `${folder}/${fileName}`;
+
+    const res = await this.s3.send(
+      new CreateMultipartUploadCommand({
+        Bucket: process.env.S3_BUCKET_NAME,
+        Key: key,
+        ContentType: contentType,
+      }),
+    );
+
+    return {
+      uploadId: res.UploadId,
+      key,
+      fileName,
+    };
+  }
+
+  async getPresignedUploadPartUrl(
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    expiresInSeconds: number = 60 * 10,
+  ): Promise<string> {
+    const command = new UploadPartCommand({
+      Bucket: process.env.S3_BUCKET_NAME,
+      Key: key,
+      UploadId: uploadId,
+      PartNumber: partNumber,
+    });
+
+    return getSignedUrl(this.s3, command, {
+      expiresIn: expiresInSeconds,
+    });
+  }
+
+  async listMultipartUploadParts(
+    key: string,
+    uploadId: string,
+  ): Promise<{
+    uploadId: string;
+    key: string;
+    parts: { PartNumber: number; ETag: string; Size?: number }[];
+  }> {
+    const res: ListPartsCommandOutput = await this.s3.send(
+      new ListPartsCommand({
+        Bucket: process.env.S3_BUCKET_NAME,
+        Key: key,
+        UploadId: uploadId,
+      }),
+    );
+
+    return {
+      uploadId,
+      key,
+      parts:
+        res.Parts?.map((p) => ({
+          PartNumber: p.PartNumber,
+          ETag: p.ETag,
+          Size: p.Size,
+        })) || [],
+    };
+  }
+
+  async completeMultipartUpload(
+    key: string,
+    uploadId: string,
+    parts: { PartNumber: number; ETag: string }[],
+  ): Promise<{ key: string; fileName: string; location?: string }> {
+    const completed: CompletedPart[] = parts
+      .slice()
+      .sort((a, b) => a.PartNumber - b.PartNumber)
+      .map((p) => ({ PartNumber: p.PartNumber, ETag: p.ETag }));
+
+    const res = await this.s3.send(
+      new CompleteMultipartUploadCommand({
+        Bucket: process.env.S3_BUCKET_NAME,
+        Key: key,
+        UploadId: uploadId,
+        MultipartUpload: {
+          Parts: completed,
+        },
+      }),
+    );
+
+    return {
+      key,
+      fileName: key.split('/').pop() || key,
+      location: res.Location,
+    };
+  }
+
+  async abortMultipartUpload(key: string, uploadId: string): Promise<boolean> {
+    await this.s3.send(
+      new AbortMultipartUploadCommand({
+        Bucket: process.env.S3_BUCKET_NAME,
+        Key: key,
+        UploadId: uploadId,
+      }),
+    );
+    return true;
   }
 
   async uploadFile(file: Express.Multer.File, folder: string): Promise<string> {

@@ -21,6 +21,12 @@ export class Post extends Model<Post> {
 
   @Column({
     type: DataType.STRING,
+    allowNull: true,
+  })
+  postVideo: string;
+
+  @Column({
+    type: DataType.STRING,
     allowNull: false,
   })
   privacy: string;

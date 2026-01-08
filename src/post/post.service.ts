@@ -88,6 +88,24 @@ export class PostService {
     return `${baseUrl}/uploads/posts/${filename}`;
   }
 
+  private getPostVideoUrl(filename: string | null): string | null {
+    if (!filename) return null;
+
+    // If the filename is already a full URL, return it as is
+    if (filename.startsWith('http://') || filename.startsWith('https://')) {
+      return filename;
+    }
+
+    // If S3 is configured, construct S3 URL
+    if (process.env.S3_BUCKET_NAME && process.env.REGION) {
+      return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/posts/${filename}`;
+    }
+
+    // Fallback to local URL
+    const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
+    return `${baseUrl}/uploads/posts/${filename}`;
+  }
+
   async createPost(dto: CreatePostDto, createdBy: number) {
     // Extract just the filename if it's a full URL
     let postImage = dto.postImage;
@@ -101,13 +119,29 @@ export class PostService {
       }
     }
 
-    // Normalize caption and enforce that at least caption or image is present
+    // Extract just the filename for video (supports full URL, key, or filename)
+    let postVideo: string | null = (dto as any).postVideo || null;
+    if (postVideo) {
+      if (postVideo.startsWith('http')) {
+        try {
+          const url = new URL(postVideo);
+          postVideo = url.pathname.split('/').pop() || null;
+        } catch (error) {
+          console.error('Error parsing video URL:', error);
+        }
+      } else if (postVideo.includes('/')) {
+        postVideo = postVideo.split('/').pop() || null;
+      }
+    }
+
+    // Normalize caption and enforce that at least caption or image or video is present
     const rawCaption = dto.caption?.trim();
     const hasCaption = !!rawCaption;
     const hasImage = !!postImage;
+    const hasVideo = !!postVideo;
 
-    if (!hasCaption && !hasImage) {
-      throw new BadRequestException('Either caption or image is required');
+    if (!hasCaption && !hasImage && !hasVideo) {
+      throw new BadRequestException('Either caption or image or video is required');
     }
 
     // DB column caption is NOT NULL, so store empty string when we only have an image
@@ -125,6 +159,7 @@ export class PostService {
       createdBy,
       status: dto.status ?? 1,
       postImage: hasImage ? postImage : null,
+      postVideo: hasVideo ? postVideo : null,
       privacy: dto.privacy ?? 'public',
     });
 
@@ -158,6 +193,7 @@ export class PostService {
         id: post.id,
         caption: post.caption,
         postImage: this.getPostImageUrl(post.postImage),
+        postVideo: this.getPostVideoUrl((post as any).postVideo),
         privacy: post.privacy,
         familyCode: post.familyCode,
         status: post.status,
@@ -173,6 +209,7 @@ export class PostService {
         id: post.id,
         caption: post.caption,
         postImage: post.postImage,
+        postVideo: (post as any).postVideo,
         privacy: post.privacy,
         familyCode: post.familyCode,
         status: post.status,
@@ -196,6 +233,9 @@ export class PostService {
 
     const oldImage = post.postImage;
     let newImageFilename: string | null = null;
+
+    const oldVideo = (post as any).postVideo as string | null;
+    let newVideoFilename: string | null = null;
 
     // If new image is uploaded, process it
     if (newImage) {
@@ -258,8 +298,44 @@ export class PostService {
       }
     }
 
+    // If postVideo is provided in DTO, normalize it and optionally delete old video
+    if ((dto as any).postVideo !== undefined) {
+      const raw = ((dto as any).postVideo as string) || '';
+      const trimmed = raw.trim();
+
+      if (!trimmed) {
+        newVideoFilename = null;
+      } else if (trimmed.startsWith('http')) {
+        try {
+          const url = new URL(trimmed);
+          newVideoFilename = url.pathname.split('/').pop() || null;
+        } catch (error) {
+          console.error('Error parsing video URL:', error);
+          newVideoFilename = trimmed;
+        }
+      } else if (trimmed.includes('/')) {
+        newVideoFilename = trimmed.split('/').pop() || null;
+      } else {
+        newVideoFilename = trimmed;
+      }
+
+      // Delete the old video if it's being removed or replaced
+      if (oldVideo && oldVideo !== newVideoFilename) {
+        try {
+          const uploadService = new UploadService();
+          const oldVideoUrl = this.getPostVideoUrl(oldVideo);
+          if (oldVideoUrl) {
+            await uploadService.deleteFile(oldVideoUrl, 'posts');
+          }
+        } catch (error) {
+          console.error('Error deleting old video:', error);
+        }
+      }
+    }
+
     // Work out the final caption and image values after this update
     const finalPostImage = newImageFilename !== null ? newImageFilename : post.postImage;
+    const finalPostVideo = (dto as any).postVideo !== undefined ? newVideoFilename : (post as any).postVideo;
 
     let finalCaption: string;
     if (dto.caption !== undefined) {
@@ -271,9 +347,10 @@ export class PostService {
 
     const hasCaption = !!finalCaption;
     const hasImage = !!finalPostImage;
+    const hasVideo = !!finalPostVideo;
 
-    if (!hasCaption && !hasImage) {
-      throw new BadRequestException('Either caption or image is required');
+    if (!hasCaption && !hasImage && !hasVideo) {
+      throw new BadRequestException('Either caption or image or video is required');
     }
 
     // Prepare update data using the normalized values
@@ -289,6 +366,11 @@ export class PostService {
       updateData.postImage = newImageFilename;
     }
 
+    // Only update postVideo if it was provided
+    if ((dto as any).postVideo !== undefined) {
+      updateData.postVideo = newVideoFilename;
+    }
+
     // Update the post
     await post.update(updateData);
 
@@ -298,6 +380,7 @@ export class PostService {
 
     if (postJson) {
       postJson.postImage = this.getPostImageUrl(postJson.postImage);
+      postJson.postVideo = this.getPostVideoUrl(postJson.postVideo);
     }
 
     // Broadcast post update via WebSocket
@@ -385,6 +468,7 @@ export class PostService {
 
         // Get full image URL from filename
         const postImageUrl = this.getPostImageUrl(postJson.postImage);
+        const postVideoUrl = this.getPostVideoUrl(postJson.postVideo);
 
         // Get like count and comment count
         const [likeCount, commentCount] = await Promise.all([
@@ -421,6 +505,7 @@ export class PostService {
         return {
           ...postJson,
           postImage: postImageUrl,
+          postVideo: postVideoUrl,
           likeCount,
           commentCount,
           isLiked,
@@ -640,11 +725,13 @@ export class PostService {
 
     const postJson = post.toJSON() as any;
     const postImageUrl = this.getPostImageUrl(postJson.postImage);
+    const postVideoUrl = this.getPostVideoUrl(postJson.postVideo);
 
     return {
       data: {
         ...postJson,
         postImage: postImageUrl,
+        postVideo: postVideoUrl,
       },
       imageUrl: postImageUrl || this.getPostImageUrl('default.png'),
     };
@@ -754,6 +841,7 @@ export class PostService {
     if (imageFilename) {
       try {
         const uploadService = new UploadService();
+
         const imageUrl = this.getPostImageUrl(imageFilename);
 
         if (imageUrl) {
@@ -778,6 +866,23 @@ export class PostService {
       } catch (error) {
         console.error('Error deleting post image:', error);
         // Continue with post deletion even if image deletion fails
+      }
+    }
+
+    // Delete video file if exists
+    const videoFilename = (post as any).postVideo as string | null;
+    if (videoFilename) {
+      try {
+        const uploadService = new UploadService();
+        const videoUrl = this.getPostVideoUrl(videoFilename);
+
+        if (videoUrl) {
+          // Delete from S3
+          await uploadService.deleteFile(videoUrl, 'posts');
+        }
+      } catch (error) {
+        console.error('Error deleting post video:', error);
+        // Continue with post deletion even if video deletion fails
       }
     }
 

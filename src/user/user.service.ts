@@ -14,6 +14,9 @@ import * as path from 'path';
 
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ForgetPasswordDto } from './dto/forget-password.dto';
+import { VerifyOtpDto } from './dto/verify-otp.dto';
+import { LoginDto } from './dto/login.dto';
+import { ResendOtpDto } from './dto/resend-otp.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { Family } from '../family/model/family.model';
 import { RegisterDto } from './dto/register.dto';
@@ -56,6 +59,21 @@ export class UserService {
     return Math.floor(100000 + Math.random() * 900000).toString();
   }
 
+  private validateStrongPassword(password: string) {
+    const minLength = password?.length >= 8;
+    const hasUpperCase = /[A-Z]/.test(password || '');
+    const hasSpecialChar = /[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]/.test(
+      password || '',
+    );
+
+    return {
+      isValid: minLength && hasUpperCase && hasSpecialChar,
+      minLength,
+      hasUpperCase,
+      hasSpecialChar,
+    };
+  }
+
   private generateAccessToken(user: User): string {
     return jwt.sign(
       {
@@ -72,9 +90,11 @@ export class UserService {
 
   async register(registerDto: RegisterDto) {
     try {
+      const normalizedEmail = (registerDto.email || '').trim().toLowerCase();
+
       // Input validation
       if (
-        !registerDto.email ||
+        !normalizedEmail ||
         !registerDto.password ||
         !registerDto.firstName ||
         !registerDto.lastName ||
@@ -105,24 +125,44 @@ export class UserService {
         });
       }
 
-      // Check for existing verified users
-      const existingVerifiedUser = await this.userModel.findOne({
+      const passwordValidation = this.validateStrongPassword(registerDto.password);
+      if (!passwordValidation.isValid) {
+        throw new BadRequestException({
+          statusCode: 400,
+          message:
+            'Password must be at least 8 characters and include 1 uppercase letter and 1 special character',
+          error: 'Bad Request',
+        });
+      }
+
+      // Check for existing verified users (case-insensitive email)
+      const existingVerifiedByEmail = await this.userModel.findOne({
         where: {
           status: 1,
-          [Op.or]: [
-            { email: registerDto.email },
-            {
-              countryCode: registerDto.countryCode,
-              mobile: registerDto.mobile,
-            },
-          ],
+          email: { [Op.iLike]: normalizedEmail },
         },
       });
 
-      if (existingVerifiedUser) {
+      if (existingVerifiedByEmail) {
         throw new BadRequestException({
           statusCode: 400,
-          message: 'User already exists with the provided credentials',
+          message: 'An account with this email already exists',
+          error: 'Bad Request',
+        });
+      }
+
+      const existingVerifiedByMobile = await this.userModel.findOne({
+        where: {
+          status: 1,
+          countryCode: registerDto.countryCode,
+          mobile: registerDto.mobile,
+        },
+      });
+
+      if (existingVerifiedByMobile) {
+        throw new BadRequestException({
+          statusCode: 400,
+          message: 'An account with this mobile number already exists',
           error: 'Bad Request',
         });
       }
@@ -131,7 +171,7 @@ export class UserService {
       const existingUnverifiedUser = await this.userModel.findOne({
         where: {
           [Op.or]: [
-            { email: registerDto.email, status: 0 },
+            { email: { [Op.iLike]: normalizedEmail }, status: 0 },
             {
               countryCode: registerDto.countryCode,
               mobile: registerDto.mobile,
@@ -152,6 +192,7 @@ export class UserService {
           // Update existing unverified user
           await existingUnverifiedUser.update({
             ...registerDto,
+            email: normalizedEmail,
             password: hashedPassword,
             otp,
             otpExpiresAt,
@@ -165,6 +206,7 @@ export class UserService {
           // Create new user
           user = await this.userModel.create({
             ...registerDto,
+            email: normalizedEmail,
             password: hashedPassword,
             otp,
             otpExpiresAt,
@@ -175,6 +217,7 @@ export class UserService {
             termsVersion: registerDto.termsVersion || 'v1.0.0',
             termsAcceptedAt: new Date(),
           });
+
           await this.userProfileModel.create({
             userId: user.id,
             firstName: registerDto.firstName,
@@ -205,12 +248,12 @@ export class UserService {
         }
 
         // Send OTP email
-        await this.mailService.sendVerificationOtp(registerDto.email, otp);
+        await this.mailService.sendVerificationOtp(normalizedEmail, otp);
 
         return {
           statusCode: 201,
           message: 'OTP sent to email',
-          email: registerDto.email,
+          email: normalizedEmail,
           mobile: registerDto.countryCode + registerDto.mobile,
           expiresIn: '15 minutes',
         };
@@ -237,262 +280,186 @@ export class UserService {
     }
   }
 
-  async verifyOtp(verifyOtpDto: { userName?: string; otp: string }) {
-    try {
-      const { userName, otp } = verifyOtpDto;
+  async verifyOtp(verifyOtpDto: VerifyOtpDto) {
+    const { userName, otp } = verifyOtpDto;
 
-      if (!userName) {
-        throw new BadRequestException({
-          statusCode: 400,
-          message: 'Email or mobile must be provided',
-          error: 'Bad Request',
-        });
-      }
-
-      // Determine if the userName is an email or mobile
-      const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(userName);
-      const whereClause: any = {};
-
-      if (isEmail) {
-        whereClause.email = userName;
-      } else {
-        // Handle mobile number (with or without country code)
-        whereClause.mobile = userName;
-      }
-
-      const user = await this.userModel.findOne({ where: whereClause });
-
-      if (!user) {
-        throw new BadRequestException({
-          statusCode: 400,
-          message: isEmail
-            ? 'User with this email not found'
-            : 'User with this mobile number not found',
-          error: 'Bad Request',
-        });
-      }
-
-      if (user.status === 1) {
-        throw new BadRequestException({
-          statusCode: 400,
-          message: 'Account already verified',
-          error: 'Bad Request',
-        });
-      }
-
-      if (!user.otp || user.otp !== otp) {
-        throw new BadRequestException({
-          statusCode: 400,
-          message: 'Invalid OTP',
-          error: 'Bad Request',
-        });
-      }
-
-      if (!user.otpExpiresAt || new Date(user.otpExpiresAt) < new Date()) {
-        throw new BadRequestException({
-          statusCode: 400,
-          message: 'OTP has expired',
-          error: 'Bad Request',
-        });
-      }
-
-      const accessToken = this.generateAccessToken(user);
-
-      await user.update({
-        status: 1,
-        otp: null,
-        otpExpiresAt: null,
-        verifiedAt: new Date(),
-        accessToken,
-      });
-
-      const userProfile = await this.userProfileModel.findOne({
-        where: { userId: user.id },
-        attributes: ['firstName', 'lastName', 'gender'],
-      });
-
-      if (!userProfile) {
-        console.error(`User profile not found for user ID: ${user.id}`);
-        throw new Error('User profile not found');
-      }
-
-      return {
-        message: 'Account verified successfully',
-        accessToken,
-        user: {
-          id: user.id,
-          email: user.email,
-          mobile: user.mobile,
-          firstName: userProfile.firstName,
-          lastName: userProfile.lastName,
-          role: user.role,
-          status: 1, // Explicitly set to 1 as we just verified
-          gender: userProfile.gender,
-        },
-      };
-    } catch (error) {
-      console.error('Error in verifyOtp:', error);
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
+    if (!userName) {
       throw new BadRequestException({
-        statusCode: 500,
-        message: 'An error occurred while verifying OTP',
-        error: 'Internal Server Error',
-      });
-    }
-  }
-
-  async login(loginDto: { username?: string; password: string }) {
-    // Check if username is provided
-    if (!loginDto.username) {
-      throw new BadRequestException({
-        message: 'Please provide username (email or mobile number)',
+        statusCode: 400,
+        message: 'Email or mobile must be provided',
+        error: 'Bad Request',
       });
     }
 
-    // Determine if username is email or mobile
-    const isEmail = loginDto.username.includes('@');
-    const isMobile = /^\+?\d{10,15}$/.test(loginDto.username);
-
-    if (!isEmail && !isMobile) {
-      throw new BadRequestException({
-        message: 'Username must be a valid email or mobile number',
-      });
-    }
-
-    // Build the where clause
-    const whereClause = isEmail
-      ? { email: loginDto.username }
-      : { mobile: loginDto.username };
-
-    const user = await this.userModel.findOne({
-      where: whereClause,
-    });
-
-    if (!user) {
-      throw new BadRequestException({ message: 'Invalid credentials' });
-    }
-
-    // Check if account is verified
-    if (user.status !== 1) {
-      throw new BadRequestException({
-        message: 'Account not verified. Please verify your account first',
-      });
-    }
-
-    // Check password
-    const isPasswordValid = await bcrypt.compare(
-      loginDto.password,
-      user.password,
-    );
-
-    if (!isPasswordValid) {
-      throw new BadRequestException({ message: 'Invalid credentials' });
-    }
-
-    // Generate new access token
-    const accessToken = this.generateAccessToken(user);
-
-    // Update last login and access token
-    await user.update({
-      accessToken,
-      lastLoginAt: new Date(),
-    });
-    const userProfile = await this.userProfileModel.findOne({
-      where: { userId: user.id },
-    });
-    return {
-      accessToken,
-      user: {
-        id: user.id,
-        email: user.email,
-        firstName: userProfile.firstName,
-        lastName: userProfile.lastName,
-        mobile: user.mobile,
-        role: user.role,
-        status: user.status,
-        gender: userProfile.gender,
-      },
-    };
-  }
-
-  async resendOtp(resendOtpDto: { email?: string; mobile?: string }) {
-    if (!resendOtpDto.email && !resendOtpDto.mobile) {
-      throw new BadRequestException({
-        message: 'Either email or mobile must be provided',
-      });
-    }
-
-    const whereClause: any = {};
-    if (resendOtpDto.email) {
-      whereClause.email = resendOtpDto.email;
-    } else {
-      whereClause.mobile = resendOtpDto.mobile;
-    }
+    const normalizedUserName = (userName || '').trim();
+    const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedUserName);
+    const whereClause: any = isEmail
+      ? { email: { [Op.iLike]: normalizedUserName.toLowerCase() } }
+      : { mobile: normalizedUserName.replace(/^\+\d{1,4}/, '') };
 
     const user = await this.userModel.findOne({ where: whereClause });
 
     if (!user) {
       throw new BadRequestException({
-        message: resendOtpDto.email
+        statusCode: 400,
+        message: isEmail
           ? 'User with this email not found'
           : 'User with this mobile number not found',
+        error: 'Bad Request',
       });
     }
-    // Check if OTP was sent less than 1 minute ago
-    if (
-      user.otpExpiresAt &&
-      new Date(user.otpExpiresAt.getTime() - 4 * 60 * 1000) > new Date()
-    ) {
+
+    if (user.status === 1) {
       throw new BadRequestException({
-        message: 'Please wait before requesting a new OTP',
+        statusCode: 400,
+        message: 'Account already verified',
+        error: 'Bad Request',
       });
     }
 
-    // Generate new OTP
-    const otp = this.generateOtp();
-    const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 minutes
+    if (!user.otp || user.otp !== otp) {
+      throw new BadRequestException({
+        statusCode: 400,
+        message: 'Invalid OTP',
+        error: 'Bad Request',
+      });
+    }
 
-    // Update user with new OTP
+    if (!user.otpExpiresAt || new Date(user.otpExpiresAt) < new Date()) {
+      throw new BadRequestException({
+        statusCode: 400,
+        message: 'OTP has expired',
+        error: 'Bad Request',
+      });
+    }
+
+    const accessToken = this.generateAccessToken(user);
+
     await user.update({
-      otp,
-      otpExpiresAt,
+      status: 1,
+      otp: null,
+      otpExpiresAt: null,
+      verifiedAt: new Date(),
+      accessToken,
     });
 
-    // Send OTP email
-    await this.mailService.sendVerificationOtp(user.email, otp);
-
     return {
-      message: 'New OTP sent to your email',
-      email: user.email,
+      message: 'Account verified successfully',
+      accessToken,
     };
   }
 
-  async forgetPassword(forgetPasswordDto: { username: string }) {
-    const { username } = forgetPasswordDto;
+  async login(loginDto: LoginDto) {
+    const usernameRaw = (loginDto.username || '').trim();
+    const password = loginDto.password;
 
-    // Try finding by email or mobile
-    const user = await this.userModel.findOne({
-      where: {
-        [Op.or]: [{ email: username }, { mobile: username }],
+    if (!usernameRaw || !password) {
+      throw new BadRequestException({ message: 'Username and password are required' });
+    }
+
+    const isEmail = usernameRaw.includes('@');
+    const whereClause: any = isEmail
+      ? { email: { [Op.iLike]: usernameRaw.toLowerCase() } }
+      : { mobile: usernameRaw.replace(/\D/g, '').slice(-14) };
+
+    const user = await this.userModel.findOne({ where: whereClause });
+
+    if (!user) {
+      throw new BadRequestException({ message: 'Invalid credentials' });
+    }
+
+    if (user.status !== 1) {
+      throw new ForbiddenException('Account not verified');
+    }
+
+    const passwordMatches = await bcrypt.compare(password, user.password || '');
+    if (!passwordMatches) {
+      throw new BadRequestException({ message: 'Invalid credentials' });
+    }
+
+    const accessToken = this.generateAccessToken(user);
+    await user.update({ accessToken, lastLoginAt: new Date() });
+
+    return {
+      message: 'Login successful',
+      accessToken,
+      user: {
+        id: user.id,
+        email: user.email,
+        mobile: user.mobile,
+        countryCode: user.countryCode,
+        role: user.role,
+        isAppUser: user.isAppUser,
+        hasAcceptedTerms: user.hasAcceptedTerms,
       },
-    });
+    };
+  }
 
+  async resendOtp(resendOtpDto: ResendOtpDto) {
+    const email = (resendOtpDto.email || '').trim().toLowerCase();
+    const mobileWithCountry = (resendOtpDto.mobile || '').trim();
+
+    if (!email && !mobileWithCountry) {
+      throw new BadRequestException({ message: 'Email or mobile must be provided' });
+    }
+
+    let whereClause: any;
+    if (email) {
+      whereClause = { email: { [Op.iLike]: email } };
+    } else {
+      const match = mobileWithCountry.match(/^\+(\d{1,4})(\d{6,14})$/);
+      if (!match) {
+        throw new BadRequestException({ message: 'Invalid mobile format' });
+      }
+
+      whereClause = {
+        countryCode: `+${match[1]}`,
+        mobile: match[2],
+      };
+    }
+
+    const user = await this.userModel.findOne({ where: whereClause });
     if (!user) {
       throw new BadRequestException({ message: 'User not found' });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit OTP
-    const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes expiry
+    if (user.status === 1) {
+      throw new BadRequestException({ message: 'Account already verified' });
+    }
 
+    const otp = this.generateOtp();
+    const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
     await user.update({ otp, otpExpiresAt });
 
-    // Send OTP logic (email or SMS) based on username pattern
-    if (username.includes('@')) {
+    if (user.email) {
+      await this.mailService.sendVerificationOtp(user.email, otp);
+    }
+
+    return { message: 'OTP resent successfully' };
+  }
+
+  async forgetPassword(forgetPasswordDto: ForgetPasswordDto) {
+    const username = (forgetPasswordDto.username || '').trim();
+    if (!username) {
+      throw new BadRequestException({ message: 'Email or mobile must be provided' });
+    }
+
+    const isEmail = username.includes('@');
+    const whereClause: any = isEmail
+      ? { email: { [Op.iLike]: username.toLowerCase() } }
+      : { mobile: username.replace(/\D/g, '') };
+
+    const user = await this.userModel.findOne({ where: whereClause });
+    if (!user) {
+      throw new BadRequestException({ message: 'User not found' });
+    }
+
+    const otp = this.generateOtp();
+    const otpExpiresAt = new Date(Date.now() + 15 * 60 * 1000);
+    await user.update({ otp, otpExpiresAt });
+
+    if (user.email) {
       await this.mailService.sendPasswordResetOtp(user.email, otp);
-    } else {
-      // sendSmsOtp(user.mobile, otp);
     }
 
     return { message: 'OTP sent successfully' };
@@ -516,11 +483,21 @@ export class UserService {
       throw new BadRequestException({ message: 'Passwords do not match' });
     }
 
+    const passwordValidation = this.validateStrongPassword(newPassword);
+    if (!passwordValidation.isValid) {
+      throw new BadRequestException({
+        message:
+          'Password must be at least 8 characters and include 1 uppercase letter and 1 special character',
+      });
+    }
+
     // Determine whether the username is email or mobile
     const isEmail = username.includes('@');
     const whereClause: any = {
       otp,
-      ...(isEmail ? { email: username } : { mobile: username }),
+      ...(isEmail
+        ? { email: { [Op.iLike]: (username || '').trim() } }
+        : { mobile: (username || '').trim() }),
     };
 
     // Find user

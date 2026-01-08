@@ -9,16 +9,30 @@ export class RegisterDto {
   @ApiProperty({ example: 'Password123!', description: 'User password (min 8 characters)' })
   @IsString()
   @MinLength(8)
+  @Matches(/(?=.*[A-Z])/, {
+    message: 'Password must contain at least 1 uppercase letter',
+  })
+  @Matches(/(?=.*[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?])/, {
+    message: 'Password must contain at least 1 special character',
+  })
   password: string;
 
   @ApiProperty({ example: 'John', description: 'User first name' })
   @IsString()
   @IsNotEmpty()
+  @Length(2, 30, { message: 'First name must be between 2 and 30 characters' })
+  @Matches(/^[A-Za-z]+(\s[A-Za-z]+)*$/, {
+    message: 'First name can contain letters only',
+  })
   firstName: string;
 
   @ApiProperty({ example: 'Doe', description: 'User last name' })
   @IsString()
   @IsNotEmpty()
+  @Length(2, 30, { message: 'Last name must be between 2 and 30 characters' })
+  @Matches(/^[A-Za-z]+(\s[A-Za-z]+)*$/, {
+    message: 'Last name can contain letters only',
+  })
   lastName: string;
 
   @ApiProperty({

@@ -1,5 +1,5 @@
 // reset-password.dto.ts
-import { IsNotEmpty, IsString, MinLength } from 'class-validator';
+import { IsNotEmpty, IsString, MinLength, Matches } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
 export class ResetPasswordDto {
@@ -15,11 +15,17 @@ export class ResetPasswordDto {
 
   @ApiProperty({ description: 'New password' })
   @IsString()
-  @MinLength(6)
+  @MinLength(8)
+  @Matches(/(?=.*[A-Z])/, {
+    message: 'Password must contain at least 1 uppercase letter',
+  })
+  @Matches(/(?=.*[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?])/, {
+    message: 'Password must contain at least 1 special character',
+  })
   newPassword: string;
 
   @ApiProperty({ description: 'Confirm new password' })
   @IsString()
-  @MinLength(6)
+  @MinLength(8)
   confirmPassword: string;
 }

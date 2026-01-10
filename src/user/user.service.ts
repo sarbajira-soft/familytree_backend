@@ -744,6 +744,19 @@ export class UserService {
       // -----------------------------
       const originalProfileImage = targetProfile.profile;
 
+      if (dto.removeProfile === true) {
+        if (originalProfileImage && originalProfileImage !== '') {
+          try {
+            await this.uploadService.deleteFile(originalProfileImage, 'profile');
+          } catch (e) {
+            console.warn('Failed to delete old profile image:', e);
+          }
+        }
+
+        targetProfile.profile = null;
+        await targetProfile.save();
+      }
+
       if (dto.profile && dto.profile !== '') {
         let newFilename = dto.profile;
 
@@ -804,8 +817,11 @@ export class UserService {
       // -----------------------------
       // PASSWORD (only self)
       // -----------------------------
-      if (password && isSelf) {
-        targetUser.password = await bcrypt.hash(password, 12);
+      if (password !== undefined) {
+        throw new BadRequestException({
+          message:
+            'Password cannot be updated from Edit Profile. Please use OTP verification (Forgot Password / Reset Password).',
+        });
       }
 
       // -----------------------------
@@ -971,10 +987,6 @@ export class UserService {
 
           if (originalEmail && originalEmail !== targetUser.email) {
             syncPayload.previous_email = originalEmail;
-          }
-
-          if (password && isSelf) {
-            syncPayload.password = password;
           }
 
           const syncRes = await this.medusaCustomerSyncService.upsertCustomer(

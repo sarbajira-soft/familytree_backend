@@ -4,6 +4,10 @@ import {
   IsDateString,
   IsInt,
   IsJSON,
+  IsBoolean,
+  IsEmail,
+  Matches,
+  MaxLength,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
@@ -18,23 +22,46 @@ export class UpdateProfileDto {
   @IsString()
   profile?: string;
 
+  @ApiPropertyOptional({
+    description: 'Remove current profile image (true to remove)',
+    example: true,
+  })
+  @IsOptional()
+  @Transform(({ value }) => {
+    if (value === true || value === false) return value;
+    if (typeof value === 'string') {
+      const v = value.trim().toLowerCase();
+      if (v === 'true') return true;
+      if (v === 'false') return false;
+    }
+    return undefined;
+  })
+  @IsBoolean()
+  removeProfile?: boolean;
+
   @ApiPropertyOptional({ description: 'Email address', example: 'user@example.com' })
   @IsOptional()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim().toLowerCase() : value))
+  @IsEmail({}, { message: 'Invalid email address' })
+  @MaxLength(255)
   email?: string;
 
   @ApiPropertyOptional({ description: 'Country code for phone', example: '+91' })
   @IsOptional()
   @IsString()
+  @Matches(/^\+\d{1,4}$/, { message: 'Invalid country code' })
   countryCode?: string;
 
   @ApiPropertyOptional({ description: 'Mobile phone number', example: '9876543210' })
   @IsOptional()
   @IsString()
+  @Matches(/^\d{6,14}$/, { message: 'Invalid mobile number' })
   mobile?: string;
 
   @ApiPropertyOptional({ description: 'Password (hashed or raw)', example: 'secret123' })
   @IsOptional()
   @IsString()
+  @MaxLength(255)
   password?: string;
 
   @ApiPropertyOptional({ description: 'User role ID', example: 1 })
@@ -52,16 +79,19 @@ export class UpdateProfileDto {
   @ApiPropertyOptional({ description: 'First Name', example: 'John' })
   @IsOptional()
   @IsString()
+  @MaxLength(60)
   firstName?: string;
 
   @ApiPropertyOptional({ description: 'Last Name', example: 'David' })
   @IsOptional()
   @IsString()
+  @MaxLength(60)
   lastName?: string;
 
   @ApiPropertyOptional({ description: 'Gender of the user', example: 'Male' })
   @IsOptional()
   @IsString()
+  @MaxLength(20)
   gender?: string;
 
   @ApiPropertyOptional({ 
@@ -82,6 +112,7 @@ export class UpdateProfileDto {
   @ApiPropertyOptional({ description: 'Marital Status', example: 'Married' })
   @IsOptional()
   @IsString()
+  @MaxLength(20)
   maritalStatus?: string;
 
   @ApiPropertyOptional({ 
@@ -96,21 +127,31 @@ export class UpdateProfileDto {
   @ApiPropertyOptional({ description: 'Name of the spouse', example: 'Wife/Husband' })
   @IsOptional()
   @IsString()
+  @MaxLength(80)
   spouseName?: string;
 
   @ApiPropertyOptional({ description: 'Names of children as JSON array string', example: '["Son", "Daugther"]' })
   @IsOptional()
   @IsString()
+  @MaxLength(4000)
   childrenNames?: string;
 
   @ApiPropertyOptional({ description: 'Father’s Name', example: 'Father' })
   @IsOptional()
   @IsString()
+  @MaxLength(80)
+  @Matches(/^[A-Za-z][A-Za-z .'-]*$/, {
+    message: "Father's name can contain only letters, spaces and . ' -",
+  })
   fatherName?: string;
 
   @ApiPropertyOptional({ description: 'Mother’s Name', example: 'Mother' })
   @IsOptional()
   @IsString()
+  @MaxLength(80)
+  @Matches(/^[A-Za-z][A-Za-z .'-]*$/, {
+    message: "Mother's name can contain only letters, spaces and . ' -",
+  })
   motherName?: string;
 
   @ApiPropertyOptional({ description: 'Religion ID (refer to Religion table)', example: 1 })
@@ -128,6 +169,10 @@ export class UpdateProfileDto {
   @ApiPropertyOptional({ description: 'Caste', example: 'Hindu' })
   @IsOptional()
   @IsString()
+  @MaxLength(80)
+  @Matches(/^[A-Za-z][A-Za-z .'-]*$/, {
+    message: 'Caste can contain only letters, spaces and . \"\'\" -',
+  })
   caste?: string;
 
   @ApiPropertyOptional({ description: 'Gothram ID (refer to Gothram table)', example: 2 })
@@ -139,36 +184,49 @@ export class UpdateProfileDto {
   @ApiPropertyOptional({ description: 'Family deity / Kuladevata', example: 'Murugan' })
   @IsOptional()
   @IsString()
+  @MaxLength(80)
+  @Matches(/^[A-Za-z][A-Za-z .'-]*$/, {
+    message: 'Kuladevata can contain only letters, spaces and . \"\'\" -',
+  })
   kuladevata?: string;
 
   @ApiPropertyOptional({ description: 'Region (Nadu)', example: 'South Tamil Nadu' })
   @IsOptional()
   @IsString()
+  @MaxLength(80)
+  @Matches(/^[A-Za-z][A-Za-z .'-]*$/, {
+    message: 'Region can contain only letters, spaces and . \"\'\" -',
+  })
   region?: string;
 
   @ApiPropertyOptional({ description: 'User hobbies', example: 'Reading, Traveling, Music, Playing Cricket' })
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   hobbies?: string;
 
   @ApiPropertyOptional({ description: 'Likes', example: 'Likes: Nature' })
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   likes?: string;
 
   @ApiPropertyOptional({ description: 'Dislikes', example: 'Dislikes: Noise' })
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   dislikes?: string;
 
   @ApiPropertyOptional({ description: 'Favorite foods', example: 'Dosa, Briyani' })
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   favoriteFoods?: string;
 
   @ApiPropertyOptional({ description: 'Contact number', example: '+91-9876543210' })
   @IsOptional()
   @IsString()
+  @MaxLength(30)
   contactNumber?: string;
 
   @ApiPropertyOptional({ description: 'Country ID (refer to Country table)', example: 101 })
@@ -180,16 +238,19 @@ export class UpdateProfileDto {
   @ApiPropertyOptional({ description: 'Full address of the user', example: '123, Gandhi Street, Chennai' })
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   address?: string;
 
   @ApiPropertyOptional({ description: 'User bio or short life story', example: 'Software engineer from Chennai with a passion for culture and travel.' })
   @IsOptional()
   @IsString()
+  @MaxLength(1000)
   bio?: string;
 
   @ApiPropertyOptional({ description: 'System generated Family Code or Root ID', example: 'FAM000123' })
   @IsOptional()
   @IsString()
+  @MaxLength(50)
   familyCode?: string;
   
 }

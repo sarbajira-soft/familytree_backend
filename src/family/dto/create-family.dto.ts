@@ -1,15 +1,17 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsNotEmpty, IsOptional, IsString } from 'class-validator';
+import { IsNotEmpty, IsOptional, IsString, Matches } from 'class-validator';
 
 export class CreateFamilyDto {
   @ApiProperty({ example: 'The Singhs', description: 'Family name' })
   @IsString()
   @IsNotEmpty()
+  @Matches(/\S/, { message: 'familyName should not be empty' })
   familyName: string;
 
   @ApiProperty({ example: 'A united and respected family from Chennai.', description: 'Family bio' })
   @IsOptional()
   @IsString()
+  @Matches(/\S/, { message: 'familyBio should not be empty' })
   familyBio?: string;
 
   @ApiPropertyOptional({

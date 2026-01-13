@@ -36,7 +36,7 @@ import { BlockingModule } from '../blocking/blocking.module';
       Gothram,
       Notification,
     ]),
-    NotificationModule,
+    forwardRef(() => NotificationModule),
     UploadModule,
   ],
   controllers: [UserController, UserLookupController, UserConsentController],

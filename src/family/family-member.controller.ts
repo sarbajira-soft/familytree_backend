@@ -116,8 +116,10 @@ export class FamilyMemberController {
   async deleteMember(
     @Param('memberId') memberId: number,
     @Param('familyCode') familyCode: string,
+    @Req() req,
   ) {
-    return this.familyMemberService.deleteFamilyMember(memberId, familyCode);
+    const actingUserId = req.user?.userId;
+    return this.familyMemberService.deleteFamilyMember(memberId, familyCode, actingUserId);
   }
 
   @Put('block/:memberId/:familyCode')

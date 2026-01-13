@@ -37,6 +37,7 @@ import { MergeUserDto } from './dto/merge-user.dto';
 import { UploadService } from '../uploads/upload.service';
 import { log } from 'console';
 import { BlockingService } from '../blocking/blocking.service';
+import { NotificationService } from '../notification/notification.service';
 
  
 @ApiTags('User Module')
@@ -46,6 +47,7 @@ export class UserController {
     private readonly userService: UserService,
     private readonly uploadService: UploadService,
     private readonly blockingService: BlockingService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   @Post('register')
@@ -227,6 +229,36 @@ export class UserController {
         data: targetUser,
         currentUser: loggedInUser,
       };
+    }
+
+    if (myFamilyCode) {
+      const canViewJoinRequester = await this.notificationService.canRecipientViewJoinRequesterProfile(
+        myFamilyCode,
+        targetUserId,
+        Number(loggedInUser.userId),
+      );
+      if (canViewJoinRequester) {
+        return {
+          message: 'Profile fetched successfully',
+          data: targetUser,
+          currentUser: loggedInUser,
+        };
+      }
+
+      const role = Number((loggedInUser as any)?.role);
+      if (role === 2 || role === 3) {
+        const hasPendingJoinRequest = await this.notificationService.hasPendingFamilyJoinRequest(
+          myFamilyCode,
+          targetUserId,
+        );
+        if (hasPendingJoinRequest) {
+          return {
+            message: 'Profile fetched successfully',
+            data: targetUser,
+            currentUser: loggedInUser,
+          };
+        }
+      }
     }
 
     throw new BadRequestException({

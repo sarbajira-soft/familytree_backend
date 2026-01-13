@@ -1221,6 +1221,50 @@ export class NotificationService {
     });
   }
 
+  async canRecipientViewJoinRequesterProfile(
+    familyCode: string,
+    requesterUserId: number,
+    recipientUserId: number,
+  ): Promise<boolean> {
+    const notification = await this.notificationModel.findOne({
+      where: {
+        familyCode,
+        type: 'FAMILY_JOIN_REQUEST',
+        status: 'pending',
+        triggeredBy: Number(requesterUserId),
+      } as any,
+      order: [['createdAt', 'DESC']],
+    });
+
+    if (!notification) return false;
+
+    const recipient = await this.recipientModel.findOne({
+      where: {
+        notificationId: notification.id,
+        userId: Number(recipientUserId),
+      } as any,
+    });
+
+    return Boolean(recipient);
+  }
+
+  async hasPendingFamilyJoinRequest(
+    familyCode: string,
+    requesterUserId: number,
+  ): Promise<boolean> {
+    const notification = await this.notificationModel.findOne({
+      where: {
+        familyCode,
+        type: 'FAMILY_JOIN_REQUEST',
+        status: 'pending',
+        triggeredBy: Number(requesterUserId),
+      } as any,
+      order: [['createdAt', 'DESC']],
+    });
+
+    return Boolean(notification);
+  }
+
   /**
    * Create dynamic family cards when association requests are accepted
    */

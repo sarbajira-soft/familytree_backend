@@ -386,7 +386,46 @@ export class FamilyMemberService {
   }
 
   // Delete family member from family (remove membership)
-  async deleteFamilyMember(memberId: number, familyCode: string) {
+  async deleteFamilyMember(memberId: number, familyCode: string, actingUserId?: number) {
+    if (!actingUserId) {
+      throw new BadRequestException('Access denied');
+    }
+
+    // Load family to determine owner/root user
+    const family = await this.familyModel.findOne({ where: { familyCode } });
+    if (!family) {
+      throw new NotFoundException('Family not found');
+    }
+
+    // Prevent deleting self
+    if (Number(memberId) === Number(actingUserId)) {
+      throw new BadRequestException('You cannot delete your own account');
+    }
+
+    // Prevent removing the family owner/root user
+    if (Number(memberId) === Number((family as any).createdBy)) {
+      throw new BadRequestException('Cannot delete the family owner');
+    }
+
+    // Only admins/superadmins can delete members
+    const actingUser = await this.userModel.findByPk(actingUserId);
+    if (!actingUser || (actingUser.role !== 2 && actingUser.role !== 3)) {
+      throw new BadRequestException('Access denied: Only family admins can delete members');
+    }
+
+    // Acting admin must belong to this family
+    const actingMembership = await this.familyMemberModel.findOne({
+      where: {
+        memberId: actingUserId,
+        familyCode,
+        approveStatus: 'approved',
+      },
+    });
+
+    if (!actingMembership) {
+      throw new BadRequestException('Access denied: Only family admins can delete members');
+    }
+
     const membership = await this.familyMemberModel.findOne({
       where: { memberId, familyCode },
     });
@@ -395,6 +434,29 @@ export class FamilyMemberService {
     }
 
     await membership.destroy();
+
+    // If the removed member's profile is still pointing to this family, clear it.
+    // Also remove this family from associated family codes.
+    const removedUserProfile = await this.userProfileModel.findOne({
+      where: { userId: memberId },
+    });
+
+    if (removedUserProfile) {
+      const associated = Array.isArray(removedUserProfile.associatedFamilyCodes)
+        ? removedUserProfile.associatedFamilyCodes
+        : [];
+
+      const nextAssociated = associated.filter((c) => c && c !== familyCode);
+
+      const shouldClearPrimary = removedUserProfile.familyCode === familyCode;
+
+      if (shouldClearPrimary || nextAssociated.length !== associated.length) {
+        await removedUserProfile.update({
+          ...(shouldClearPrimary ? { familyCode: null } : {}),
+          associatedFamilyCodes: nextAssociated,
+        } as any);
+      }
+    }
 
     // Notify all family admins about member removal
     const adminUserIds = await this.notificationService.getAdminsForFamily(familyCode);
@@ -1027,67 +1089,116 @@ async markLinkAsUsed(familyCode: string, memberId: number) {
 }
 
   async addUserToFamily(userId: number, familyCode: string, addedBy: number) {
+    const transaction = await this.sequelize.transaction();
     try {
       // Check if user exists
       const user = await this.userModel.findByPk(userId, {
-        include: [{
-          model: this.userProfileModel,
-          as: 'userProfile'
-        }]
+        include: [
+          {
+            model: this.userProfileModel,
+            as: 'userProfile',
+          },
+        ],
+        transaction,
       });
 
       if (!user) {
         throw new NotFoundException('User not found');
       }
 
-      // Check if family exists
-      const familyExists = await this.familyMemberModel.findOne({
-        where: { familyCode }
+      // Check if family exists (do not rely on existing members)
+      const family = await this.familyModel.findOne({
+        where: { familyCode, status: 1 },
+        transaction,
       });
 
-      if (!familyExists) {
+      if (!family) {
         throw new NotFoundException('Family not found');
       }
 
-      // Check if user is already a member of this family
-      const existingMember = await this.familyMemberModel.findOne({
+      // If user is already in this family, stop
+      const existingMemberSameFamily = await this.familyMemberModel.findOne({
         where: {
           memberId: userId,
-          familyCode
-        }
+          familyCode,
+        },
+        transaction,
       });
 
-      if (existingMember) {
+      if (existingMemberSameFamily) {
         throw new BadRequestException('User is already a member of this family');
       }
 
-      // Update user profile with familyCode if not already set
-      if (user.userProfile && !user.userProfile.familyCode) {
-        await this.userProfileModel.update(
-          { familyCode },
-          { where: { userId } }
+      // Ensure profile points to this family so the app can load the correct tree by default
+      const profile = user.userProfile || (await this.userProfileModel.findOne({ where: { userId }, transaction }));
+      if (profile) {
+        const prevFamilyCode = profile.familyCode;
+        const associated = Array.isArray(profile.associatedFamilyCodes) ? profile.associatedFamilyCodes : [];
+        const nextAssociated =
+          prevFamilyCode && prevFamilyCode !== familyCode && !associated.includes(prevFamilyCode)
+            ? [...associated, prevFamilyCode]
+            : associated;
+
+        await profile.update(
+          {
+            familyCode,
+            associatedFamilyCodes: nextAssociated,
+          } as any,
+          { transaction },
         );
       }
 
-      // Add user to family member table
-      const newMember = await this.familyMemberModel.create({
-        memberId: userId,
-        familyCode,
-        approveStatus: 'approved', // Auto-approve since admin is adding
-        creatorId: addedBy
+      // Keep a single active membership row per user (consistent with requestToJoinFamily logic)
+      const existingAnyMembership = await this.familyMemberModel.findOne({
+        where: { memberId: userId },
+        transaction,
       });
+
+      let membership: any;
+      if (existingAnyMembership) {
+        await existingAnyMembership.update(
+          {
+            familyCode,
+            approveStatus: 'approved',
+            creatorId: addedBy,
+          },
+          { transaction },
+        );
+        membership = existingAnyMembership;
+
+        // Remove any other stale memberships for this user
+        await this.familyMemberModel.destroy({
+          where: {
+            memberId: userId,
+            familyCode: { [Op.ne]: familyCode },
+          },
+          transaction,
+        });
+      } else {
+        membership = await this.familyMemberModel.create(
+          {
+            memberId: userId,
+            familyCode,
+            approveStatus: 'approved',
+            creatorId: addedBy,
+          },
+          { transaction },
+        );
+      }
+
+      await transaction.commit();
 
       return {
         message: 'User added to family successfully',
         data: {
-          memberId: newMember.memberId,
+          memberId: membership.memberId,
           userId,
           familyCode,
-          approveStatus: 'approved'
-        }
+          approveStatus: membership.approveStatus,
+        },
       };
-
     } catch (error) {
+      await transaction.rollback();
       if (error instanceof NotFoundException || error instanceof BadRequestException) {
         throw error;
       }

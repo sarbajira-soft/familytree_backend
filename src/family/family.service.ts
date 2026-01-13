@@ -1258,75 +1258,12 @@ export class FamilyService {
       ],
     });
 
-    // If family tree doesn't exist, get family members instead
+    // If family tree doesn't exist yet, do NOT auto-create cards from approved family members.
+    // Admin will place members in the tree and save the structure.
     if (!familyTree.length) {
-      const familyMembers = await this.familyMemberModel.findAll({
-        where: {
-          familyCode,
-          approveStatus: 'approved',
-        },
-        include: [
-          {
-            model: this.userModel,
-            as: 'user',
-            include: [
-              {
-                model: this.userProfileModel,
-                as: 'userProfile',
-              },
-            ],
-          },
-        ],
-      });
-
-      if (!familyMembers.length) {
-        throw new NotFoundException('No approved family members found');
-      }
-
-      // Transform family members to tree format
-      const baseUrl = process.env.BASE_URL || '';
-      const profilePhotoPath =
-        process.env.PROFILE_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') ||
-        'uploads/profile';
-
-      const people = familyMembers.map((member: any, index) => {
-        const userProfile = member.user?.userProfile;
-
-        // Get profile image full S3 URL
-        let img = null;
-        if (userProfile?.profile) {
-          if (userProfile.profile.startsWith('http')) {
-            img = userProfile.profile; // Already a full URL
-          } else {
-            img = `${process.env.S3_BUCKET_URL /* || 'https://familytreeupload.s3.eu-north-1.amazonaws.com' */}/profile/${userProfile.profile}`;
-          }
-        }
-
-        return {
-          id: index + 1, // Use index as id since no personId
-          memberId: member.memberId,
-          name: userProfile
-            ? [userProfile.firstName, userProfile.lastName]
-                .filter(Boolean)
-                .join(' ') || 'Unknown'
-            : 'Unknown',
-          gender: userProfile?.gender || 'unknown',
-          age: userProfile?.age || null,
-          generation: 1, // Default generation
-          parents: [],
-          children: [],
-          spouses: [],
-          siblings: [],
-          img: img,
-          familyCode: userProfile?.familyCode || familyCode, // Add familyCode field
-          isAppUser: member.user ? !!member.user.isAppUser : false,
-        };
-      });
-
       return {
-        message:
-          'Family members retrieved successfully (family tree not created yet)',
-        people: people,
+        message: 'Family tree not created yet',
+        people: [],
       };
     }
 

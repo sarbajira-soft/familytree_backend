@@ -11,12 +11,14 @@ export const generateFileName = (originalName: string): string => {
 
 export const imageFileFilter = (req, file, callback) => {
   if (
-    file.mimetype.match(/^image\/(jpeg|png|jpg)$/) ||
-    file.mimetype === 'application/pdf'
+    file.mimetype.match(/^image\/(jpeg|png|jpg|gif|webp)$/)
   ) {
     callback(null, true);
   } else {
-    return callback(new BadRequestException('Only image (jpeg, png, jpg) or PDF files are allowed'), false);
+    return callback(
+      new BadRequestException('Only image files (jpeg, png, jpg, gif, webp) are allowed'),
+      false,
+    );
   }
 };
 

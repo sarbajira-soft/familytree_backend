@@ -536,6 +536,22 @@ export class FamilyService {
     return isNaN(parsedAge) ? 0 : parsedAge;
   }
 
+  private parseAgeNullable(age: any): number | null {
+    if (age === null || age === undefined) {
+      return null;
+    }
+
+    if (typeof age === 'string') {
+      const normalized = age.trim().toLowerCase();
+      if (!normalized || normalized === 'null' || normalized === 'undefined') {
+        return null;
+      }
+    }
+
+    const parsedAge = typeof age === 'number' ? age : parseInt(age, 10);
+    return isNaN(parsedAge) ? null : parsedAge;
+  }
+
   /**
    * Normalize gender values for consistent display
    */
@@ -1139,9 +1155,7 @@ export class FamilyService {
             familyCode &&
             actorFamilyCode === familyCode
           );
-          const canUpdateProfile =
-            (isAppUser && isSelf) ||
-            (!isAppUser && actorIsAdmin && sameFamilyAsActor);
+          const canUpdateProfile = isSelf || (!isAppUser && actorIsAdmin && sameFamilyAsActor);
 
           // 🚀 PERFORMANCE: Use Map lookup instead of database query
           const userProfile = existingProfilesMap.get(userId);
@@ -1149,12 +1163,16 @@ export class FamilyService {
           if (canUpdateProfile) {
             if (userProfile) {
               const { firstName, lastName } = this.splitName(member.name);
+              const parsedAge = this.parseAgeNullable(member.age);
               const updateData: any = {
                 firstName: firstName,
                 lastName: lastName,
                 gender: member.gender,
-                age: this.parseAge(member.age),
               };
+
+              if (parsedAge !== null) {
+                updateData.age = parsedAge;
+              }
 
               // Only update profile image if a new one is provided
               if (profileImage) {
@@ -1169,12 +1187,13 @@ export class FamilyService {
             } else {
               // Prepare profile for bulk create
               const { firstName, lastName } = this.splitName(member.name);
+              const parsedAge = this.parseAgeNullable(member.age);
               profilesToCreate.push({
                 userId: userId,
                 firstName: firstName,
                 lastName: lastName,
                 gender: member.gender,
-                age: this.parseAge(member.age),
+                age: parsedAge,
                 profile: profileImage,
                 familyCode: familyCode,
               });
@@ -1199,14 +1218,14 @@ export class FamilyService {
       if (userId && newUserIndexMap.has(memberIndex)) {
         const profileImage = imageMap.get(memberIndex);
         const { firstName, lastName } = this.splitName(member.name);
+        const parsedAge = this.parseAgeNullable(member.age);
 
         profilesToCreate.push({
           userId: userId,
           firstName: firstName,
           lastName: lastName,
           gender: member.gender,
-          age:
-            typeof member.age === 'string' ? parseInt(member.age) : member.age,
+          age: parsedAge,
           profile: profileImage,
           familyCode: familyCode,
         });
@@ -1311,7 +1330,7 @@ export class FamilyService {
               firstName: profile.firstName,
               lastName: profile.lastName,
               gender: profile.gender,
-              age: profile.age,
+              ...(profile.age !== undefined ? { age: profile.age } : {}),
               ...(profile.profile && { profile: profile.profile }),
             },
             {
@@ -1399,7 +1418,10 @@ export class FamilyService {
     const allCodes = new Set<string>();
     for (const member of members) {
       if (member.relationshipCode) {
-        allCodes.add(member.relationshipCode);
+        const trimmedCode = String(member.relationshipCode).trim();
+        if (trimmedCode) {
+          allCodes.add(trimmedCode);
+        }
       }
     }
     const codesArray = Array.from(allCodes);
@@ -1416,6 +1438,11 @@ export class FamilyService {
             description: code,
             is_auto_generated: true,
           })),
+          {
+            // Avoid crashing if the relationship code is inserted concurrently or already exists.
+            // (Unique constraint errors surface as Sequelize "Validation error")
+            ignoreDuplicates: true,
+          },
         );
       }
     }
@@ -1590,11 +1617,7 @@ export class FamilyService {
         // Get profile image full S3 URL
         let img = null;
         if (userProfile?.profile) {
-          if (userProfile.profile.startsWith('http')) {
-            img = userProfile.profile; // Already a full URL
-          } else {
-            img = `${process.env.S3_BUCKET_URL /* || 'https://familytreeupload.s3.eu-north-1.amazonaws.com' */}/profile/${userProfile.profile}`;
-          }
+          img = this.uploadService.getFileUrl(userProfile.profile, 'profile');
         }
         return {
           id: entry.personId, // Use personId as id
@@ -2033,7 +2056,7 @@ export class FamilyService {
     }
 
     // Fetch all people from all associated family codes
-    const allPeople = new Map();
+    const allPeople = new Map<string, any>();
     const familyTreeEntries = await this.familyTreeModel.findAll({
       where: {
         familyCode: { [Op.in]: Array.from(allFamilyCodes) },
@@ -2053,6 +2076,30 @@ export class FamilyService {
       ],
     });
 
+    const personKeyByFamilyPersonId = new Map<string, string>();
+    for (const entry of familyTreeEntries) {
+      const familyCode = String((entry as any).familyCode || '');
+      const personId = Number((entry as any).personId);
+      if (!familyCode || !personId) continue;
+
+      const key = (entry as any).userId
+        ? `user_${Number((entry as any).userId)}`
+        : `fp_${familyCode}_${personId}`;
+
+      personKeyByFamilyPersonId.set(`${familyCode}:${personId}`, key);
+    }
+
+    const uniqueIdByKey = new Map<string, number>();
+    let nextUniqueId = 1;
+    const getOrCreateUniqueId = (key: string): number => {
+      const existing = uniqueIdByKey.get(key);
+      if (existing) return existing;
+      const created = nextUniqueId;
+      nextUniqueId += 1;
+      uniqueIdByKey.set(key, created);
+      return created;
+    };
+
     const baseUrl = process.env.BASE_URL || '';
     const profilePhotoPath =
       process.env.PROFILE_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') ||
@@ -2060,23 +2107,44 @@ export class FamilyService {
 
     // Process each entry and build unified tree
     for (const entry of familyTreeEntries) {
-      const personKey = entry.userId || `unknown_${entry.personId}`;
+      const entryFamilyCode = String((entry as any).familyCode || '');
+      const entryPersonId = Number((entry as any).personId);
+      const personKey = (entry as any).userId
+        ? `user_${Number((entry as any).userId)}`
+        : `fp_${entryFamilyCode}_${entryPersonId}`;
+
+      const personUniqueId = getOrCreateUniqueId(personKey);
+
+      const mapRelIds = (relIds: any): number[] => {
+        const ids = Array.isArray(relIds) ? relIds : [];
+        return ids
+          .map((raw) => {
+            const relPersonId = Number(raw);
+            if (!relPersonId) return null;
+            const relKey =
+              personKeyByFamilyPersonId.get(
+                `${entryFamilyCode}:${relPersonId}`,
+              ) || `fp_${entryFamilyCode}_${relPersonId}`;
+            return getOrCreateUniqueId(relKey);
+          })
+          .filter((x) => x !== null) as number[];
+      };
 
       if (!allPeople.has(personKey)) {
         let personData;
 
-        if (!entry.userId) {
+        if (!(entry as any).userId) {
           personData = {
-            id: entry.personId,
+            id: personUniqueId,
             memberId: null,
             name: 'Unknown',
             gender: 'unknown',
             age: null,
             generation: entry.generation,
-            parents: new Set(entry.parents || []),
-            children: new Set(entry.children || []),
-            spouses: new Set(entry.spouses || []),
-            siblings: new Set(entry.siblings || []),
+            parents: new Set(mapRelIds((entry as any).parents)),
+            children: new Set(mapRelIds((entry as any).children)),
+            spouses: new Set(mapRelIds((entry as any).spouses)),
+            siblings: new Set(mapRelIds((entry as any).siblings)),
             img: null,
             associatedFamilyCodes: [],
             familyCode: entry.familyCode,
@@ -2094,8 +2162,9 @@ export class FamilyService {
           }
 
           personData = {
-            id: entry.personId,
-            memberId: entry.userId,
+            id: personUniqueId,
+            memberId: (entry as any).userId,
+            userId: (entry as any).userId,
             name: userProfile
               ? `${userProfile.firstName || ''} ${
                   userProfile.lastName || ''
@@ -2104,13 +2173,13 @@ export class FamilyService {
             gender: this.normalizeGender(userProfile?.gender),
             age: userProfile?.age || null,
             generation: entry.generation,
-            parents: new Set(entry.parents || []),
-            children: new Set(entry.children || []),
-            spouses: new Set(entry.spouses || []),
-            siblings: new Set(entry.siblings || []),
+            parents: new Set(mapRelIds((entry as any).parents)),
+            children: new Set(mapRelIds((entry as any).children)),
+            spouses: new Set(mapRelIds((entry as any).spouses)),
+            siblings: new Set(mapRelIds((entry as any).siblings)),
             img: img,
             associatedFamilyCodes: userProfile?.associatedFamilyCodes || [],
-            familyCode: entry.familyCode,
+            familyCode: userProfile?.familyCode || entry.familyCode,
             isManual: false,
           };
         }
@@ -2119,29 +2188,43 @@ export class FamilyService {
       } else {
         // Merge relationships from multiple trees
         const existing = allPeople.get(personKey);
-        existing.parents = new Set([
-          ...existing.parents,
-          ...(entry.parents || []),
-        ]);
+        existing.parents = new Set([...existing.parents, ...mapRelIds((entry as any).parents)]);
         existing.children = new Set([
           ...existing.children,
-          ...(entry.children || []),
+          ...mapRelIds((entry as any).children),
         ]);
-        existing.spouses = new Set([
-          ...existing.spouses,
-          ...(entry.spouses || []),
-        ]);
+        existing.spouses = new Set([...existing.spouses, ...mapRelIds((entry as any).spouses)]);
         existing.siblings = new Set([
           ...existing.siblings,
-          ...(entry.siblings || []),
+          ...mapRelIds((entry as any).siblings),
         ]);
+
+        if (!existing.memberId && (entry as any).userId) {
+          existing.memberId = (entry as any).userId;
+          existing.userId = (entry as any).userId;
+        }
+
+        if (!existing.familyCode) {
+          const userProfile = entry.user?.userProfile;
+          existing.familyCode = userProfile?.familyCode || entry.familyCode;
+        }
+
+        if (entry.user?.userProfile?.associatedFamilyCodes) {
+          const current = Array.isArray(existing.associatedFamilyCodes)
+            ? existing.associatedFamilyCodes
+            : [];
+          const extra = Array.isArray(entry.user.userProfile.associatedFamilyCodes)
+            ? entry.user.userProfile.associatedFamilyCodes
+            : [];
+          existing.associatedFamilyCodes = Array.from(new Set([...current, ...extra]));
+        }
       }
     }
 
     // Add relationship edges as connections
     for (const rel of relationships) {
-      const person1Key = rel.user1Id;
-      const person2Key = rel.user2Id;
+      const person1Key = `user_${rel.user1Id}`;
+      const person2Key = `user_${rel.user2Id}`;
 
       if (allPeople.has(person1Key) && allPeople.has(person2Key)) {
         const person1 = allPeople.get(person1Key);

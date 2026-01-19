@@ -151,12 +151,20 @@ export class FamilyController {
     if (isNaN(personCount) || personCount < 1) {
       throw new BadRequestException('Invalid or missing person_count');
     }
-    //console.log(body);return;
     
-    // Map files by fieldname (e.g., person_1_img)
-    const fileMap = {};
-    for (const file of files) {
-      fileMap[file.fieldname] = file;
+    // Upload all received images to S3 first (multer memoryStorage provides file.buffer; file.filename is undefined)
+    const uploadedImageMap: Record<string, string> = {};
+    if (Array.isArray(files) && files.length > 0) {
+      await Promise.all(
+        files.map(async (file) => {
+          if (!file?.fieldname) return;
+          const uploadedFileName = await this.uploadService.uploadFile(
+            file,
+            'profile',
+          );
+          uploadedImageMap[file.fieldname] = uploadedFileName;
+        }),
+      );
     }
 
     // Build people array
@@ -172,19 +180,18 @@ export class FamilyController {
       for (const field of fields) {
         const key = prefix + field;
         if (field === 'img') {
-          // Handle file or URL
-          if (fileMap[key]) {
-            // Store only the filename, not the full path
-            person.img = fileMap[key].filename;
+          // Handle newly uploaded file or keep existing reference from payload.
+          // If omitted, leave as undefined to preserve existing profile image.
+          if (uploadedImageMap[key]) {
+            person.img = uploadedImageMap[key];
           } else if (body[key]) {
             person.img = body[key];
-          } else {
-            person.img = null;
           }
         } else {
           person[field] = body[key] !== undefined ? body[key] : null;
         }
       }
+      
       // Add relationshipCode from payload
       person.relationshipCode = body[`${prefix}relationshipCode`] || '';
       // Optionally, split comma-separated fields into arrays

@@ -21,7 +21,7 @@ import * as fs from 'fs';
 import { BadRequestException } from '@nestjs/common';
 import { GalleryService } from './gallery.service';
  
-import { CreateGalleryDto } from './dto/gallery.dto';
+import { CreateGalleryDto, UpdateGalleryDto } from './dto/gallery.dto';
 import { GetGalleryByOptionsDto } from './dto/gallery-options.dto';
 import { ToggleLikeDto } from './dto/gallery-like.dto';
 import { CreateGalleryCommentDto } from './dto/gallery-comment.dto';
@@ -167,11 +167,24 @@ export class GalleryController {
   async updateGallery(
     @Param('id') id: number,
     @UploadedFiles() files: { coverPhoto?: Express.Multer.File[], images?: Express.Multer.File[] } = {},
-    @Body() dto: CreateGalleryDto,
+    @Body() dto: UpdateGalleryDto,
     @Req() req,
   ) {
     // Create a new DTO object to avoid mutating the original
     const updateDto = { ...dto };
+
+    // Normalize removedImageIds from multipart form-data.
+    // Frontend sends multiple 'removedImageIds' fields, which can arrive as string or string[].
+    const rawRemoved: any = (updateDto as any).removedImageIds;
+    if (rawRemoved !== undefined && rawRemoved !== null) {
+      const asArray = Array.isArray(rawRemoved) ? rawRemoved : [rawRemoved];
+      const normalized = asArray
+        .flatMap((v) => String(v).split(','))
+        .map((v) => Number(String(v).trim()))
+        .filter((n) => Number.isFinite(n) && n > 0);
+
+      (updateDto as any).removedImageIds = normalized;
+    }
     
     // Handle cover photo upload if provided
     if (files?.coverPhoto?.[0]) {
@@ -243,7 +256,12 @@ export class GalleryController {
     @Param('galleryId', ParseIntPipe) galleryId: number,
     @Query('userId') userId?: number,
   ) {
-    return this.galleryService.getGalleryById(galleryId, userId ? +userId : undefined);
+    const parsedUserId = Number(userId);
+    const normalizedUserId = Number.isFinite(parsedUserId) && parsedUserId > 0
+      ? parsedUserId
+      : undefined;
+
+    return this.galleryService.getGalleryById(galleryId, normalizedUserId);
   }
 
   @UseGuards(JwtAuthGuard)

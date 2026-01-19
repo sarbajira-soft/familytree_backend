@@ -42,6 +42,14 @@ export class EventService {
     private readonly blockingService: BlockingService,
   ) {}
 
+  private normalizeOptionalString(value: any): string | null | undefined {
+    if (value === undefined) return undefined;
+    if (value === null) return null;
+    if (typeof value !== 'string') return value;
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
   private async assertUserCanAccessFamilyContent(
     userId: number,
     familyCode: string,
@@ -68,6 +76,12 @@ export class EventService {
     imageFiles?: Express.Multer.File[],
     requestingUserId?: number,
   ) {
+    (dto as any).eventTitle = typeof (dto as any).eventTitle === 'string' ? (dto as any).eventTitle.trim() : (dto as any).eventTitle;
+    (dto as any).eventDescription = this.normalizeOptionalString((dto as any).eventDescription);
+    (dto as any).eventTime = this.normalizeOptionalString((dto as any).eventTime);
+    (dto as any).location = this.normalizeOptionalString((dto as any).location);
+    (dto as any).familyCode = typeof (dto as any).familyCode === 'string' ? (dto as any).familyCode.trim() : (dto as any).familyCode;
+
     if (dto.familyCode) {
       const actor = requestingUserId ?? dto.createdBy ?? dto.userId;
       if (actor) {
@@ -294,6 +308,18 @@ export class EventService {
     imagesToRemove?: number[], 
     loggedId?: number
   ) {
+    if (dto && typeof dto === 'object') {
+      if (dto.eventTitle !== undefined && typeof dto.eventTitle === 'string') {
+        dto.eventTitle = dto.eventTitle.trim();
+      }
+      dto.eventDescription = this.normalizeOptionalString(dto.eventDescription);
+      dto.eventTime = this.normalizeOptionalString(dto.eventTime);
+      dto.location = this.normalizeOptionalString(dto.location);
+      if (dto.familyCode !== undefined && typeof dto.familyCode === 'string') {
+        dto.familyCode = dto.familyCode.trim();
+      }
+    }
+
     const event = await this.eventModel.findByPk(id, { include: [EventImage] });
     if (!event) throw new NotFoundException('Event not found');
 

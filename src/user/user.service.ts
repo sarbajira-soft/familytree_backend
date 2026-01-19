@@ -802,11 +802,7 @@ export class UserService {
       // -----------------------------
       // CONTACT / PASSWORD PERMISSIONS
       // -----------------------------
-      const actorCanChangeContact =
-        isSelf ||
-        (actorIsAdmin &&
-          !targetIsAppUser &&
-          actorFamilyCode === targetFamilyCode);
+      const actorCanChangeContact = isSelf;
 
       const actorCanChangeRoleStatus =
         actorIsAdmin &&

@@ -328,6 +328,11 @@ export class FamilyController {
       throw new BadRequestException('Requester must have a family code to send association request');
     }
 
+    // Track who initiated the request (may differ from requesterId when acting on behalf of a member)
+    const initiatorProfile = loggedInUserId
+      ? await this.familyService.getFamilyByUserId(loggedInUserId)
+      : null;
+
     // Get target user's family code for the notification
     const targetProfile = await this.familyService.getFamilyByUserId(targetUserId);
     if (!targetProfile || !targetProfile.familyCode) {
@@ -351,6 +356,8 @@ export class FamilyController {
         senderId: requesterId,
         senderName: requesterName,
         senderFamilyCode: requesterProfile.familyCode,
+        initiatorUserId: loggedInUserId,
+        initiatorFamilyCode: initiatorProfile?.familyCode || requesterProfile.familyCode,
         targetUserId: targetUserId,
         targetFamilyCode: targetProfile.familyCode,
         adminUserIds,

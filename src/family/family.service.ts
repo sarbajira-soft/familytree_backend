@@ -45,8 +45,24 @@ export class FamilyService {
       return null;
     }
 
+    const profileFamilyCode = user.userProfile.familyCode;
+    if (!profileFamilyCode) {
+      const membership = await this.familyMemberModel.findOne({
+        where: {
+          memberId: userId,
+          approveStatus: 'approved',
+        } as any,
+        order: [['id', 'DESC']],
+      });
+      const memberFamilyCode = (membership as any)?.familyCode || null;
+      return {
+        familyCode: memberFamilyCode,
+        userId: user.id,
+      };
+    }
+
     return {
-      familyCode: user.userProfile.familyCode,
+      familyCode: profileFamilyCode,
       userId: user.id,
     };
   }
@@ -238,13 +254,264 @@ export class FamilyService {
       },
     });
 
+    // If user is explicitly blocked in this family, always deny
+    if (membership && (membership as any).isBlocked) {
+      throw new ForbiddenException('You have been blocked from this family');
+    }
+
+    const allowCrossFamilyTreeView = ['1', 'true', 'yes'].includes(
+      String(process.env.ALLOW_CROSS_FAMILY_TREE_VIEW || '')
+        .trim()
+        .toLowerCase(),
+    );
+
+    if (allowCrossFamilyTreeView) {
+      return;
+    }
+
     // If user is an approved member of this family, allow
     if (membership && (membership as any).approveStatus === 'approved') {
       return;
     }
 
+    // Allow if the user already has a visible card in this family's tree (cross-family spouse cards).
+    // This is a strong signal that the user should be able to view this family even without membership.
+    const viewerTreeEntry = await this.familyTreeModel.findOne({
+      where: {
+        familyCode,
+        userId,
+      } as any,
+    });
+
+    if (viewerTreeEntry) {
+      return;
+    }
+
+    // Allow associated-family access (e.g., spouse-connected families)
+    // Users may have access via associatedFamilyCodes without being a direct member.
+    const userProfile = await this.userProfileModel.findOne({ where: { userId } });
+    const associated = Array.isArray((userProfile as any)?.associatedFamilyCodes)
+      ? ((userProfile as any).associatedFamilyCodes as any[])
+      : [];
+
+    const normalizedTargetFamilyCode = String(familyCode).trim().toUpperCase();
+    const hasAssociatedFamilyAccess = associated.some((c) => {
+      if (!c) return false;
+      return String(c).trim().toUpperCase() === normalizedTargetFamilyCode;
+    });
+
+    if (hasAssociatedFamilyAccess) {
+      return;
+    }
+
+    // Family-level visibility (members): if the viewer belongs to a family,
+    // allow viewing other families that are connected to ANY approved member in their family.
+    // This is required so regular members (not only admins) can view spouse/associated family trees.
+    try {
+      const viewerFamilyCodeFromProfile = (userProfile as any)?.familyCode;
+      const viewerMembership = await this.familyMemberModel.findOne({
+        where: {
+          memberId: userId,
+          approveStatus: 'approved',
+        } as any,
+        order: [['id', 'DESC']],
+      });
+
+      const viewerFamilyCode =
+        viewerFamilyCodeFromProfile || (viewerMembership as any)?.familyCode;
+
+      if (viewerFamilyCode) {
+        const familyMembers = await this.familyMemberModel.findAll({
+          where: {
+            familyCode: viewerFamilyCode,
+            approveStatus: 'approved',
+          } as any,
+          attributes: ['memberId'],
+        });
+
+        const memberIds = (familyMembers as any[])
+          .map((m) => Number((m as any).memberId))
+          .filter((id) => id && !Number.isNaN(id));
+
+        if (memberIds.length > 0) {
+          const memberTreeEntry = await this.familyTreeModel.findOne({
+            where: {
+              familyCode,
+              userId: { [Op.in]: memberIds },
+            } as any,
+          });
+
+          if (memberTreeEntry) {
+            return;
+          }
+
+          const memberProfiles = await this.userProfileModel.findAll({
+            where: { userId: { [Op.in]: memberIds } } as any,
+            attributes: ['userId', 'associatedFamilyCodes'],
+          });
+
+          const normalizedTarget = String(familyCode).trim().toUpperCase();
+          const memberHasAssociation = (memberProfiles as any[]).some((p) => {
+            const codes = Array.isArray((p as any)?.associatedFamilyCodes)
+              ? ((p as any).associatedFamilyCodes as any[])
+              : [];
+            return codes.some(
+              (c) => c && String(c).trim().toUpperCase() === normalizedTarget,
+            );
+          });
+
+          if (memberHasAssociation) {
+            return;
+          }
+        }
+      }
+    } catch (_) {
+      // Ignore and continue with normal authorization checks
+    }
+
+    // Acting admin visibility: if the viewer is an admin of their own family,
+    // allow viewing other families that are connected to ANY approved member in their family.
+    // This is required when an admin sends a spouse/association request on behalf of a non-app member
+    // (the admin may not be the direct relationship participant).
+    try {
+      const actingUser = await this.userModel.findByPk(userId);
+      const isAdmin = actingUser && (actingUser.role === 2 || actingUser.role === 3);
+
+      if (isAdmin) {
+        const adminFamilyCodeFromProfile = (userProfile as any)?.familyCode;
+        const adminMembership = await this.familyMemberModel.findOne({
+          where: {
+            memberId: userId,
+            approveStatus: 'approved',
+          } as any,
+          order: [['id', 'DESC']],
+        });
+
+        const adminFamilyCode =
+          adminFamilyCodeFromProfile || (adminMembership as any)?.familyCode;
+        if (adminFamilyCode) {
+          const adminFamilyMembers = await this.familyMemberModel.findAll({
+            where: {
+              familyCode: adminFamilyCode,
+              approveStatus: 'approved',
+            } as any,
+            attributes: ['memberId'],
+          });
+
+          const memberIds = (adminFamilyMembers as any[])
+            .map((m) => Number((m as any).memberId))
+            .filter((id) => id && !Number.isNaN(id));
+
+          if (memberIds.length > 0) {
+            const memberTreeEntry = await this.familyTreeModel.findOne({
+              where: {
+                familyCode,
+                userId: { [Op.in]: memberIds },
+              } as any,
+            });
+
+            if (memberTreeEntry) {
+              return;
+            }
+
+            // Fallback: check associatedFamilyCodes in JS (more reliable than JSON contains across dialects)
+            const memberProfiles = await this.userProfileModel.findAll({
+              where: { userId: { [Op.in]: memberIds } } as any,
+              attributes: ['userId', 'associatedFamilyCodes'],
+            });
+
+            const normalizedTarget = String(familyCode).trim().toUpperCase();
+            const memberHasAssociation = (memberProfiles as any[]).some((p) => {
+              const codes = Array.isArray((p as any)?.associatedFamilyCodes)
+                ? ((p as any).associatedFamilyCodes as any[])
+                : [];
+              return codes.some(
+                (c) => c && String(c).trim().toUpperCase() === normalizedTarget,
+              );
+            });
+
+            if (memberHasAssociation) {
+              return;
+            }
+          }
+        }
+      }
+    } catch (_) {
+      // Ignore and continue with normal authorization checks
+    }
+
+    // Allow spouse-linked access even if associatedFamilyCodes wasn't populated (common for non-app users).
+    // If the viewer has a spouse relationship edge with any user that belongs to this family,
+    // allow viewing this family's tree.
+    try {
+      const relationships = await this.relationshipEdgeService.getUserRelationships(
+        Number(userId),
+      );
+      const spouseRelationships = Array.isArray(relationships)
+        ? relationships.filter((r: any) => r?.relationshipType === 'spouse')
+        : [];
+
+      if (spouseRelationships.length > 0) {
+        const counterpartIds = Array.from(
+          new Set(
+            spouseRelationships
+              .map((r: any) =>
+                Number(r.user1Id) === Number(userId)
+                  ? Number(r.user2Id)
+                  : Number(r.user1Id),
+              )
+              .filter((id: any) => id && !Number.isNaN(Number(id))),
+          ),
+        );
+
+        if (counterpartIds.length > 0) {
+          const [counterpartMembership, counterpartProfile, counterpartTree] =
+            await Promise.all([
+              this.familyMemberModel.findOne({
+                where: {
+                  familyCode,
+                  memberId: { [Op.in]: counterpartIds },
+                  approveStatus: 'approved',
+                } as any,
+              }),
+              this.userProfileModel.findOne({
+                where: {
+                  userId: { [Op.in]: counterpartIds },
+                  familyCode,
+                } as any,
+              }),
+              this.familyTreeModel.findOne({
+                where: {
+                  familyCode,
+                  userId: { [Op.in]: counterpartIds },
+                } as any,
+              }),
+            ]);
+
+          if (counterpartMembership || counterpartProfile || counterpartTree) {
+            return;
+          }
+        }
+      }
+    } catch (_) {
+      // Ignore and continue with normal authorization checks
+    }
+
     // No approved membership
     if (!allowAdminPreview) {
+      // eslint-disable-next-line no-console
+      console.log('🔒 Tree access denied', {
+        userId,
+        familyCode,
+        hasApprovedMembership: Boolean(
+          membership && (membership as any).approveStatus === 'approved',
+        ),
+        isBlocked: Boolean(membership && (membership as any).isBlocked),
+        hasViewerTreeEntry: Boolean(viewerTreeEntry),
+        associatedCount: associated.length,
+        associatedCodes: associated,
+        hasAssociatedFamilyAccess,
+      });
       throw new ForbiddenException(
         'Access denied: you are not a member of this family',
       );
@@ -2178,8 +2445,17 @@ export class FamilyService {
     const spouseProfile = await this.userProfileModel.findOne({
       where: { userId: spouseUserId },
     });
-    const spouseHasFamilyCode =
-      spouseProfile && spouseProfile.familyCode ? true : false;
+    const spouseMembership = await this.familyMemberModel.findOne({
+      where: {
+        memberId: spouseUserId,
+        approveStatus: 'approved',
+      } as any,
+      order: [['id', 'DESC']],
+    });
+    const spouseFamilyCode =
+      (spouseProfile && spouseProfile.familyCode) ||
+      ((spouseMembership as any)?.familyCode || null);
+    const spouseHasFamilyCode = Boolean(spouseFamilyCode);
 
     // Create relationship edge
     const { generatedFamilyCode } =
@@ -2203,7 +2479,7 @@ export class FamilyService {
     if (spouseHasFamilyCode) {
       await this.relationshipEdgeService.updateAssociatedFamilyCodes(
         yourUserId,
-        spouseProfile.familyCode,
+        spouseFamilyCode,
       );
     }
 
@@ -2211,10 +2487,20 @@ export class FamilyService {
     const yourProfile = await this.userProfileModel.findOne({
       where: { userId: yourUserId },
     });
-    if (yourProfile && yourProfile.familyCode) {
+    const yourMembership = await this.familyMemberModel.findOne({
+      where: {
+        memberId: yourUserId,
+        approveStatus: 'approved',
+      } as any,
+      order: [['id', 'DESC']],
+    });
+    const yourFamilyCode =
+      (yourProfile && yourProfile.familyCode) ||
+      ((yourMembership as any)?.familyCode || null);
+    if (yourFamilyCode) {
       await this.relationshipEdgeService.updateAssociatedFamilyCodes(
         spouseUserId,
-        yourProfile.familyCode,
+        yourFamilyCode,
       );
     }
 

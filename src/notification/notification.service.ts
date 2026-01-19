@@ -400,6 +400,8 @@ export class NotificationService {
       case 'FAMILY_ASSOCIATION_REQUEST':
         const notificationData = notification.data || {};
         const senderId = notificationData.senderId; // The user who sent the request
+        const initiatorUserId = notificationData.initiatorUserId; // The logged-in actor who initiated (may differ from senderId)
+        const initiatorFamilyCode = notificationData.initiatorFamilyCode;
         // Prefer the intended target from notification payload; fallback to the accepting actor (admin/user)
         const targetUserId =
           notificationData.targetUserId || notificationData.targetId || userId;
@@ -544,6 +546,24 @@ export class NotificationService {
                 targetFamilyCode,
               ),
             ]);
+
+            // If the request was initiated by someone other than senderId (e.g. admin acting on behalf of a non-app member),
+            // also grant the initiator association access so they can view the connected family's tree.
+            try {
+              if (
+                initiatorUserId &&
+                Number(initiatorUserId) !== Number(senderId) &&
+                Number(initiatorUserId) !== Number(targetUserId)
+              ) {
+                await this.updateUserFamilyAssociations(
+                  Number(initiatorUserId),
+                  targetFamilyCode,
+                  initiatorFamilyCode || senderFamilyCode,
+                );
+              }
+            } catch (_) {
+              // no-op
+            }
 
             // Note: Family service association update will be handled separately
             console.log(

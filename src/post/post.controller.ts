@@ -166,6 +166,8 @@ export class PostController {
     return this.postService.getLikeCount(postId);
   }
 
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Get(':postId')
   async getPost(
     @Param('postId') postId: number,

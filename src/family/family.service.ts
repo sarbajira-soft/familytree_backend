@@ -6,7 +6,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { InjectModel, InjectConnection } from '@nestjs/sequelize';
-import { Sequelize, Op } from 'sequelize';
+import { Sequelize, Op, QueryTypes } from 'sequelize';
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { Family } from './model/family.model';
@@ -1593,6 +1593,112 @@ export class FamilyService {
       return unique;
     }, []);
 
+    // Derive a stable "primary" (birth/home) family code.
+    // For app users this is stored on userProfile.familyCode.
+    // For non-app users (userProfile.familyCode is null), we infer it from the earliest
+    // FamilyTree card ever created for that userId across all families. This works because
+    // association creates new cards later in other families.
+    const userIdsNeedingPrimaryFamily = Array.from(
+      new Set(
+        uniqueFamilyTree
+          .filter((e) => {
+            const profileFamilyCode = e?.user?.userProfile?.familyCode;
+            return Boolean(e.userId) && !profileFamilyCode;
+          })
+          .map((e) => e.userId),
+      ),
+    );
+
+    const inferredPrimaryFamilyCodeByUserId = new Map<number, string>();
+
+    if (userIdsNeedingPrimaryFamily.length > 0) {
+      const normalizedUserIds = userIdsNeedingPrimaryFamily
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id));
+
+      if (normalizedUserIds.length > 0) {
+        try {
+          const memberships = await this.sequelize.query<
+            { userId: number; familyCode: string }[]
+          >(
+            `
+            SELECT
+              "memberId" as "userId",
+              "familyCode" as "familyCode"
+            FROM ft_family_members
+            WHERE "memberId" IN (:userIds)
+              AND "approveStatus" IN ('approved','associated')
+            ORDER BY
+              CASE WHEN "membershipType" = 'primary' THEN 0 ELSE 1 END,
+              id ASC
+          `,
+            {
+              replacements: { userIds: normalizedUserIds },
+              type: QueryTypes.SELECT,
+            },
+          );
+
+          memberships.forEach((row: any) => {
+            const uid = Number(row?.userId);
+            const fc = row?.familyCode ? String(row.familyCode) : '';
+            if (!Number.isFinite(uid) || !fc) return;
+            if (!inferredPrimaryFamilyCodeByUserId.has(uid)) {
+              inferredPrimaryFamilyCodeByUserId.set(uid, fc);
+            }
+          });
+        } catch (_) {
+          const memberships = await this.sequelize.query<
+            { userId: number; familyCode: string }[]
+          >(
+            `
+            SELECT
+              "memberId" as "userId",
+              "familyCode" as "familyCode"
+            FROM ft_family_members
+            WHERE "memberId" IN (:userIds)
+              AND "approveStatus" IN ('approved','associated')
+            ORDER BY id ASC
+          `,
+            {
+              replacements: { userIds: normalizedUserIds },
+              type: QueryTypes.SELECT,
+            },
+          );
+
+          memberships.forEach((row: any) => {
+            const uid = Number(row?.userId);
+            const fc = row?.familyCode ? String(row.familyCode) : '';
+            if (!Number.isFinite(uid) || !fc) return;
+            if (!inferredPrimaryFamilyCodeByUserId.has(uid)) {
+              inferredPrimaryFamilyCodeByUserId.set(uid, fc);
+            }
+          });
+        }
+
+        const remainingUserIds = normalizedUserIds.filter(
+          (uid) => !inferredPrimaryFamilyCodeByUserId.has(uid),
+        );
+
+        if (remainingUserIds.length > 0) {
+          const earliestCards = await this.familyTreeModel.findAll({
+            where: {
+              userId: { [Op.in]: remainingUserIds },
+            },
+            order: [['id', 'ASC']],
+          });
+
+          earliestCards.forEach((card) => {
+            const uid = Number((card as any)?.userId);
+            const fc = (card as any)?.familyCode ? String((card as any).familyCode) : '';
+            if (!Number.isFinite(uid) || !fc) return;
+            if (!inferredPrimaryFamilyCodeByUserId.has(uid)) {
+              inferredPrimaryFamilyCodeByUserId.set(uid, fc);
+            }
+          });
+        }
+      }
+    }
+
     const people = await Promise.all(
       uniqueFamilyTree.map(async (entry) => {
         // If userId is undefined/null, skip this person or handle gracefully
@@ -1610,6 +1716,8 @@ export class FamilyService {
             siblings: entry.siblings || [],
             img: null,
             familyCode: entry.familyCode || familyCode, // Add familyCode field
+            treeFamilyCode: entry.familyCode || familyCode,
+            primaryFamilyCode: null,
             isAppUser: false,
           };
         }
@@ -1637,6 +1745,12 @@ export class FamilyService {
           siblings: entry.siblings || [],
           img: img,
           familyCode: userProfile?.familyCode || entry.familyCode || familyCode, // Add familyCode field
+          treeFamilyCode: entry.familyCode || familyCode,
+          primaryFamilyCode:
+            userProfile?.familyCode ||
+            inferredPrimaryFamilyCodeByUserId.get(Number(entry.userId)) ||
+            null,
+          associatedFamilyCodes: userProfile?.associatedFamilyCodes || [],
           isAppUser: entry.user ? !!entry.user.isAppUser : false,
         };
       }),
@@ -1663,9 +1777,14 @@ export class FamilyService {
         // Convert to numbers and filter out invalid IDs, remove duplicates
         const cleanedIds = arr
           .map((ref) => {
-            // Try to map memberId to personId first
-            const personId = memberIdToPersonIdMap.get(ref) || ref;
-            return typeof personId === 'string' ? parseInt(personId) : personId;
+            // IMPORTANT: Relationship arrays in ft_family_tree are expected to store personIds.
+            // Some historical data stored memberIds (userIds) instead. We only map memberId -> personId
+            // when the reference is NOT already a valid personId in this tree.
+            const raw = typeof ref === 'string' ? parseInt(ref, 10) : ref;
+            if (!Number.isFinite(raw)) return NaN;
+            if (validPersonIds.includes(raw)) return raw;
+            const mapped = memberIdToPersonIdMap.get(raw);
+            return mapped ?? raw;
           })
           .filter((id) => !isNaN(id) && validPersonIds.includes(id));
 

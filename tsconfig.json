@@ -27,6 +27,9 @@
   "exclude": [
     "node_modules",
     "dist",
-    "test"
+    "test",
+    "src/family/family-merge.*",
+    "src/family/model/family-merge-*.ts",
+    "src/family/dto/family-merge.dto.ts"
   ]
 }

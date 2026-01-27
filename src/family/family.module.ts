@@ -15,13 +15,8 @@ import { MailService } from '../utils/mail.service';
 import { NotificationModule } from '../notification/notification.module';
 import { RelationshipEdgeService } from './relationship-edge.service';
 import { UploadModule } from '../uploads/upload.module';
-import { NotificationService } from '../notification/notification.service';
 import { RelationshipPathService } from './relationship-path.service';
 import { UserModule } from '../user/user.module';
-import { FamilyMergeRequest } from './model/family-merge-request.model';
-import { FamilyMergeState } from './model/family-merge-state.model';
-import { FamilyMergeService } from './family-merge.service';
-import { FamilyMergeController } from './family-merge.controller';
 
 
 @Module({
@@ -33,18 +28,15 @@ import { FamilyMergeController } from './family-merge.controller';
       UserProfile,
       FamilyTree,
       UserRelationship,
-      FamilyMergeRequest,
-      FamilyMergeState,
     ]),
     forwardRef(() => NotificationModule),
     forwardRef(() => UserModule),
     UploadModule,
   ],
-  controllers: [FamilyController, FamilyMemberController, FamilyMergeController],
+  controllers: [FamilyController, FamilyMemberController],
   providers: [
     RelationshipPathService,
     FamilyService,
-    FamilyMergeService,
     MailService,
     FamilyMemberService,
     RelationshipEdgeService,

@@ -1,4 +1,12 @@
 {
   "extends": "./tsconfig.json",
-  "exclude": ["node_modules", "test", "dist", "**/*spec.ts"]
+  "exclude": [
+    "node_modules",
+    "test",
+    "dist",
+    "**/*spec.ts",
+    "src/family/family-merge.*",
+    "src/family/model/family-merge-*.ts",
+    "src/family/dto/family-merge.dto.ts"
+  ]
 }

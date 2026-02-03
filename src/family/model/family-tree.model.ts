@@ -75,4 +75,30 @@ export class FamilyTree extends Model<FamilyTree> {
     allowNull: true,
   })
   siblings: number[];
-} 
+
+  @Column({
+    type: DataType.UUID,
+    allowNull: false,
+    defaultValue: DataType.UUIDV4,
+  })
+  nodeUid: string;
+
+  @Column({
+    type: DataType.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+  })
+  isExternalLinked: boolean;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  canonicalFamilyCode: string;
+
+  @Column({
+    type: DataType.UUID,
+    allowNull: true,
+  })
+  canonicalNodeUid: string;
+}

@@ -12,6 +12,7 @@ import { NotificationModule } from '../notification/notification.module';
 import { UploadModule } from '../uploads/upload.module';
 import { BlockingModule } from '../blocking/blocking.module';
 import { FamilyMember } from '../family/model/family-member.model';
+import { FamilyLink } from '../family/model/family-link.model';
  
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { FamilyMember } from '../family/model/family-member.model';
       User, 
       UserProfile,
       FamilyMember,
+      FamilyLink,
     ]),
     NotificationModule,
     BlockingModule,

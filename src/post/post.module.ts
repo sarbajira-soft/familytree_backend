@@ -10,6 +10,7 @@ import { PostComment } from './model/post-comment.model';
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { FamilyMember } from '../family/model/family-member.model';
+import { FamilyLink } from '../family/model/family-link.model';
 import { NotificationModule } from '../notification/notification.module';
 import { UploadModule } from '../uploads/upload.module';
 import { BlockingModule } from '../blocking/blocking.module';
@@ -23,6 +24,7 @@ import { BlockingModule } from '../blocking/blocking.module';
       User,
       UserProfile,
       FamilyMember,
+      FamilyLink,
     ]),
     NotificationModule,
     UploadModule,

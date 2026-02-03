@@ -8,6 +8,8 @@ import { FamilyMemberService } from './family-member.service';
 import { Family } from './model/family.model';
 import { FamilyMember } from './model/family-member.model';
 import { FamilyTree } from './model/family-tree.model';
+import { FamilyLink } from './model/family-link.model';
+import { TreeLink } from './model/tree-link.model';
 import { UserRelationship } from './model/user-relationship.model';
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
@@ -27,6 +29,8 @@ import { UserModule } from '../user/user.module';
       FamilyMember,
       UserProfile,
       FamilyTree,
+      FamilyLink,
+      TreeLink,
       UserRelationship,
     ]),
     forwardRef(() => NotificationModule),

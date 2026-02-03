@@ -11,10 +11,11 @@ import { NotificationModule } from '../notification/notification.module';
 import { EventImage } from './model/event-image.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { BlockingModule } from '../blocking/blocking.module';
+import { FamilyLink } from '../family/model/family-link.model';
  
 @Module({
   imports: [
-    SequelizeModule.forFeature([Event, User, UserProfile, EventImage, FamilyMember]),
+    SequelizeModule.forFeature([Event, User, UserProfile, EventImage, FamilyMember, FamilyLink]),
     NotificationModule, // Import NotificationModule to use NotificationService
     BlockingModule,
     JwtModule.register({

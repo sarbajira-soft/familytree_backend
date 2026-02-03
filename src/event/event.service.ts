@@ -17,6 +17,7 @@ import { FamilyMember } from '../family/model/family-member.model';
 import { UploadService } from '../uploads/upload.service';
 import { EventGateway } from './event.gateway';
 import { BlockingService } from '../blocking/blocking.service';
+import { FamilyLink } from '../family/model/family-link.model';
  
 @Injectable()
 export class EventService {
@@ -35,6 +36,9 @@ export class EventService {
 
     @InjectModel(FamilyMember)
     private readonly familyMemberModel: typeof FamilyMember,
+
+    @InjectModel(FamilyLink)
+    private readonly familyLinkModel: typeof FamilyLink,
 
     private readonly notificationService: NotificationService,
     private readonly eventGateway: EventGateway,
@@ -68,6 +72,63 @@ export class EventService {
 
     if ((membership as any).isBlocked) {
       throw new ForbiddenException('You have been blocked from this family');
+    }
+  }
+
+  private async getAccessibleFamilyCodesForUser(userId: number): Promise<string[]> {
+    if (!userId) {
+      return [];
+    }
+
+    const memberships = await this.familyMemberModel.findAll({
+      where: { memberId: userId, approveStatus: 'approved' } as any,
+      attributes: ['familyCode', 'isBlocked'],
+    });
+
+    const base = Array.from(
+      new Set(
+        (memberships as any[])
+          .filter((m: any) => !!(m as any).familyCode && !(m as any).isBlocked)
+          .map((m: any) => String((m as any).familyCode)),
+      ),
+    );
+
+    if (base.length === 0) {
+      return [];
+    }
+
+    const links = await this.familyLinkModel.findAll({
+      where: {
+        status: 'active',
+        [Op.or]: [
+          { familyCodeLow: { [Op.in]: base } },
+          { familyCodeHigh: { [Op.in]: base } },
+        ],
+      } as any,
+      attributes: ['familyCodeLow', 'familyCodeHigh'],
+    });
+
+    const candidate = new Set<string>(base);
+    for (const l of links as any[]) {
+      const low = String((l as any).familyCodeLow);
+      const high = String((l as any).familyCodeHigh);
+      if (base.includes(low)) candidate.add(high);
+      if (base.includes(high)) candidate.add(low);
+    }
+
+    return Array.from(candidate);
+  }
+
+  private async assertUserCanAccessFamilyOrLinked(
+    userId: number,
+    familyCode: string,
+  ): Promise<void> {
+    if (!userId || !familyCode) {
+      throw new ForbiddenException('Not allowed to access this family content');
+    }
+    const accessible = await this.getAccessibleFamilyCodesForUser(userId);
+    if (!accessible.includes(String(familyCode))) {
+      throw new ForbiddenException('Not allowed to access this family content');
     }
   }
 
@@ -194,33 +255,20 @@ export class EventService {
   async getAll(userId?: number) {
     let events;
     if (userId) {
-      // Get user's family code from familymembers table with approved status
-      const familyMember = await this.familyMemberModel.findOne({
-        where: {
-          memberId: userId,
-          approveStatus: 'approved',
-        },
-      });
-      if (familyMember && familyMember.familyCode) {
-        if ((familyMember as any).isBlocked) {
-          throw new ForbiddenException('You have been blocked from this family');
-        }
-
-        const blockedUserIds = await this.blockingService.getBlockedUserIdsForUser(
-          userId,
-        );
-
-        events = await this.eventModel.findAll({ 
+      const accessibleFamilyCodes = await this.getAccessibleFamilyCodesForUser(userId);
+      if (accessibleFamilyCodes.length === 0) {
+        events = [];
+      } else {
+        const blockedUserIds = await this.blockingService.getBlockedUserIdsForUser(userId);
+        events = await this.eventModel.findAll({
           where: {
-            familyCode: familyMember.familyCode,
+            familyCode: { [Op.in]: accessibleFamilyCodes },
             ...(blockedUserIds.length > 0
               ? { createdBy: { [Op.notIn]: blockedUserIds } }
               : {}),
           },
           include: [EventImage],
         });
-      } else {
-        events = [];
       }
     } else {
       events = await this.eventModel.findAll({ include: [EventImage] });
@@ -282,7 +330,7 @@ export class EventService {
     if (!event) throw new NotFoundException('Event not found');
 
     if (requestingUserId && event.familyCode) {
-      await this.assertUserCanAccessFamilyContent(requestingUserId, event.familyCode);
+      await this.assertUserCanAccessFamilyOrLinked(requestingUserId, event.familyCode);
       const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
         requestingUserId,
         event.createdBy,
@@ -560,26 +608,14 @@ export class EventService {
     let events = [];
 
     if (userId) {
-      const familyMember = await this.familyMemberModel.findOne({
-        where: {
-          memberId: userId,
-          approveStatus: 'approved',
-        },
-      });
-      if (familyMember && familyMember.familyCode) {
-        if ((familyMember as any).isBlocked) {
-          throw new ForbiddenException('You have been blocked from this family');
-        }
-
-        const blockedUserIds = await this.blockingService.getBlockedUserIdsForUser(
-          userId,
-        );
-
+      const accessibleFamilyCodes = await this.getAccessibleFamilyCodesForUser(userId);
+      if (accessibleFamilyCodes.length > 0) {
+        const blockedUserIds = await this.blockingService.getBlockedUserIdsForUser(userId);
         events = await this.eventModel.findAll({
           where: {
             eventDate: { [Op.gt]: today },
             status: 1,
-            familyCode: familyMember.familyCode,
+            familyCode: { [Op.in]: accessibleFamilyCodes },
             ...(blockedUserIds.length > 0
               ? { createdBy: { [Op.notIn]: blockedUserIds } }
               : {}),
@@ -616,24 +652,8 @@ export class EventService {
     const currentYear = today.getFullYear();
     const nextYear = currentYear + 1;
     
-    let familyCode = null;
-
-    if (userId) {
-      const familyMember = await this.familyMemberModel.findOne({
-        where: {
-          memberId: userId,
-          approveStatus: 'approved',
-        },
-      });
-      if (familyMember && familyMember.familyCode) {
-        if ((familyMember as any).isBlocked) {
-          throw new ForbiddenException('You have been blocked from this family');
-        }
-        familyCode = familyMember.familyCode;
-      }
-    }
-
-    if (!familyCode) {
+    const familyCodes = userId ? await this.getAccessibleFamilyCodesForUser(userId) : [];
+    if (!familyCodes || familyCodes.length === 0) {
       return [];
     }
 
@@ -649,10 +669,10 @@ export class EventService {
         up."dob"
       FROM ft_family_members fm
       INNER JOIN ft_user_profile up ON fm."memberId" = up."userId"
-      WHERE fm."familyCode" = :familyCode
+      WHERE fm."familyCode" IN (:familyCodes)
       AND fm."approveStatus" = 'approved'
     `, {
-      replacements: { familyCode },
+      replacements: { familyCodes },
       type: QueryTypes.SELECT
     });
 
@@ -693,7 +713,7 @@ export class EventService {
             eventDate: eventDateString,
             eventTime: null,
             location: null,
-            familyCode: familyCode,
+            familyCode: member.familyCode,
             createdBy: member.memberId,
             status: 1,
             eventType: 'birthday',
@@ -719,21 +739,8 @@ export class EventService {
     const currentYear = today.getFullYear();
     const nextYear = currentYear + 1;
     
-    let familyCode = null;
-
-    if (userId) {
-      const familyMember = await this.familyMemberModel.findOne({ 
-        where: { 
-          memberId: userId,
-          approveStatus: 'approved'
-        } 
-      });
-      if (familyMember && familyMember.familyCode) {
-        familyCode = familyMember.familyCode;
-      }
-    }
-
-    if (!familyCode) {
+    const familyCodes = userId ? await this.getAccessibleFamilyCodesForUser(userId) : [];
+    if (!familyCodes || familyCodes.length === 0) {
       return [];
     }
 
@@ -750,10 +757,10 @@ export class EventService {
         up."spouseName"
       FROM ft_family_members fm
       INNER JOIN ft_user_profile up ON fm."memberId" = up."userId"
-      WHERE fm."familyCode" = :familyCode
+      WHERE fm."familyCode" IN (:familyCodes)
       AND fm."approveStatus" = 'approved'
     `, {
-      replacements: { familyCode },
+      replacements: { familyCodes },
       type: QueryTypes.SELECT
     });
 
@@ -795,7 +802,7 @@ export class EventService {
             eventDate: eventDateString,
             eventTime: null,
             location: null,
-            familyCode: familyCode,
+            familyCode: member.familyCode,
             createdBy: member.memberId,
             status: 1,
             eventType: 'anniversary',

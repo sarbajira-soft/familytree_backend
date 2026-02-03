@@ -15,6 +15,9 @@ import { UserProfile } from '../user/model/user-profile.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { Notification } from './model/notification.model';
 import { NotificationRecipient } from './model/notification-recipients.model';
+import { FamilyLink } from '../family/model/family-link.model';
+import { TreeLinkRequest } from '../family/model/tree-link-request.model';
+import { TreeLink } from '../family/model/tree-link.model';
 import { FamilyModule } from '../family/family.module';
 import { UserModule } from '../user/user.module';
 import { BlockingModule } from '../blocking/blocking.module';
@@ -27,6 +30,9 @@ import { BlockingModule } from '../blocking/blocking.module';
       User,
       UserProfile,
       FamilyMember,
+      FamilyLink,
+      TreeLinkRequest,
+      TreeLink,
     ]),
     ScheduleModule.forRoot(),
     JwtModule.registerAsync({

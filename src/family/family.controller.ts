@@ -175,7 +175,8 @@ export class FamilyController {
       // List of possible fields
       const fields = [
         'id', 'name', 'gender', 'age', 'generation', 'birthOrder', 'memberId',
-        'parents', 'children', 'spouses', 'siblings', 'img', 'lifeStatus'
+        'parents', 'children', 'spouses', 'siblings', 'img', 'lifeStatus',
+        'nodeUid', 'isExternalLinked', 'canonicalFamilyCode', 'canonicalNodeUid'
       ];
       for (const field of fields) {
         const key = prefix + field;
@@ -210,6 +211,14 @@ export class FamilyController {
           person[numField] = null;
         }
       });
+
+      // Convert boolean fields
+      if (person.isExternalLinked !== null && person.isExternalLinked !== undefined && person.isExternalLinked !== '') {
+        const raw = String(person.isExternalLinked).trim().toLowerCase();
+        person.isExternalLinked = raw === 'true' || raw === '1' || raw === 'yes';
+      } else {
+        person.isExternalLinked = false;
+      }
       people.push(person);
     }
 
@@ -234,6 +243,15 @@ export class FamilyController {
   async getFamilyTree(@Param('familyCode') familyCode: string, @Req() req) {
     const userId = req.user?.userId;
     return this.familyService.getFamilyTree(familyCode, userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('linked-families')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get linked families for the logged-in user (Link Family Tree)' })
+  async getLinkedFamilies(@Req() req) {
+    const userId = req.user?.userId;
+    return this.familyService.getLinkedFamiliesForCurrentUser(userId);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -485,6 +503,129 @@ export class FamilyController {
     }
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Post('request-tree-link')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Request a cross-family tree link by nodeUid (parent/child/sibling)' })
+  @HttpCode(HttpStatus.CREATED)
+  async requestTreeLink(
+    @Req() req,
+    @Body()
+    body: {
+      senderNodeUid: string;
+      receiverFamilyCode: string;
+      receiverNodeUid: string;
+      relationshipType: 'parent' | 'child' | 'sibling';
+      parentRole?: 'father' | 'mother';
+    },
+  ) {
+    const requesterUserId: number = req.user?.userId;
+    const senderNodeUid = String(body?.senderNodeUid || '').trim();
+    const receiverFamilyCode = String(body?.receiverFamilyCode || '').trim();
+    const receiverNodeUid = String(body?.receiverNodeUid || '').trim();
+    const relationshipType = body?.relationshipType;
+    const parentRole = body?.parentRole;
+
+    if (!requesterUserId) {
+      throw new ForbiddenException('Unauthorized: missing user context');
+    }
+    if (!senderNodeUid || !receiverFamilyCode || !receiverNodeUid || !relationshipType) {
+      throw new BadRequestException('Missing senderNodeUid, receiverFamilyCode, receiverNodeUid, or relationshipType');
+    }
+
+    return this.notificationService.createTreeLinkRequestNotification({
+      requesterUserId,
+      senderNodeUid,
+      receiverFamilyCode,
+      receiverNodeUid,
+      relationshipType,
+      parentRole,
+    } as any);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('unlink-tree-link')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Unlink (remove) an external-linked card from this family tree' })
+  @HttpCode(HttpStatus.OK)
+  async unlinkTreeLink(
+    @Req() req,
+    @Body()
+    body: {
+      familyCode: string;
+      nodeUid: string;
+    },
+  ) {
+    const actingUserId: number = req.user?.userId;
+    const familyCode = String(body?.familyCode || '').trim();
+    const nodeUid = String(body?.nodeUid || '').trim();
+
+    if (!actingUserId) {
+      throw new ForbiddenException('Unauthorized: missing user context');
+    }
+    if (!familyCode || !nodeUid) {
+      throw new BadRequestException('familyCode and nodeUid are required');
+    }
+
+    return this.familyService.unlinkTreeLinkExternalCard({
+      actingUserId,
+      familyCode,
+      nodeUid,
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('tree/repair')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Repair/normalize a family tree (admin only)' })
+  @HttpCode(HttpStatus.OK)
+  async repairTree(
+    @Req() req,
+    @Body()
+    body: {
+      familyCode: string;
+      fixExternalGenerations?: boolean;
+    },
+  ) {
+    const actingUserId: number = req.user?.userId;
+    const familyCode = String(body?.familyCode || '').trim();
+    const fixExternalGenerations = body?.fixExternalGenerations;
+
+    return this.familyService.repairFamilyTree({
+      actingUserId,
+      familyCode,
+      fixExternalGenerations,
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('unlink-linked-family')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Unlink (remove) a linked-family connection' })
+  @HttpCode(HttpStatus.OK)
+  async unlinkLinkedFamily(
+    @Req() req,
+    @Body()
+    body: {
+      otherFamilyCode: string;
+    },
+  ) {
+    const actingUserId: number = req.user?.userId;
+    const otherFamilyCode = String(body?.otherFamilyCode || '').trim();
+
+    if (!actingUserId) {
+      throw new ForbiddenException('Unauthorized: missing user context');
+    }
+    if (!otherFamilyCode) {
+      throw new BadRequestException('otherFamilyCode is required');
+    }
+
+    return this.familyService.unlinkLinkedFamily({
+      actingUserId,
+      otherFamilyCode,
+    });
+  }
+
   // ==================== NEW ASSOCIATION ENDPOINTS (TODO: Implement service methods) ====================
   
   // TODO: Implement these endpoints after creating the service methods
@@ -494,4 +635,5 @@ export class FamilyController {
   //   const requesterId = req.user.userId;
   //   return this.familyService.sendAssociationRequest(requesterId, dto.targetUserId, dto.message);
   // }
-}
+
+ }

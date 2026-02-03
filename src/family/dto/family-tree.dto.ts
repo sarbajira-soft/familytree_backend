@@ -5,6 +5,21 @@ export class FamilyTreeMemberDto {
   @IsNumber()
   id: number;
 
+  @IsOptional()
+  @IsString()
+  nodeUid?: string;
+
+  @IsOptional()
+  isExternalLinked?: boolean;
+
+  @IsOptional()
+  @IsString()
+  canonicalFamilyCode?: string;
+
+  @IsOptional()
+  @IsString()
+  canonicalNodeUid?: string;
+
   @IsString()
   name: string;
 

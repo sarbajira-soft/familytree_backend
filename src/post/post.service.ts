@@ -23,6 +23,7 @@ import { BaseCommentService } from '../common/services/base-comment.service';
 import { NotificationGateway } from 'src/notification/notification.gateway';
 import { BlockingService } from '../blocking/blocking.service';
 import { FamilyMember } from '../family/model/family-member.model';
+import { FamilyLink } from '../family/model/family-link.model';
 
 @Injectable()
 export class PostService {
@@ -42,6 +43,9 @@ export class PostService {
 
     @InjectModel(FamilyMember)
     private readonly familyMemberModel: typeof FamilyMember,
+
+    @InjectModel(FamilyLink)
+    private readonly familyLinkModel: typeof FamilyLink,
 
     private readonly notificationService: NotificationService,
     private readonly notificationGateway: NotificationGateway,
@@ -67,6 +71,64 @@ export class PostService {
 
     if ((membership as any).isBlocked) {
       throw new ForbiddenException('You have been blocked from this family');
+    }
+  }
+
+  private async getAccessibleFamilyCodesForUser(userId: number): Promise<string[]> {
+    if (!userId) {
+      return [];
+    }
+
+    const memberships = await this.familyMemberModel.findAll({
+      where: { memberId: userId, approveStatus: 'approved' } as any,
+      attributes: ['familyCode', 'isBlocked'],
+    });
+
+    const base = Array.from(
+      new Set(
+        (memberships as any[])
+          .filter((m: any) => !!(m as any).familyCode && !(m as any).isBlocked)
+          .map((m: any) => String((m as any).familyCode)),
+      ),
+    );
+
+    if (base.length === 0) {
+      return [];
+    }
+
+    const links = await this.familyLinkModel.findAll({
+      where: {
+        status: 'active',
+        [Op.or]: [
+          { familyCodeLow: { [Op.in]: base } },
+          { familyCodeHigh: { [Op.in]: base } },
+        ],
+      } as any,
+      attributes: ['familyCodeLow', 'familyCodeHigh'],
+    });
+
+    const candidate = new Set<string>(base);
+    for (const l of links as any[]) {
+      const low = String((l as any).familyCodeLow);
+      const high = String((l as any).familyCodeHigh);
+      if (base.includes(low)) candidate.add(high);
+      if (base.includes(high)) candidate.add(low);
+    }
+
+    return Array.from(candidate);
+  }
+
+  private async assertUserCanAccessFamilyOrLinked(
+    userId: number,
+    familyCode: string,
+  ): Promise<void> {
+    if (!userId || !familyCode) {
+      throw new ForbiddenException('Not allowed to access this family content');
+    }
+
+    const accessible = await this.getAccessibleFamilyCodesForUser(userId);
+    if (!accessible.includes(String(familyCode))) {
+      throw new ForbiddenException('Not allowed to access this family content');
     }
   }
 
@@ -411,7 +473,7 @@ export class PostService {
         );
       }
 
-      await this.assertUserCanAccessFamilyContent(userId, familyCode);
+      await this.assertUserCanAccessFamilyOrLinked(userId, familyCode);
 
       whereClause.privacy = privacy;
       whereClause.familyCode = familyCode;
@@ -527,7 +589,7 @@ export class PostService {
 
     // Admin family-block: deny interactions on family/private posts if blocked
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
-      await this.assertUserCanAccessFamilyContent(userId, post.familyCode);
+      await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
     }
 
     const existingLike = await this.postLikeModel.findOne({
@@ -617,7 +679,7 @@ export class PostService {
 
     // Admin family-block: deny interactions on family/private posts if blocked
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
-      await this.assertUserCanAccessFamilyContent(userId, post.familyCode);
+      await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
     }
 
     const postOwnerId = post.createdBy;
@@ -720,7 +782,7 @@ export class PostService {
       if (!requestingUserId) {
         throw new ForbiddenException('Not allowed to view this post');
       }
-      await this.assertUserCanAccessFamilyContent(requestingUserId, post.familyCode);
+      await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
     }
 
     const postJson = post.toJSON() as any;
@@ -753,7 +815,7 @@ export class PostService {
       post.familyCode &&
       (post.privacy === 'private' || post.privacy === 'family')
     ) {
-      await this.assertUserCanAccessFamilyContent(
+      await this.assertUserCanAccessFamilyOrLinked(
         requestingUserId,
         post.familyCode,
       );
@@ -915,7 +977,7 @@ export class PostService {
       throw new NotFoundException('Post not found');
     }
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
-      await this.assertUserCanAccessFamilyContent(userId, post.familyCode);
+      await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
     }
 
     const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
@@ -975,7 +1037,7 @@ export class PostService {
       throw new NotFoundException('Post not found');
     }
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
-      await this.assertUserCanAccessFamilyContent(userId, post.familyCode);
+      await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
     }
 
     const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
@@ -1007,7 +1069,7 @@ export class PostService {
       throw new NotFoundException('Post not found');
     }
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
-      await this.assertUserCanAccessFamilyContent(userId, post.familyCode);
+      await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
     }
 
     const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(

@@ -22,6 +22,7 @@ import { UploadService } from '../uploads/upload.service';
 import { BaseCommentService } from '../common/services/base-comment.service';
 import { FamilyMember } from '../family/model/family-member.model';
 import { BlockingService } from '../blocking/blocking.service';
+import { FamilyLink } from '../family/model/family-link.model';
 
 @Injectable()
 export class GalleryService {
@@ -41,6 +42,9 @@ export class GalleryService {
 
     @InjectModel(FamilyMember)
     private readonly familyMemberModel: typeof FamilyMember,
+
+    @InjectModel(FamilyLink)
+    private readonly familyLinkModel: typeof FamilyLink,
 
     private readonly notificationService: NotificationService,
     private readonly uploadService: UploadService,
@@ -65,6 +69,64 @@ export class GalleryService {
 
     if ((membership as any).isBlocked) {
       throw new ForbiddenException('You have been blocked from this family');
+    }
+  }
+
+  private async getAccessibleFamilyCodesForUser(userId: number): Promise<string[]> {
+    if (!userId) {
+      return [];
+    }
+
+    const memberships = await this.familyMemberModel.findAll({
+      where: { memberId: userId, approveStatus: 'approved' } as any,
+      attributes: ['familyCode', 'isBlocked'],
+    });
+
+    const base = Array.from(
+      new Set(
+        (memberships as any[])
+          .filter((m: any) => !!(m as any).familyCode && !(m as any).isBlocked)
+          .map((m: any) => String((m as any).familyCode)),
+      ),
+    );
+
+    if (base.length === 0) {
+      return [];
+    }
+
+    const links = await this.familyLinkModel.findAll({
+      where: {
+        status: 'active',
+        [Op.or]: [
+          { familyCodeLow: { [Op.in]: base } },
+          { familyCodeHigh: { [Op.in]: base } },
+        ],
+      } as any,
+      attributes: ['familyCodeLow', 'familyCodeHigh'],
+    });
+
+    const candidate = new Set<string>(base);
+    for (const l of links as any[]) {
+      const low = String((l as any).familyCodeLow);
+      const high = String((l as any).familyCodeHigh);
+      if (base.includes(low)) candidate.add(high);
+      if (base.includes(high)) candidate.add(low);
+    }
+
+    return Array.from(candidate);
+  }
+
+  private async assertUserCanAccessFamilyOrLinked(
+    userId: number,
+    familyCode: string,
+  ): Promise<void> {
+    if (!userId || !familyCode) {
+      throw new ForbiddenException('Not allowed to access this family content');
+    }
+
+    const accessible = await this.getAccessibleFamilyCodesForUser(userId);
+    if (!accessible.includes(String(familyCode))) {
+      throw new ForbiddenException('Not allowed to access this family content');
     }
   }
 
@@ -376,7 +438,7 @@ export class GalleryService {
         if (!familyCode) {
           throw new BadRequestException('familyCode is required for private privacy');
         }
-        await this.assertUserCanAccessFamilyContent(userId, familyCode);
+        await this.assertUserCanAccessFamilyOrLinked(userId, familyCode);
         whereClause.privacy = privacy;
         whereClause.familyCode = familyCode;
       } else if (privacy === 'public') {
@@ -486,7 +548,7 @@ export class GalleryService {
     }
 
     if (gallery.familyCode && gallery.privacy === 'private') {
-      await this.assertUserCanAccessFamilyContent(userId, gallery.familyCode);
+      await this.assertUserCanAccessFamilyOrLinked(userId, gallery.familyCode);
     }
 
     const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
@@ -533,7 +595,7 @@ export class GalleryService {
     }
 
     if (gallery.familyCode && gallery.privacy === 'private') {
-      await this.assertUserCanAccessFamilyContent(userId, gallery.familyCode);
+      await this.assertUserCanAccessFamilyOrLinked(userId, gallery.familyCode);
     }
 
     const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
@@ -949,7 +1011,7 @@ export class GalleryService {
       if (!userId) {
         throw new ForbiddenException('Not allowed to view this gallery');
       }
-      await this.assertUserCanAccessFamilyContent(userId, gallery.familyCode);
+      await this.assertUserCanAccessFamilyOrLinked(userId, gallery.familyCode);
     }
 
     if (userId) {

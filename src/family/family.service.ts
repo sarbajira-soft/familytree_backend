@@ -1772,13 +1772,27 @@ export class FamilyService {
     // 🚀 STEP 3: Process all members with user IDs now available
     for (let memberIndex = 0; memberIndex < members.length; memberIndex++) {
       const member = members[memberIndex];
-      const isExternalLinked = !!(member as any).isExternalLinked;
       let userId = member.memberId; // Use memberId as userId
 
       // Check if this member got a new user created
       const newUserIndex = newUserIndexMap.get(memberIndex);
       if (newUserIndex !== undefined) {
         userId = createdUsers[newUserIndex].id;
+      }
+
+      // 🚀 PERFORMANCE: Check if entry exists using Map (O(1) lookup)
+      const existingEntry =
+        ((member as any).nodeUid
+          ? existingEntriesByNodeUid.get(String((member as any).nodeUid))
+          : null) || existingEntriesByPersonId.get(member.id);
+
+      // IMPORTANT: Preserve external-linked cards even if the client payload omits isExternalLinked.
+      // External cards must only be removed via the dedicated unlink endpoint.
+      const isExternalLinked =
+        !!(member as any).isExternalLinked || !!(existingEntry as any)?.isExternalLinked;
+
+      if (!!(existingEntry as any)?.isExternalLinked && !(member as any).isExternalLinked) {
+        (member as any).isExternalLinked = true;
       }
 
       // 🚀 PERFORMANCE: Use Map lookup instead of database query
@@ -1881,20 +1895,18 @@ export class FamilyService {
         });
       }
 
-      // 🚀 PERFORMANCE: Check if entry exists using Map (O(1) lookup)
-      const existingEntry =
-        ((member as any).nodeUid
-          ? existingEntriesByNodeUid.get(String((member as any).nodeUid))
-          : null) || existingEntriesByPersonId.get(member.id);
-
       const entryData = {
         familyCode,
         userId,
         personId: member.id,
         nodeUid: (member as any).nodeUid || (existingEntry as any)?.nodeUid,
         isExternalLinked: isExternalLinked,
-        canonicalFamilyCode: (member as any).canonicalFamilyCode || null,
-        canonicalNodeUid: (member as any).canonicalNodeUid || null,
+        canonicalFamilyCode: isExternalLinked
+          ? (member as any).canonicalFamilyCode || (existingEntry as any)?.canonicalFamilyCode || null
+          : null,
+        canonicalNodeUid: isExternalLinked
+          ? (member as any).canonicalNodeUid || (existingEntry as any)?.canonicalNodeUid || null
+          : null,
         generation: member.generation,
         lifeStatus: member.lifeStatus ?? 'living',
         parents: Array.isArray(member.parents)

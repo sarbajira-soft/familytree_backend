@@ -1,22 +1,35 @@
 import {
-  Controller,
-  Post,
-  Get,
   Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
   Param,
+  Post,
+  Put,
   Req,
   UploadedFiles,
   UseGuards,
   UseInterceptors,
-  HttpCode,
-  HttpStatus,
-  Delete,
-  Put,
 } from '@nestjs/common';
 import { FilesInterceptor } from '@nestjs/platform-express';
-import { diskStorage, memoryStorage } from 'multer';
-import * as fs from 'fs';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiConsumes,
+  ApiOperation,
+  ApiResponse,
+  ApiSecurity,
+  ApiTags,
+} from '@nestjs/swagger';
 import { Request } from 'express';
+import * as fs from 'node:fs';
+import { diskStorage, memoryStorage } from 'multer';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { EventService } from '../event/event.service';
+import { generateFileName, imageFileFilter } from '../utils/upload.utils';
+import { CreateEventDto, UpdateEventDto } from './dto/event.dto';
  
 declare global {
   namespace Express {
@@ -25,21 +38,6 @@ declare global {
     }
   }
 }
-import { EventService } from '../event/event.service';
-import { CreateEventDto, UpdateEventDto, CreateEventImageDto } from './dto/event.dto';
-import {
-  ApiBearerAuth,
-  ApiConsumes,
-  ApiOperation,
-  ApiResponse,
-  ApiTags,
-  ApiSecurity,
-  ApiBody,
-} from '@nestjs/swagger';
-import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { generateFileName, imageFileFilter } from '../utils/upload.utils';
-import { Op } from 'sequelize';
-import { EventImage } from './model/event-image.model';
 
 @ApiTags('Event Module')
 @Controller('event')

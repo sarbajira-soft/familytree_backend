@@ -160,11 +160,23 @@ export class UpdateProfileDto {
   @IsInt()
   religionId?: number;
 
+  @ApiPropertyOptional({ description: 'Other religion (free text)', example: 'Tribal' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  otherReligion?: string;
+
   @ApiPropertyOptional({ description: 'Language ID (refer to Language table)', example: 3 })
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   languageId?: number;
+
+  @ApiPropertyOptional({ description: 'Other language (free text)', example: 'Tulu' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  otherLanguage?: string;
 
   @ApiPropertyOptional({ description: 'Caste', example: 'Hindu' })
   @IsOptional()
@@ -180,6 +192,12 @@ export class UpdateProfileDto {
   @Type(() => Number)
   @IsInt()
   gothramId?: number;
+
+  @ApiPropertyOptional({ description: 'Other gothram (free text)', example: 'Bharadwaja' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  otherGothram?: string;
 
   @ApiPropertyOptional({ description: 'Family deity / Kuladevata', example: 'Murugan' })
   @IsOptional()

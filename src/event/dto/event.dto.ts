@@ -5,6 +5,8 @@ import {
   IsString,
   IsDateString,
   IsNumber,
+  MaxLength,
+  IsBoolean,
 } from 'class-validator';
 import { Type } from 'class-transformer';
  
@@ -23,6 +25,7 @@ export class CreateEventDto {
     description: 'Title of the event',
   })
   @IsString()
+  @MaxLength(50, { message: 'Event title must be at most 50 characters' })
   @IsNotEmpty()
   eventTitle: string;
 
@@ -92,6 +95,7 @@ export class UpdateEventDto {
   })
   @IsOptional()
   @IsString()
+  @MaxLength(50, { message: 'Event title must be at most 50 characters' })
   eventTitle?: string;
 
   @ApiPropertyOptional({
@@ -161,6 +165,15 @@ export class UpdateEventDto {
   @Type(() => Number)
   @IsNumber({}, { each: true, message: 'Each image ID must be a number' })
   imagesToRemove?: number[];
+
+  @ApiPropertyOptional({
+    description: 'Clear all existing images for the event',
+    example: true,
+  })
+  @IsOptional()
+  @Type(() => Boolean)
+  @IsBoolean({ message: 'clearImages must be a boolean value' })
+  clearImages?: boolean;
 }
 
 export class CreateEventImageDto {

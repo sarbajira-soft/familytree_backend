@@ -1,7 +1,6 @@
-import { extname } from 'path';
+import { extname, join } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { BadRequestException } from '@nestjs/common';
-import * as fs from 'fs';
-import * as path from 'path';
 
 export const generateFileName = (originalName: string): string => {
   const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1e9);
@@ -10,13 +9,11 @@ export const generateFileName = (originalName: string): string => {
 };
 
 export const imageFileFilter = (req, file, callback) => {
-  if (
-    file.mimetype.match(/^image\/(jpeg|png|jpg|gif|webp)$/)
-  ) {
+  if (file.mimetype.match(/^image\/(jpeg|png|jpg|gif)$/)) {
     callback(null, true);
   } else {
     return callback(
-      new BadRequestException('Only image files (jpeg, png, jpg, gif, webp) are allowed'),
+      new BadRequestException('Only image files (jpeg, png, jpg, gif) are allowed'),
       false,
     );
   }
@@ -30,8 +27,8 @@ export const saveBase64Image = async (base64Data: string, uploadPath: string): P
     }
 
     // Extract mime type and base64 data
-    const matches = base64Data.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-    if (!matches || matches.length !== 3) {
+    const matches = base64Data.match(/^data:([A-Za-z-+/]+);base64,(.+)$/);
+    if (matches?.length !== 3) {
       throw new Error('Invalid base64 image format');
     }
 
@@ -42,7 +39,6 @@ export const saveBase64Image = async (base64Data: string, uploadPath: string): P
     // Determine file extension
     let extension = '.jpg';
     if (mimeType.includes('png')) extension = '.png';
-    else if (mimeType.includes('jpeg')) extension = '.jpg';
     else if (mimeType.includes('gif')) extension = '.gif';
     else if (mimeType.includes('webp')) extension = '.webp';
 
@@ -50,13 +46,13 @@ export const saveBase64Image = async (base64Data: string, uploadPath: string): P
     const filename = generateFileName(`profile${extension}`);
 
     // Ensure upload directory exists
-    if (!fs.existsSync(uploadPath)) {
-      fs.mkdirSync(uploadPath, { recursive: true });
+    if (!existsSync(uploadPath)) {
+      mkdirSync(uploadPath, { recursive: true });
     }
 
     // Save file
-    const filePath = path.join(uploadPath, filename);
-    fs.writeFileSync(filePath, buffer);
+    const filePath = join(uploadPath, filename);
+    writeFileSync(filePath, buffer);
 
     return filename;
   } catch (error) {

@@ -56,14 +56,23 @@ export class UserProfile extends Model<UserProfile> {
   @Column(DataType.INTEGER)
   religionId: number;
 
+  @Column(DataType.STRING)
+  otherReligion: string;
+
   @Column(DataType.INTEGER)
   languageId: number;
+
+  @Column(DataType.STRING)
+  otherLanguage: string;
 
   @Column(DataType.STRING)
   caste: string;
 
   @Column(DataType.INTEGER)
   gothramId: number;
+
+  @Column(DataType.STRING)
+  otherGothram: string;
 
   @Column(DataType.STRING)
   kuladevata: string;

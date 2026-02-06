@@ -1,5 +1,5 @@
 
-import { IsString, IsEmail, IsOptional, IsNotEmpty, IsDate, IsNumber } from 'class-validator';
+import { IsString, IsEmail, IsOptional, IsNotEmpty, IsNumber } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class CreateUserAndJoinFamilyDto {
@@ -81,9 +81,17 @@ export class CreateUserAndJoinFamilyDto {
   religionId?: number;
 
   @IsOptional()
+  @IsString()
+  otherReligion?: string;
+
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
   languageId?: number;
+
+  @IsOptional()
+  @IsString()
+  otherLanguage?: string;
 
   @IsOptional()
   @IsString()
@@ -93,6 +101,10 @@ export class CreateUserAndJoinFamilyDto {
   @Type(() => Number)
   @IsNumber()
   gothramId?: number;
+
+  @IsOptional()
+  @IsString()
+  otherGothram?: string;
 
   @IsOptional()
   @IsString()

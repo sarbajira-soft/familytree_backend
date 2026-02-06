@@ -6,13 +6,12 @@ import {
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
-import * as fs from 'fs';
-import * as path from 'path';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 
 import { Post } from './model/post.model';
 import { PostLike } from './model/post-like.model';
 import { PostComment } from './model/post-comment.model';
-import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { CreatePostDto } from './dto/createpost.dto';
 import { EditPostDto } from './dto/edit-post.dto';
@@ -24,6 +23,9 @@ import { NotificationGateway } from 'src/notification/notification.gateway';
 import { BlockingService } from '../blocking/blocking.service';
 import { FamilyMember } from '../family/model/family-member.model';
 import { FamilyLink } from '../family/model/family-link.model';
+
+type PostWithProfile = Post & { userProfile?: UserProfile };
+type PostCommentWithProfile = PostComment & { userProfile?: UserProfile };
 
 @Injectable()
 export class PostService {
@@ -38,8 +40,6 @@ export class PostService {
     private readonly postCommentModel: typeof PostComment,
     @InjectModel(UserProfile)
     private readonly userProfileModel: typeof UserProfile,
-    @InjectModel(User)
-    private readonly userModel: typeof User,
 
     @InjectModel(FamilyMember)
     private readonly familyMemberModel: typeof FamilyMember,
@@ -60,16 +60,15 @@ export class PostService {
     if (!userId || !familyCode) {
       throw new ForbiddenException('Not allowed to access this family content');
     }
-
     const membership = await this.familyMemberModel.findOne({
       where: { memberId: userId, familyCode },
     });
 
-    if (!membership || (membership as any).approveStatus !== 'approved') {
+    if (membership?.approveStatus !== 'approved') {
       throw new ForbiddenException('Not allowed to access this family content');
     }
 
-    if ((membership as any).isBlocked) {
+    if (membership?.isBlocked) {
       throw new ForbiddenException('You have been blocked from this family');
     }
   }
@@ -80,15 +79,15 @@ export class PostService {
     }
 
     const memberships = await this.familyMemberModel.findAll({
-      where: { memberId: userId, approveStatus: 'approved' } as any,
+      where: { memberId: userId, approveStatus: 'approved' },
       attributes: ['familyCode', 'isBlocked'],
     });
 
     const base = Array.from(
       new Set(
-        (memberships as any[])
-          .filter((m: any) => !!(m as any).familyCode && !(m as any).isBlocked)
-          .map((m: any) => String((m as any).familyCode)),
+        memberships
+          .filter((member) => !!member.familyCode && !member.isBlocked)
+          .map((member) => String(member.familyCode)),
       ),
     );
 
@@ -103,14 +102,14 @@ export class PostService {
           { familyCodeLow: { [Op.in]: base } },
           { familyCodeHigh: { [Op.in]: base } },
         ],
-      } as any,
+      },
       attributes: ['familyCodeLow', 'familyCodeHigh'],
     });
 
     const candidate = new Set<string>(base);
-    for (const l of links as any[]) {
-      const low = String((l as any).familyCodeLow);
-      const high = String((l as any).familyCodeHigh);
+    for (const link of links) {
+      const low = String(link.familyCodeLow);
+      const high = String(link.familyCodeHigh);
       if (base.includes(low)) candidate.add(high);
       if (base.includes(high)) candidate.add(low);
     }
@@ -132,82 +131,230 @@ export class PostService {
     }
   }
 
-  private getPostImageUrl(filename: string | null): string | null {
+  private getPostMediaUrl(filename: string | null): string | null {
     if (!filename) return null;
 
-    // If the filename is already a full URL, return it as is
     if (filename.startsWith('http://') || filename.startsWith('https://')) {
       return filename;
     }
 
-    // If S3 is configured, construct S3 URL
     if (process.env.S3_BUCKET_NAME && process.env.REGION) {
       return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/posts/${filename}`;
     }
 
-    // Fallback to local URL
     const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
     return `${baseUrl}/uploads/posts/${filename}`;
+  }
+
+  private getPostImageUrl(filename: string | null): string | null {
+    return this.getPostMediaUrl(filename);
   }
 
   private getPostVideoUrl(filename: string | null): string | null {
     if (!filename) return null;
+    return this.getPostMediaUrl(filename);
+  }
 
-    // If the filename is already a full URL, return it as is
-    if (filename.startsWith('http://') || filename.startsWith('https://')) {
-      return filename;
+  private extractFilenameFromUrl(value: string, label: string): string {
+    try {
+      const url = new URL(value);
+      return url.pathname.split('/').pop() || value;
+    } catch (error) {
+      console.error(`Error parsing ${label} URL:`, error);
+      return value;
+    }
+  }
+
+  private extractFilenameFromPath(value: string): string {
+    return value.split('/').pop() || value;
+  }
+
+  private normalizePostImageInput(postImage?: string | null): string | null {
+    if (!postImage) return null;
+    return postImage.startsWith('http')
+      ? this.extractFilenameFromUrl(postImage, 'image')
+      : postImage;
+  }
+
+  private normalizePostVideoInput(postVideo?: string | null): string | null {
+    if (!postVideo) return null;
+    if (postVideo.startsWith('http')) {
+      return this.extractFilenameFromUrl(postVideo, 'video');
+    }
+    return postVideo.includes('/')
+      ? this.extractFilenameFromPath(postVideo)
+      : postVideo;
+  }
+
+  private resolveCaption(
+    caption: string | undefined | null,
+    fallback: string | null,
+  ): { caption: string; hasCaption: boolean } {
+    if (caption === undefined) {
+      const resolved = fallback ?? '';
+      return { caption: resolved, hasCaption: resolved.length > 0 };
     }
 
-    // If S3 is configured, construct S3 URL
-    if (process.env.S3_BUCKET_NAME && process.env.REGION) {
-      return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/posts/${filename}`;
+    const trimmed = caption?.trim() ?? '';
+    return { caption: trimmed, hasCaption: trimmed.length > 0 };
+  }
+
+  private ensurePostHasContent(
+    hasCaption: boolean,
+    hasImage: boolean,
+    hasVideo: boolean,
+  ): void {
+    if (hasCaption || hasImage || hasVideo) {
+      return;
+    }
+    throw new BadRequestException('Either caption or image or video is required');
+  }
+
+  private async deletePostImageFile(imageFilename: string | null): Promise<void> {
+    if (!imageFilename) return;
+
+    try {
+      const uploadService = new UploadService();
+      const imageUrl = this.getPostImageUrl(imageFilename);
+
+      if (!imageUrl) return;
+
+      if (imageUrl.includes('amazonaws.com')) {
+        await uploadService.deleteFile(imageUrl);
+        return;
+      }
+
+      const uploadPath =
+        process.env.POST_PHOTO_UPLOAD_PATH || './uploads/posts';
+      const imagePath = path.join(uploadPath, path.basename(imageFilename));
+
+      if (fs.existsSync(imagePath)) {
+        fs.unlinkSync(imagePath);
+      }
+    } catch (error) {
+      console.error('Error deleting post image:', error);
+    }
+  }
+
+  private async deletePostVideoFile(videoFilename: string | null): Promise<void> {
+    if (!videoFilename) return;
+
+    try {
+      const uploadService = new UploadService();
+      const videoUrl = this.getPostVideoUrl(videoFilename);
+
+      if (videoUrl) {
+        await uploadService.deleteFile(videoUrl, 'posts');
+      }
+    } catch (error) {
+      console.error('Error deleting post video:', error);
+    }
+  }
+
+  private async resolvePostImageUpdate(
+    newImage: Express.Multer.File | string | undefined,
+    oldImage: string | null,
+  ): Promise<string | null> {
+    if (!newImage) return null;
+
+    await this.deletePostImageFile(oldImage);
+
+    if (typeof newImage === 'string') {
+      return this.normalizePostImageInput(newImage);
     }
 
-    // Fallback to local URL
-    const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
-    return `${baseUrl}/uploads/posts/${filename}`;
+    try {
+      const uploadService = new UploadService();
+      const imageUrl = await uploadService.uploadFile(newImage, 'posts');
+      return this.extractFilenameFromUrl(imageUrl, 'image');
+    } catch (error) {
+      console.error('Error uploading new image:', error);
+      throw new Error('Failed to upload new image');
+    }
+  }
+
+  private async resolvePostVideoUpdate(
+    postVideo: string | undefined,
+    oldVideo: string | null,
+  ): Promise<{ filename: string | null; isProvided: boolean }> {
+    if (postVideo === undefined) {
+      return { filename: null, isProvided: false };
+    }
+
+    const trimmed = postVideo.trim();
+    const filename = trimmed ? this.normalizePostVideoInput(trimmed) : null;
+
+    if (oldVideo && oldVideo !== filename) {
+      await this.deletePostVideoFile(oldVideo);
+    }
+
+    return { filename, isProvided: true };
+  }
+
+  private async notifyFamilyPostCreation(
+    dto: CreatePostDto,
+    post: Post,
+    createdBy: number,
+  ): Promise<void> {
+    if (
+      !dto.familyCode ||
+      !(dto.privacy === 'private' || dto.privacy === 'family')
+    ) {
+      return;
+    }
+
+    const memberIds = await this.notificationService.getAdminsForFamily(
+      dto.familyCode,
+    );
+
+    if (memberIds.length === 0) {
+      return;
+    }
+
+    await this.notificationService.createNotification(
+      {
+        type: 'FAMILY_POST_CREATED',
+        title: 'New Family Post',
+        message: 'A new post has been shared in the family feed.',
+        familyCode: dto.familyCode,
+        referenceId: post.id,
+        userIds: memberIds,
+      },
+      createdBy,
+    );
+  }
+
+  private broadcastNewPost(dto: CreatePostDto, post: Post, createdBy: number): void {
+    if (!dto.familyCode) {
+      return;
+    }
+
+    this.postGateway.broadcastNewPost(dto.familyCode, {
+      id: post.id,
+      caption: post.caption,
+      postImage: this.getPostImageUrl(post.postImage),
+      postVideo: this.getPostVideoUrl(post.postVideo),
+
+      privacy: post.privacy,
+      familyCode: post.familyCode,
+      status: post.status,
+      createdBy,
+      createdAt: post.createdAt,
+    });
   }
 
   async createPost(dto: CreatePostDto, createdBy: number) {
-    // Extract just the filename if it's a full URL
-    let postImage = dto.postImage;
-    if (postImage && postImage.startsWith('http')) {
-      try {
-        const url = new URL(postImage);
-        // Extract the filename from the path (remove the 'posts/' prefix if it exists)
-        postImage = url.pathname.split('/').pop() || null;
-      } catch (error) {
-        console.error('Error parsing image URL:', error);
-      }
-    }
+    const postImage = this.normalizePostImageInput(dto.postImage);
+    const postVideo = this.normalizePostVideoInput(dto.postVideo);
 
-    // Extract just the filename for video (supports full URL, key, or filename)
-    let postVideo: string | null = (dto as any).postVideo || null;
-    if (postVideo) {
-      if (postVideo.startsWith('http')) {
-        try {
-          const url = new URL(postVideo);
-          postVideo = url.pathname.split('/').pop() || null;
-        } catch (error) {
-          console.error('Error parsing video URL:', error);
-        }
-      } else if (postVideo.includes('/')) {
-        postVideo = postVideo.split('/').pop() || null;
-      }
-    }
-
-    // Normalize caption and enforce that at least caption or image or video is present
-    const rawCaption = dto.caption?.trim();
-    const hasCaption = !!rawCaption;
+    const { caption: captionToStore, hasCaption } = this.resolveCaption(
+      dto.caption,
+      '',
+    );
     const hasImage = !!postImage;
     const hasVideo = !!postVideo;
 
-    if (!hasCaption && !hasImage && !hasVideo) {
-      throw new BadRequestException('Either caption or image or video is required');
-    }
-
-    // DB column caption is NOT NULL, so store empty string when we only have an image
-    const captionToStore = hasCaption ? rawCaption : '';
+    this.ensurePostHasContent(hasCaption, hasImage, hasVideo);
 
     // Enforce admin family-block policy for family/private content
     if (dto.familyCode && (dto.privacy === 'private' || dto.privacy === 'family')) {
@@ -225,53 +372,18 @@ export class PostService {
       privacy: dto.privacy ?? 'public',
     });
 
-    // Step 2: Send notification only if familyCode exists (for private/family posts)
-    if (
-      dto.familyCode &&
-      (dto.privacy === 'private' || dto.privacy === 'family')
-    ) {
-      const memberIds = await this.notificationService.getAdminsForFamily(
-        dto.familyCode,
-      );
+    await this.notifyFamilyPostCreation(dto, post, createdBy);
+    this.broadcastNewPost(dto, post, createdBy);
 
-      if (memberIds.length > 0) {
-        await this.notificationService.createNotification(
-          {
-            type: 'FAMILY_POST_CREATED',
-            title: 'New Family Post',
-            message: `A new post has been shared in the family feed.`,
-            familyCode: dto.familyCode,
-            referenceId: post.id,
-            userIds: memberIds,
-          },
-          createdBy, // performedBy
-        );
-      }
-    }
-
-    // Step 3: Broadcast new post via WebSocket if familyCode exists
-    if (dto.familyCode) {
-      this.postGateway.broadcastNewPost(dto.familyCode, {
-        id: post.id,
-        caption: post.caption,
-        postImage: this.getPostImageUrl(post.postImage),
-        postVideo: this.getPostVideoUrl((post as any).postVideo),
-        privacy: post.privacy,
-        familyCode: post.familyCode,
-        status: post.status,
-        createdBy,
-        createdAt: post.createdAt,
-      });
-    }
-
-    // Step 4: Return post details
+    // Return post details
     return {
       message: 'Post created successfully',
       data: {
         id: post.id,
         caption: post.caption,
         postImage: post.postImage,
-        postVideo: (post as any).postVideo,
+        postVideo: post.postVideo,
+
         privacy: post.privacy,
         familyCode: post.familyCode,
         status: post.status,
@@ -292,128 +404,23 @@ export class PostService {
     if (!post) {
       throw new NotFoundException('Post not found or access denied.');
     }
+    const newImageFilename = await this.resolvePostImageUpdate(
+      newImage,
+      post.postImage,
+    );
+    const { filename: newVideoFilename, isProvided: isVideoProvided } =
+      await this.resolvePostVideoUpdate(dto.postVideo, post.postVideo);
 
-    const oldImage = post.postImage;
-    let newImageFilename: string | null = null;
-
-    const oldVideo = (post as any).postVideo as string | null;
-    let newVideoFilename: string | null = null;
-
-    // If new image is uploaded, process it
-    if (newImage) {
-      const uploadService = new UploadService();
-
-      // 1. Delete the old image if it exists
-      if (oldImage) {
-        try {
-          const oldImageUrl = this.getPostImageUrl(oldImage);
-          if (oldImageUrl) {
-            // Delete the old image from S3 or local storage
-            if (oldImageUrl.includes('amazonaws.com')) {
-              // Delete from S3
-              await uploadService.deleteFile(oldImageUrl);
-            } else {
-              // Local file deletion
-              const uploadPath =
-                process.env.POST_PHOTO_UPLOAD_PATH || './uploads/posts';
-              const imagePath = path.join(uploadPath, path.basename(oldImage));
-
-              if (fs.existsSync(imagePath)) {
-                fs.unlinkSync(imagePath);
-              }
-            }
-          }
-        } catch (error) {
-          console.error('Error deleting old image:', error);
-          // Continue with update even if old image deletion fails
-        }
-      }
-
-      // 2. Check if newImage is a file (Multer.File) or a string (URL)
-      if (typeof newImage !== 'string') {
-        try {
-          // 3. Upload the new image to S3 if it's a file
-          const imageUrl = await uploadService.uploadFile(newImage, 'posts');
-
-          // 4. Extract just the filename from the URL
-          try {
-            const url = new URL(imageUrl);
-            newImageFilename = url.pathname.split('/').pop() || null;
-          } catch (error) {
-            console.error('Error parsing image URL:', error);
-            // Fallback to storing the full URL if parsing fails
-            newImageFilename = imageUrl;
-          }
-        } catch (error) {
-          console.error('Error uploading new image:', error);
-          throw new Error('Failed to upload new image');
-        }
-      } else {
-        // If it's a string (URL), extract the filename
-        try {
-          const url = new URL(newImage);
-          newImageFilename = url.pathname.split('/').pop() || null;
-        } catch (e) {
-          // If it's not a valid URL, use as is
-          newImageFilename = newImage;
-        }
-      }
-    }
-
-    // If postVideo is provided in DTO, normalize it and optionally delete old video
-    if ((dto as any).postVideo !== undefined) {
-      const raw = ((dto as any).postVideo as string) || '';
-      const trimmed = raw.trim();
-
-      if (!trimmed) {
-        newVideoFilename = null;
-      } else if (trimmed.startsWith('http')) {
-        try {
-          const url = new URL(trimmed);
-          newVideoFilename = url.pathname.split('/').pop() || null;
-        } catch (error) {
-          console.error('Error parsing video URL:', error);
-          newVideoFilename = trimmed;
-        }
-      } else if (trimmed.includes('/')) {
-        newVideoFilename = trimmed.split('/').pop() || null;
-      } else {
-        newVideoFilename = trimmed;
-      }
-
-      // Delete the old video if it's being removed or replaced
-      if (oldVideo && oldVideo !== newVideoFilename) {
-        try {
-          const uploadService = new UploadService();
-          const oldVideoUrl = this.getPostVideoUrl(oldVideo);
-          if (oldVideoUrl) {
-            await uploadService.deleteFile(oldVideoUrl, 'posts');
-          }
-        } catch (error) {
-          console.error('Error deleting old video:', error);
-        }
-      }
-    }
-
-    // Work out the final caption and image values after this update
-    const finalPostImage = newImageFilename !== null ? newImageFilename : post.postImage;
-    const finalPostVideo = (dto as any).postVideo !== undefined ? newVideoFilename : (post as any).postVideo;
-
-    let finalCaption: string;
-    if (dto.caption !== undefined) {
-      const trimmed = dto.caption?.trim();
-      finalCaption = trimmed || '';
-    } else {
-      finalCaption = post.caption ?? '';
-    }
-
-    const hasCaption = !!finalCaption;
+    const finalPostImage = newImageFilename ?? post.postImage;
+    const finalPostVideo = isVideoProvided ? newVideoFilename : post.postVideo;
+    const { caption: finalCaption, hasCaption } = this.resolveCaption(
+      dto.caption,
+      post.caption ?? '',
+    );
     const hasImage = !!finalPostImage;
     const hasVideo = !!finalPostVideo;
 
-    if (!hasCaption && !hasImage && !hasVideo) {
-      throw new BadRequestException('Either caption or image or video is required');
-    }
+    this.ensurePostHasContent(hasCaption, hasImage, hasVideo);
 
     // Prepare update data using the normalized values
     const updateData: any = {
@@ -423,13 +430,12 @@ export class PostService {
       status: dto.status ?? post.status,
     };
 
-    // Only update postImage if we have a new image
     if (newImageFilename !== null) {
       updateData.postImage = newImageFilename;
     }
 
     // Only update postVideo if it was provided
-    if ((dto as any).postVideo !== undefined) {
+    if (isVideoProvided) {
       updateData.postVideo = newVideoFilename;
     }
 
@@ -438,19 +444,22 @@ export class PostService {
 
     // Get the updated post with the full image URL
     const updatedPost = await this.postModel.findByPk(postId);
-    const postJson = updatedPost?.toJSON() as any;
+    const postJson = updatedPost?.get({ plain: true }) as PostWithProfile;
+    const formattedPost = postJson
+      ? {
+          ...postJson,
+          postImage: this.getPostImageUrl(postJson.postImage),
+          postVideo: this.getPostVideoUrl(postJson.postVideo),
+        }
+      : null;
 
-    if (postJson) {
-      postJson.postImage = this.getPostImageUrl(postJson.postImage);
-      postJson.postVideo = this.getPostVideoUrl(postJson.postVideo);
+    if (formattedPost) {
+      this.postGateway.broadcastPostUpdate(postId, formattedPost);
     }
-
-    // Broadcast post update via WebSocket
-    this.postGateway.broadcastPostUpdate(postId, postJson);
 
     return {
       message: 'Post updated successfully',
-      data: postJson,
+      data: formattedPost,
     };
   }
 
@@ -502,8 +511,8 @@ export class PostService {
     // - If viewer is logged in: allow posts from non-private users, plus the viewer's own posts
     // - If viewer is not logged in: only allow non-private users
     const profileVisibilityWhere = userId
-      ? { [Op.or]: [{ isPrivate: false }, { userId }] }
-      : { isPrivate: false };
+      ? { [Op.or]: [{ isPrivate: false }, { isPrivate: null }, { userId }] }
+      : { [Op.or]: [{ isPrivate: false }, { isPrivate: null }] };
 
     const posts = await this.postModel.findAll({
       where: whereClause,
@@ -526,7 +535,7 @@ export class PostService {
 
     const formatted = await Promise.all(
       posts.map(async (post) => {
-        const postJson = post.toJSON() as any;
+        const postJson: PostWithProfile = post.get({ plain: true }) as PostWithProfile;
 
         // Get full image URL from filename
         const postImageUrl = this.getPostImageUrl(postJson.postImage);
@@ -785,7 +794,7 @@ export class PostService {
       await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
     }
 
-    const postJson = post.toJSON() as any;
+    const postJson: PostWithProfile = post.get({ plain: true }) as PostWithProfile;
     const postImageUrl = this.getPostImageUrl(postJson.postImage);
     const postVideoUrl = this.getPostVideoUrl(postJson.postVideo);
 
@@ -846,24 +855,29 @@ export class PostService {
       ],
     });
 
-    const comments = rows.map((comment: any) => ({
-      id: comment.id,
-      content: comment.comment,
-      parentCommentId: comment.parentCommentId,
-      createdAt: comment.createdAt,
-      updatedAt: comment.updatedAt,
-      userId: comment.userId,
-      user: comment.userProfile
-        ? {
-            userId: comment.userId,
-            firstName: comment.userProfile.firstName,
-            lastName: comment.userProfile.lastName,
-            profile: comment.userProfile.profile
-              ? `${process.env.S3_BUCKET_URL /* || 'https://familytreeupload.s3.eu-north-1.amazonaws.com' */}/profile/${comment.userProfile.profile}`
-              : null,
-          }
-        : null,
-    }));
+    const comments = rows.map((comment) => {
+      const commentJson: PostCommentWithProfile =
+        comment.get({ plain: true }) as PostCommentWithProfile;
+
+      return {
+        id: commentJson.id,
+        content: commentJson.comment,
+        parentCommentId: commentJson.parentCommentId,
+        createdAt: commentJson.createdAt,
+        updatedAt: commentJson.updatedAt,
+        userId: commentJson.userId,
+        user: commentJson.userProfile
+          ? {
+              userId: commentJson.userId,
+              firstName: commentJson.userProfile.firstName,
+              lastName: commentJson.userProfile.lastName,
+              profile: commentJson.userProfile.profile
+                ? `${process.env.S3_BUCKET_URL /* || 'https://familytreeupload.s3.eu-north-1.amazonaws.com' */}/profile/${commentJson.userProfile.profile}`
+                : null,
+            }
+          : null,
+      };
+    });
 
     return {
       total: count,
@@ -898,55 +912,8 @@ export class PostService {
     // Delete related likes
     await this.postLikeModel.destroy({ where: { postId } });
 
-    // Delete image file if exists
-    const imageFilename = post.postImage;
-    if (imageFilename) {
-      try {
-        const uploadService = new UploadService();
-
-        const imageUrl = this.getPostImageUrl(imageFilename);
-
-        if (imageUrl) {
-          // Check if it's an S3 URL or local file
-          if (imageUrl.includes('amazonaws.com')) {
-            // Delete from S3
-            await uploadService.deleteFile(imageUrl);
-          } else {
-            // Local file deletion
-            const uploadPath =
-              process.env.POST_PHOTO_UPLOAD_PATH || './uploads/posts';
-            const imagePath = path.join(
-              uploadPath,
-              path.basename(imageFilename),
-            );
-
-            if (fs.existsSync(imagePath)) {
-              fs.unlinkSync(imagePath);
-            }
-          }
-        }
-      } catch (error) {
-        console.error('Error deleting post image:', error);
-        // Continue with post deletion even if image deletion fails
-      }
-    }
-
-    // Delete video file if exists
-    const videoFilename = (post as any).postVideo as string | null;
-    if (videoFilename) {
-      try {
-        const uploadService = new UploadService();
-        const videoUrl = this.getPostVideoUrl(videoFilename);
-
-        if (videoUrl) {
-          // Delete from S3
-          await uploadService.deleteFile(videoUrl, 'posts');
-        }
-      } catch (error) {
-        console.error('Error deleting post video:', error);
-        // Continue with post deletion even if video deletion fails
-      }
-    }
+    await this.deletePostImageFile(post.postImage);
+    await this.deletePostVideoFile(post.postVideo);
 
     // Delete the post
     await post.destroy();
@@ -972,7 +939,7 @@ export class PostService {
     if (!comment) {
       throw new NotFoundException('Comment not found');
     }
-    const post = await this.postModel.findByPk((comment as any).postId);
+    const post = await this.postModel.findByPk(comment.postId);
     if (!post) {
       throw new NotFoundException('Post not found');
     }
@@ -1032,7 +999,7 @@ export class PostService {
     if (!comment) {
       throw new NotFoundException('Comment not found');
     }
-    const post = await this.postModel.findByPk((comment as any).postId);
+    const post = await this.postModel.findByPk(comment.postId);
     if (!post) {
       throw new NotFoundException('Post not found');
     }

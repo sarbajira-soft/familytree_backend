@@ -9,10 +9,7 @@ import { FamilyMember } from './model/family-member.model';
 import { MailService } from '../utils/mail.service';
 import { NotificationService } from '../notification/notification.service';
 import { UploadService } from '../uploads/upload.service';
-import { extractUserProfileFields } from '../utils/profile-mapper.util';
 import * as bcrypt from 'bcrypt';
-import * as path from 'path';
-import * as fs from 'fs';
  
 import { CreateFamilyMemberDto } from './dto/create-family-member.dto';
 import { CreateUserAndJoinFamilyDto } from './dto/create-user-and-join-family.dto';
@@ -21,18 +18,18 @@ import { CreateUserAndJoinFamilyDto } from './dto/create-user-and-join-family.dt
 export class FamilyMemberService {
   constructor(
     @InjectModel(User)
-    private userModel: typeof User,
+    private readonly userModel: typeof User,
 
     @InjectModel(UserProfile)
-    private userProfileModel: typeof UserProfile,
+    private readonly userProfileModel: typeof UserProfile,
 
     @InjectModel(Family)
-    private familyModel: typeof Family,
+    private readonly familyModel: typeof Family,
 
     @InjectModel(FamilyMember)
-    private familyMemberModel: typeof FamilyMember,
+    private readonly familyMemberModel: typeof FamilyMember,
 
-    private mailService: MailService,
+    private readonly mailService: MailService,
 
     @Inject(forwardRef(() => NotificationService))
     private readonly notificationService: NotificationService,
@@ -41,6 +38,220 @@ export class FamilyMemberService {
 
     private readonly sequelize: Sequelize,
   ) {}
+
+  private async requireFamilyOrThrow(familyCode: string) {
+    const family = await this.familyModel.findOne({ where: { familyCode } });
+    if (!family) {
+      throw new NotFoundException('Family not found');
+    }
+    return family;
+  }
+
+  private validateRemovalPermissions(
+    memberId: number,
+    actingUserId: number,
+    family: Family,
+  ) {
+    if (Number(memberId) === Number(actingUserId)) {
+      throw new BadRequestException('You cannot delete your own account');
+    }
+
+    if (Number(memberId) === Number((family as any).createdBy)) {
+      throw new BadRequestException('Cannot delete the family owner');
+    }
+  }
+
+  private async requireAdminMembership(actingUserId: number, familyCode: string) {
+    const actingUser = await this.userModel.findByPk(actingUserId);
+    if (!actingUser || (actingUser.role !== 2 && actingUser.role !== 3)) {
+      throw new BadRequestException('Access denied: Only family admins can delete members');
+    }
+
+    const actingMembership = await this.familyMemberModel.findOne({
+      where: {
+        memberId: actingUserId,
+        familyCode,
+        approveStatus: 'approved',
+      },
+    });
+
+    if (!actingMembership) {
+      throw new BadRequestException('Access denied: Only family admins can delete members');
+    }
+
+    return actingMembership;
+  }
+
+  private async cleanupRemovedMemberProfile(memberId: number, familyCode: string) {
+    const removedUserProfile = await this.userProfileModel.findOne({
+      where: { userId: memberId },
+    });
+
+    if (!removedUserProfile) return;
+
+    const associated = Array.isArray(removedUserProfile.associatedFamilyCodes)
+      ? removedUserProfile.associatedFamilyCodes
+      : [];
+    const nextAssociated = associated.filter((code) => code && code !== familyCode);
+    const shouldClearPrimary = removedUserProfile.familyCode === familyCode;
+
+    if (shouldClearPrimary || nextAssociated.length !== associated.length) {
+      await removedUserProfile.update({
+        ...(shouldClearPrimary ? { familyCode: null } : {}),
+        associatedFamilyCodes: nextAssociated,
+      } as any);
+    }
+  }
+
+  private async notifyMemberRemoval(memberId: number, familyCode: string) {
+    const adminUserIds = await this.notificationService.getAdminsForFamily(familyCode);
+    if (adminUserIds.length === 0) return;
+
+    const user = await this.userProfileModel.findOne({ where: { userId: memberId } });
+    await this.notificationService.createNotification(
+      {
+        type: 'FAMILY_MEMBER_REMOVED',
+        title: 'Family Member Removed',
+        message: `User ${user?.firstName || ''} ${user?.lastName || ''} has been removed from the family.`,
+        familyCode,
+        referenceId: memberId,
+        userIds: adminUserIds,
+      },
+      null,
+    );
+  }
+
+  private collectProfileNames(profile: UserProfile): string[] {
+    const names: string[] = [];
+    if (profile.fatherName) names.push(profile.fatherName);
+    if (profile.motherName) names.push(profile.motherName);
+    if (profile.spouseName) names.push(profile.spouseName);
+    if (profile.childrenNames) {
+      try {
+        const children = Array.isArray(profile.childrenNames)
+          ? profile.childrenNames
+          : JSON.parse(profile.childrenNames);
+        if (Array.isArray(children)) names.push(...children);
+      } catch {
+        names.push(profile.childrenNames);
+      }
+    }
+    return names;
+  }
+
+  private async fetchMatchingProfiles(uniqueNames: string[]) {
+    return this.userProfileModel.findAll({
+      where: {
+        [Op.or]: uniqueNames.map((name) => ({
+          firstName: { [Op.iLike]: `%${name}%` },
+        })),
+      },
+      attributes: ['userId', 'firstName', 'familyCode'],
+    });
+  }
+
+  private static computeMatchScore(matchFirstName: string, searchName: string) {
+    if (matchFirstName === searchName) return 100;
+    if (
+      matchFirstName.startsWith(`${searchName} `) ||
+      matchFirstName.endsWith(` ${searchName}`)
+    ) {
+      return 80;
+    }
+    if (matchFirstName.includes(` ${searchName} `)) return 70;
+    if (matchFirstName.startsWith(searchName) && matchFirstName.length <= searchName.length + 3) {
+      return 60;
+    }
+    if (matchFirstName.endsWith(searchName) && matchFirstName.length <= searchName.length + 3) {
+      return 50;
+    }
+    if (
+      (matchFirstName.includes(searchName) || searchName.includes(matchFirstName)) &&
+      Math.abs(matchFirstName.length - searchName.length) <= 5
+    ) {
+      return 30;
+    }
+    return 0;
+  }
+
+  private buildFamilyMatchMap(uniqueNames: string[], allMatches: UserProfile[]) {
+    const familyMatchMap: Record<string, { names: Set<string>; scores: Map<string, number> }> = {};
+
+    for (const match of allMatches) {
+      const famCode = match.familyCode;
+      if (!famCode) continue;
+
+      for (const name of uniqueNames) {
+        const matchFirstName = match.firstName?.toLowerCase() || '';
+        const searchName = name.toLowerCase();
+        const matchScore = FamilyMemberService.computeMatchScore(
+          matchFirstName,
+          searchName,
+        );
+
+        if (matchScore > 0) {
+          if (!familyMatchMap[famCode]) {
+            familyMatchMap[famCode] = { names: new Set(), scores: new Map() };
+          }
+          familyMatchMap[famCode].names.add(name);
+          familyMatchMap[famCode].scores.set(name, matchScore);
+        }
+      }
+    }
+
+    return familyMatchMap;
+  }
+
+  private async buildFoundFamilies(
+    familyMatchMap: Record<string, { names: Set<string>; scores: Map<string, number> }>,
+  ) {
+    const familyCodes = Object.keys(familyMatchMap).filter(
+      (code) => familyMatchMap[code].names.size >= 1,
+    );
+
+    if (familyCodes.length === 0) return [];
+
+    const validFamilies = await this.familyModel.findAll({
+      where: { familyCode: familyCodes, status: 1 },
+      attributes: ['familyCode', 'familyName'],
+    });
+
+    return validFamilies.map((fam) => {
+      const familyMatch = familyMatchMap[fam.familyCode];
+      const totalScore = Array.from(familyMatch.scores.values()).reduce(
+        (sum, score) => sum + score,
+        0,
+      );
+
+      return {
+        familyCode: fam.familyCode,
+        familyName: fam.familyName || null,
+        matchCount: familyMatch.names.size,
+        matchedNames: Array.from(familyMatch.names),
+        totalScore,
+      };
+    });
+  }
+
+  private async attachMembersToFamilies(
+    foundFamilies: Array<{
+      familyCode: string;
+      familyName: string | null;
+      matchCount: number;
+      matchedNames: string[];
+      totalScore: number;
+    }>,
+  ) {
+    const families = [];
+    for (const fam of foundFamilies) {
+      const members = await this.getAllFamilyMembers(fam.familyCode);
+      families.push({
+        ...fam,
+        members: members.data,
+      });
+    }
+    return families;
+  }
 
  async createUserAndJoinFamily(dto: CreateUserAndJoinFamilyDto, creatorId: number) {
   const transaction = await this.sequelize.transaction();
@@ -97,9 +308,12 @@ export class FamilyMemberService {
         fatherName: dto.fatherName || null,
         motherName: dto.motherName || null,
         religionId: dto.religionId || null,
+        otherReligion: dto.otherReligion || null,
         languageId: dto.languageId || null,
+        otherLanguage: dto.otherLanguage || null,
         caste: dto.caste || null,
         gothramId: dto.gothramId || null,
+        otherGothram: dto.otherGothram || null,
         kuladevata: dto.kuladevata || null,
         region: dto.region || null,
         hobbies: dto.hobbies || null,
@@ -344,7 +558,7 @@ export class FamilyMemberService {
 
     // Permission check - only admins can reject members
     const adminUser = await this.userModel.findByPk(rejectorId);
-    if (!adminUser || adminUser.role !== 2) {
+    if (adminUser?.role !== 2) {
       throw new BadRequestException('Access denied: Only family admins can reject members');
     }
 
@@ -392,39 +606,9 @@ export class FamilyMemberService {
     }
 
     // Load family to determine owner/root user
-    const family = await this.familyModel.findOne({ where: { familyCode } });
-    if (!family) {
-      throw new NotFoundException('Family not found');
-    }
-
-    // Prevent deleting self
-    if (Number(memberId) === Number(actingUserId)) {
-      throw new BadRequestException('You cannot delete your own account');
-    }
-
-    // Prevent removing the family owner/root user
-    if (Number(memberId) === Number((family as any).createdBy)) {
-      throw new BadRequestException('Cannot delete the family owner');
-    }
-
-    // Only admins/superadmins can delete members
-    const actingUser = await this.userModel.findByPk(actingUserId);
-    if (!actingUser || (actingUser.role !== 2 && actingUser.role !== 3)) {
-      throw new BadRequestException('Access denied: Only family admins can delete members');
-    }
-
-    // Acting admin must belong to this family
-    const actingMembership = await this.familyMemberModel.findOne({
-      where: {
-        memberId: actingUserId,
-        familyCode,
-        approveStatus: 'approved',
-      },
-    });
-
-    if (!actingMembership) {
-      throw new BadRequestException('Access denied: Only family admins can delete members');
-    }
+    const family = await this.requireFamilyOrThrow(familyCode);
+    this.validateRemovalPermissions(memberId, actingUserId, family);
+    await this.requireAdminMembership(actingUserId, familyCode);
 
     const membership = await this.familyMemberModel.findOne({
       where: { memberId, familyCode },
@@ -437,43 +621,8 @@ export class FamilyMemberService {
 
     // If the removed member's profile is still pointing to this family, clear it.
     // Also remove this family from associated family codes.
-    const removedUserProfile = await this.userProfileModel.findOne({
-      where: { userId: memberId },
-    });
-
-    if (removedUserProfile) {
-      const associated = Array.isArray(removedUserProfile.associatedFamilyCodes)
-        ? removedUserProfile.associatedFamilyCodes
-        : [];
-
-      const nextAssociated = associated.filter((c) => c && c !== familyCode);
-
-      const shouldClearPrimary = removedUserProfile.familyCode === familyCode;
-
-      if (shouldClearPrimary || nextAssociated.length !== associated.length) {
-        await removedUserProfile.update({
-          ...(shouldClearPrimary ? { familyCode: null } : {}),
-          associatedFamilyCodes: nextAssociated,
-        } as any);
-      }
-    }
-
-    // Notify all family admins about member removal
-    const adminUserIds = await this.notificationService.getAdminsForFamily(familyCode);
-    if (adminUserIds.length > 0) {
-      const user = await this.userProfileModel.findOne({ where: { userId: memberId } });
-      await this.notificationService.createNotification(
-        {
-          type: 'FAMILY_MEMBER_REMOVED',
-          title: 'Family Member Removed',
-          message: `User ${user?.firstName || ''} ${user?.lastName || ''} has been removed from the family.`,
-          familyCode,
-          referenceId: memberId,
-          userIds: adminUserIds,
-        },
-        null,
-      );
-    }
+    await this.cleanupRemovedMemberProfile(memberId, familyCode);
+    await this.notifyMemberRemoval(memberId, familyCode);
 
     return { message: 'Family member removed successfully' };
   }
@@ -642,7 +791,7 @@ export class FamilyMemberService {
       let profileImage = null;
       if (user?.userProfile?.profile) {
         try {
-          profileImage = await this.uploadService.getFileUrl(user.userProfile.profile, 'profile');
+          profileImage = this.uploadService.getFileUrl(user.userProfile.profile, 'profile');
         } catch (error) {
           console.error('Error getting S3 URL for profile image:', error);
           // Fallback to the original profile path if S3 URL fetch fails
@@ -768,7 +917,7 @@ export class FamilyMemberService {
       }
     }
 
-    const averageAge = total > 0 ? parseFloat((totalAge / total).toFixed(1)) : 0;
+    const averageAge = total > 0 ? Number.parseFloat((totalAge / total).toFixed(1)) : 0;
 
     return {
       totalMembers: total,
@@ -854,119 +1003,22 @@ export class FamilyMemberService {
     if (!profile) throw new NotFoundException('User profile not found');
 
     // 2. Collect all names to search
-    const names: string[] = [];
-    if (profile.fatherName) names.push(profile.fatherName);
-    if (profile.motherName) names.push(profile.motherName);
-    if (profile.spouseName) names.push(profile.spouseName);
-    if (profile.childrenNames) {
-      try {
-        const children = Array.isArray(profile.childrenNames)
-          ? profile.childrenNames
-          : JSON.parse(profile.childrenNames);
-        if (Array.isArray(children)) names.push(...children);
-      } catch {
-        names.push(profile.childrenNames);
-      }
-    }
+    const names = this.collectProfileNames(profile);
 
     // Remove falsy and duplicate names
     const uniqueNames = Array.from(new Set(names.filter(Boolean)));
     if (uniqueNames.length < 1) return { message: 'At least 1 name required to suggest families', data: [] };
 
     // 3. Search for all families that have any matching names
-    const Op = require('sequelize').Op;
-    const allMatches = await this.userProfileModel.findAll({
-      where: {
-        [Op.or]: uniqueNames.map(name => ({ firstName: { [Op.iLike]: `%${name}%` } })),
-      },
-      attributes: ['userId', 'firstName', 'familyCode'],
-    });
+    const allMatches = await this.fetchMatchingProfiles(uniqueNames);
+    const familyMatchMap = this.buildFamilyMatchMap(uniqueNames, allMatches);
+    const foundFamilies = await this.buildFoundFamilies(familyMatchMap);
 
-    // 4. Build family match map with scores
-    const familyMatchMap: Record<string, { names: Set<string>, scores: Map<string, number> }> = {};
-    
-    for (const match of allMatches) {
-      const famCode = match.familyCode;
-      if (!famCode) continue;
-      
-      for (const name of uniqueNames) {
-        const matchFirstName = match.firstName?.toLowerCase() || '';
-        const searchName = name.toLowerCase();
-        
-        let matchScore = 0;
-        let isMatch = false;
-        
-        // Calculate match score based on quality
-        if (matchFirstName === searchName) {
-          matchScore = 100; // Exact match - highest score
-          isMatch = true;
-        } else if (matchFirstName.startsWith(searchName + ' ') || matchFirstName.endsWith(' ' + searchName)) {
-          matchScore = 80; // Starts/ends with search name + space
-          isMatch = true;
-        } else if (matchFirstName.includes(' ' + searchName + ' ')) {
-          matchScore = 70; // Contains space + search name + space
-          isMatch = true;
-        } else if (matchFirstName.startsWith(searchName) && matchFirstName.length <= searchName.length + 3) {
-          matchScore = 60; // Starts with and close length
-          isMatch = true;
-        } else if (matchFirstName.endsWith(searchName) && matchFirstName.length <= searchName.length + 3) {
-          matchScore = 50; // Ends with and close length
-          isMatch = true;
-        } else if (
-          (matchFirstName.includes(searchName) || searchName.includes(matchFirstName)) &&
-          Math.abs(matchFirstName.length - searchName.length) <= 5
-        ) {
-          matchScore = 30; // Contains (either direction) but with reasonable length difference
-          isMatch = true;
-        }
-        
-        if (isMatch) {
-          if (!familyMatchMap[famCode]) {
-            familyMatchMap[famCode] = { names: new Set(), scores: new Map() };
-          }
-          familyMatchMap[famCode].names.add(name);
-          familyMatchMap[famCode].scores.set(name, matchScore);
-        }
-      }
-    }
-
-    // 5. Get valid families and calculate scores
-    const familyCodes = Object.keys(familyMatchMap).filter(
-      code => familyMatchMap[code].names.size >= 1
-    );
-
-    if (familyCodes.length === 0) {
+    if (foundFamilies.length === 0) {
       return { message: 'No matching families found', data: [] };
     }
 
-    const validFamilies = await this.familyModel.findAll({
-      where: { familyCode: familyCodes, status: 1 },
-      attributes: ['familyCode', 'familyName'],
-    });
-
-    const foundFamilies = [];
-    for (const fam of validFamilies) {
-      const familyMatch = familyMatchMap[fam.familyCode];
-      const totalScore = Array.from(familyMatch.scores.values()).reduce((sum, score) => sum + score, 0);
-      
-      foundFamilies.push({
-        familyCode: fam.familyCode,
-        familyName: fam.familyName || null,
-        matchCount: familyMatch.names.size,
-        matchedNames: Array.from(familyMatch.names),
-        totalScore: totalScore,
-      });
-    }
-
-    // 6. Get all members for each family
-    const families = [];
-    for (const fam of foundFamilies) {
-      const members = await this.getAllFamilyMembers(fam.familyCode);
-      families.push({
-        ...fam,
-        members: members.data,
-      });
-    }
+    const families = await this.attachMembersToFamilies(foundFamilies);
 
     // 7. Sort by total score (best matches first), then by match count, then by family name
     families.sort((a, b) => {

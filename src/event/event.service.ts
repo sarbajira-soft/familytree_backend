@@ -356,6 +356,12 @@ export class EventService {
     imagesToRemove?: number[], 
     loggedId?: number
   ) {
+    const shouldClearImages =
+      dto?.clearImages === true ||
+      dto?.clearImages === 'true' ||
+      dto?.clearImages === 1 ||
+      dto?.clearImages === '1';
+
     if (dto && typeof dto === 'object') {
       if (dto.eventTitle !== undefined && typeof dto.eventTitle === 'string') {
         dto.eventTitle = dto.eventTitle.trim();
@@ -405,7 +411,7 @@ export class EventService {
     const hasEventImages = eventImagesInput.length > 0;
 
     // Only run image logic if there is an actual change request
-    if (hasNewImageFiles || hasImagesToRemove || hasEventImages) {
+    if (hasNewImageFiles || hasImagesToRemove || hasEventImages || shouldClearImages) {
       const oldImages = event.images || [];
       const uploadDir = process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
 
@@ -430,7 +436,7 @@ export class EventService {
       const imagesToDelete = oldImages.filter(img => {
         const shouldKeep = existingImageUrls.includes(img.imageUrl);
         const shouldRemove = imagesToRemove && imagesToRemove.includes(img.id);
-        return !shouldKeep || shouldRemove;
+        return !shouldKeep || shouldRemove || shouldClearImages;
       });
 
       // Delete files and database records for removed images
@@ -483,6 +489,7 @@ export class EventService {
 
     // Remove eventImages from dto as it's handled separately
     delete dto.eventImages;
+    delete dto.clearImages;
     dto.createdBy = loggedId;
     await event.update(dto);
 

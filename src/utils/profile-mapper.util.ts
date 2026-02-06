@@ -3,7 +3,8 @@ export function extractUserProfileFields(dto: any): Partial<UserProfile> {
   const allowedFields = [
     'firstName', 'lastName', 'gender', 'dob', 'profile', 'maritalStatus', 'marriageDate',
     'spouseName', 'childrenNames', 'fatherName', 'motherName',
-    'religionId', 'languageId', 'caste', 'gothramId', 'kuladevata',
+    'religionId', 'otherReligion', 'languageId', 'otherLanguage',
+    'caste', 'gothramId', 'otherGothram', 'kuladevata',
     'region', 'hobbies', 'likes','dislikes', 'favoriteFoods',
     'contactNumber', 'countryId', 'address', 'bio', 'familyCode'
   ];

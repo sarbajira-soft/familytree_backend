@@ -649,21 +649,35 @@ export class GalleryService {
       }
 
       // Step 2: Prepare gallery update data
-      const updateData: Partial<Gallery> = {
-        galleryTitle: dto.galleryTitle,
-        galleryDescription: dto.galleryDescription,
-        privacy: dto.privacy,
-        status: dto.status ?? existingGallery.status,
-      };
+      const resolvedPrivacy = dto.privacy ?? existingGallery.privacy;
+      const updateData: Partial<Gallery> = {};
+
+      if (dto.galleryTitle !== undefined) {
+        updateData.galleryTitle = dto.galleryTitle;
+      }
+      if (dto.galleryDescription !== undefined) {
+        updateData.galleryDescription = dto.galleryDescription;
+      }
+      if (dto.status !== undefined) {
+        updateData.status = dto.status;
+      }
+      if (dto.privacy !== undefined) {
+        updateData.privacy = resolvedPrivacy;
+      }
 
       // Handle privacy and family code updates
-      if (dto.privacy === 'private') {
-        if (!dto.familyCode) {
+      if (resolvedPrivacy === 'private') {
+        const resolvedFamilyCode = dto.familyCode || existingGallery.familyCode;
+        if (!resolvedFamilyCode) {
           throw new BadRequestException('familyCode is required for private privacy');
         }
-        updateData.familyCode = dto.familyCode;
-      } else {
-        updateData.familyCode = ''; // Clear family code for public galleries
+        if (dto.privacy !== undefined || dto.familyCode !== undefined) {
+          updateData.familyCode = resolvedFamilyCode;
+        }
+      } else if (resolvedPrivacy === 'public') {
+        if (dto.privacy !== undefined) {
+          updateData.familyCode = ''; // Clear family code for public galleries
+        }
       }
 
       // Handle cover photo update if provided or being removed

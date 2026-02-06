@@ -1,4 +1,5 @@
-import { Injectable, BadRequestException, ConflictException, ForbiddenException, Inject, forwardRef, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, ForbiddenException, Inject, forwardRef, NotFoundException } from '@nestjs/common';
+
 import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
 import { User } from './model/user.model';
@@ -9,18 +10,14 @@ import { MailService } from '../utils/mail.service';
 import { UploadService } from '../uploads/upload.service';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
-import * as fs from 'fs';
-import * as path from 'path';
-
-import { ResetPasswordDto } from './dto/reset-password.dto';
 import { ForgetPasswordDto } from './dto/forget-password.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { LoginDto } from './dto/login.dto';
 import { ResendOtpDto } from './dto/resend-otp.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
-import { Family } from '../family/model/family.model';
 import { RegisterDto } from './dto/register.dto';
 import { NotificationService } from '../notification/notification.service';
+import { Family } from '../family/model/family.model';
 import { Religion } from '../religion/model/religion.model';
 import { Language } from '../language/model/language.model';
 import { Gothram } from '../gothram/model/gothram.model';
@@ -31,28 +28,39 @@ import { MedusaCustomerSyncService } from '../medusa/medusa-customer-sync.servic
 export class UserService {
   constructor(
     @InjectModel(User)
-    private userModel: typeof User,
+    private readonly userModel: typeof User,
+
     @InjectModel(UserProfile)
-    private userProfileModel: typeof UserProfile,
+    private readonly userProfileModel: typeof UserProfile,
+
     @InjectModel(Family)
-    private familyModel: typeof Family,
+    private readonly familyModel: typeof Family,
+
     @InjectModel(FamilyMember)
-    private familyMemberModel: typeof FamilyMember,
+    private readonly familyMemberModel: typeof FamilyMember,
+
     @InjectModel(Invite)
-    private inviteModel: typeof Invite,
+    private readonly inviteModel: typeof Invite,
+
     @InjectModel(Religion)
-    private religionModel: typeof Religion,
+    private readonly religionModel: typeof Religion,
+
     @InjectModel(Language)
-    private languageModel: typeof Language,
+    private readonly languageModel: typeof Language,
+
     @InjectModel(Gothram)
-    private gothramModel: typeof Gothram,
+    private readonly gothramModel: typeof Gothram,
+
     @InjectModel(Notification)
-    private notificationModel: typeof Notification,
-    private mailService: MailService,
-    private notificationService: NotificationService,
+    private readonly notificationModel: typeof Notification,
+
+    private readonly mailService: MailService,
+    private readonly notificationService: NotificationService,
+
     @Inject(forwardRef(() => UploadService))
-    private uploadService: UploadService,
-    private medusaCustomerSyncService: MedusaCustomerSyncService,
+    private readonly uploadService: UploadService,
+    private readonly medusaCustomerSyncService: MedusaCustomerSyncService,
+
   ) {}
 
   private generateOtp(): string {
@@ -88,6 +96,7 @@ export class UserService {
     );
   }
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity
   async register(registerDto: RegisterDto) {
     try {
       const normalizedEmail = (registerDto.email || '').trim().toLowerCase();
@@ -162,7 +171,7 @@ export class UserService {
       if (existingVerifiedByMobile) {
         throw new BadRequestException({
           statusCode: 400,
-          message: 'An account with this mobile number already exists',
+          message: 'This phone number is already registered. Please use a different number.',
           error: 'Bad Request',
         });
       }
@@ -280,6 +289,7 @@ export class UserService {
     }
   }
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity
   async verifyOtp(verifyOtpDto: VerifyOtpDto) {
     const { userName, otp } = verifyOtpDto;
 
@@ -295,7 +305,7 @@ export class UserService {
     const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedUserName);
     const whereClause: any = isEmail
       ? { email: { [Op.iLike]: normalizedUserName.toLowerCase() } }
-      : { mobile: normalizedUserName.replace(/^\+\d{1,4}/, '') };
+      : { mobile: normalizedUserName.replaceAll(/^\+\d{1,4}/g, '') };
 
     const user = await this.userModel.findOne({ where: whereClause });
 
@@ -360,7 +370,7 @@ export class UserService {
     const isEmail = usernameRaw.includes('@');
     const whereClause: any = isEmail
       ? { email: { [Op.iLike]: usernameRaw.toLowerCase() } }
-      : { mobile: usernameRaw.replace(/\D/g, '').slice(-14) };
+      : { mobile: usernameRaw.replaceAll(/\D/g, '').slice(-14) };
 
     const user = await this.userModel.findOne({ where: whereClause });
 
@@ -407,7 +417,7 @@ export class UserService {
     if (email) {
       whereClause = { email: { [Op.iLike]: email } };
     } else {
-      const match = mobileWithCountry.match(/^\+(\d{1,4})(\d{6,14})$/);
+      const match = /^\+(\d{1,4})(\d{6,14})$/.exec(mobileWithCountry);
       if (!match) {
         throw new BadRequestException({ message: 'Invalid mobile format' });
       }
@@ -447,7 +457,7 @@ export class UserService {
     const isEmail = username.includes('@');
     const whereClause: any = isEmail
       ? { email: { [Op.iLike]: username.toLowerCase() } }
-      : { mobile: username.replace(/\D/g, '') };
+      : { mobile: username.replaceAll(/\D/g, '') };
 
     const user = await this.userModel.findOne({ where: whereClause });
     if (!user) {
@@ -674,6 +684,7 @@ export class UserService {
     };
   }
 
+  // eslint-disable-next-line sonarjs/cognitive-complexity
   async updateProfile(
     userId: number,
     dto: UpdateProfileDto,
@@ -865,7 +876,7 @@ export class UserService {
 
         if (mobileExists) {
           throw new BadRequestException({
-            message: 'Mobile number already in use by another user',
+            message: 'This phone number is already registered. Please use a different number.',
           });
         }
 
@@ -886,6 +897,23 @@ export class UserService {
       // -----------------------------
       // UPDATE OTHER PROFILE FIELDS
       // -----------------------------
+      const normalizedDto = { ...dto } as Record<string, any>;
+      const normalizeId = (value: unknown) =>
+        typeof value === 'number' && value > 0 ? value : null;
+
+      if ('religionId' in normalizedDto) {
+        normalizedDto.religionId = normalizeId(normalizedDto.religionId);
+      }
+      if ('languageId' in normalizedDto) {
+        normalizedDto.languageId = normalizeId(normalizedDto.languageId);
+      }
+      if ('gothramId' in normalizedDto) {
+        normalizedDto.gothramId = normalizeId(normalizedDto.gothramId);
+      }
+      if (normalizedDto.otherReligion) normalizedDto.religionId = null;
+      if (normalizedDto.otherLanguage) normalizedDto.languageId = null;
+      if (normalizedDto.otherGothram) normalizedDto.gothramId = null;
+
       const profileUpdates = {};
       const profileFields = [
         'firstName',
@@ -900,9 +928,12 @@ export class UserService {
         'fatherName',
         'motherName',
         'religionId',
+        'otherReligion',
         'languageId',
+        'otherLanguage',
         'caste',
         'gothramId',
+        'otherGothram',
         'kuladevata',
         'region',
         'hobbies',
@@ -917,9 +948,12 @@ export class UserService {
       ];
 
       profileFields.forEach((field) => {
-        if (dto[field] !== undefined) profileUpdates[field] = dto[field];
+        if (normalizedDto[field] !== undefined) {
+          profileUpdates[field] = normalizedDto[field];
+        }
       });
 
+      // ...
       if (Object.keys(profileUpdates).length > 0) {
         await targetProfile.update(profileUpdates);
       }

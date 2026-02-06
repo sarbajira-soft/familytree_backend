@@ -1,8 +1,8 @@
 // notifications.service.ts
-import { Injectable, NotFoundException, Inject, forwardRef, BadRequestException, Optional } from '@nestjs/common';
+import { Injectable, NotFoundException, Inject, forwardRef, BadRequestException, Optional, ForbiddenException } from '@nestjs/common';
 import { InjectModel, InjectConnection } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
-import { Op } from 'sequelize';
+import { Op, QueryTypes } from 'sequelize';
 import { Notification } from './model/notification.model';
 import { NotificationRecipient } from './model/notification-recipients.model';
 import { CreateNotificationDto } from './dto/create-notification.dto';
@@ -829,6 +829,20 @@ export class NotificationService {
       throw new BadRequestException('Receiver node must be a local (non-external) card');
     }
 
+    // Hard rule: if the two underlying users are blocked either way, do not allow a link request.
+    // This prevents admins from connecting blocked pairs via tree-link workflows.
+    const senderNodeUserId = (senderNode as any).userId ? Number((senderNode as any).userId) : null;
+    const receiverNodeUserId = (receiverNode as any).userId ? Number((receiverNode as any).userId) : null;
+    if (senderNodeUserId && receiverNodeUserId) {
+      const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+        senderNodeUserId,
+        receiverNodeUserId,
+      );
+      if (blockedEitherWay) {
+        throw new ForbiddenException('Not allowed');
+      }
+    }
+
     const normalizeGender = (g: any): string => {
       const s = String(g || '').toLowerCase().trim();
       if (s === 'male' || s === 'm' || s === 'man') return 'male';
@@ -871,7 +885,6 @@ export class NotificationService {
     }
 
     // Authorization: requester must own this card OR be an admin of the sender family.
-    const senderNodeUserId = (senderNode as any).userId ? Number((senderNode as any).userId) : null;
     if (senderNodeUserId && senderNodeUserId !== Number(requesterUserId)) {
       const isAdmin = await this.isFamilyAdmin(requesterUserId, senderFamilyCode);
       if (!isAdmin) {
@@ -1175,6 +1188,11 @@ export class NotificationService {
       };
     }
 
+    const data = (dto as any).data || {};
+    const senderIdFromData = data?.senderId ?? (dto as any).senderId ?? null;
+    const targetUserIdFromData =
+      data?.targetUserId ?? data?.targetId ?? (dto as any).targetUserId ?? null;
+
     const notification = await this.notificationModel.create({
       type: dto.type,
       title: dto.title,
@@ -1182,7 +1200,9 @@ export class NotificationService {
       familyCode: dto.familyCode,
       referenceId: dto.referenceId,
       triggeredBy,
-      data: (dto as any).data || {},
+      senderId: senderIdFromData,
+      targetUserId: targetUserIdFromData,
+      data,
     });
 
     const recipientRecords = filteredUserIds.map((userId) => ({
@@ -1225,6 +1245,61 @@ export class NotificationService {
       notificationId: notification.id,
       requestId: notification.referenceId || notification.id, // Fallback to notification.id if referenceId is not set
     };
+  }
+
+  /**
+   * Prevent duplicate FAMILY_ASSOCIATION_REQUEST spam.
+   * Returns the most recent pending request between the two users (in either direction), or null.
+   */
+  async findPendingAssociationRequestBetweenUsers(params: {
+    userA: number;
+    userB: number;
+    familyA: string;
+    familyB: string;
+  }): Promise<{ id: number; referenceId: number | null } | null> {
+    const userA = Number(params.userA);
+    const userB = Number(params.userB);
+    const familyA = String(params.familyA || '').trim();
+    const familyB = String(params.familyB || '').trim();
+
+    if (!userA || !userB || !familyA || !familyB) return null;
+
+    const rows: any[] = await this.sequelize.query(
+      `
+      SELECT id, "referenceId"
+      FROM ft_notifications
+      WHERE type = 'FAMILY_ASSOCIATION_REQUEST'
+        AND status = 'pending'
+        AND (
+          (
+            ("senderId" = :userA AND "targetUserId" = :userB AND "familyCode" = :familyB)
+            OR
+            ("senderId" = :userB AND "targetUserId" = :userA AND "familyCode" = :familyA)
+          )
+          OR
+          (
+            (data->>'senderId')::int = :userA
+            AND (data->>'targetUserId')::int = :userB
+            AND "familyCode" IN (:familyA, :familyB)
+          )
+          OR
+          (
+            (data->>'senderId')::int = :userB
+            AND (data->>'targetUserId')::int = :userA
+            AND "familyCode" IN (:familyA, :familyB)
+          )
+        )
+      ORDER BY id DESC
+      LIMIT 1
+      `,
+      {
+        replacements: { userA, userB, familyA, familyB },
+        type: QueryTypes.SELECT,
+      },
+    );
+
+    if (!rows || rows.length === 0) return null;
+    return { id: Number(rows[0].id), referenceId: rows[0].referenceId ?? null };
   }
 
   async notifyPostLike(
@@ -1298,11 +1373,26 @@ export class NotificationService {
             approveStatus: 'approved',
           },
         },
+        {
+          model: UserProfile,
+          as: 'userProfile',
+          attributes: ['familyCode'],
+        },
       ],
       where: { role: [2, 3] },
     });
 
-    return admins.map((u) => u.id);
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    return admins
+      .filter((u: any) => {
+        const profileFamilyCode = String(
+          u?.userProfile?.familyCode || '',
+        )
+          .trim()
+          .toUpperCase();
+        return profileFamilyCode && profileFamilyCode === normalizedFamilyCode;
+      })
+      .map((u) => u.id);
   }
 
   async getaAllFamilyMember(familyCode: string): Promise<number[]> {
@@ -1398,6 +1488,18 @@ export class NotificationService {
       throw new NotFoundException('Notification not found or access denied');
     }
 
+    // Idempotency: if already handled, don’t re-run side effects (spouse cards, links, etc).
+    if (notification.status && notification.status !== 'pending') {
+      await this.recipientModel.update(
+        { isRead: true, readAt: new Date() } as any,
+        { where: { notificationId, userId } as any },
+      );
+      return {
+        success: true,
+        message: `Request already ${notification.status}`,
+      };
+    }
+
     // For family association requests, we need to use the referenceId
     if (
       notification.type === 'FAMILY_ASSOCIATION_REQUEST' &&
@@ -1430,6 +1532,24 @@ export class NotificationService {
           throw new BadRequestException(
             'Invalid notification data: Missing required fields',
           );
+        }
+
+        // Hard rule: if either user has blocked the other, the request cannot be accepted/re-opened.
+        // This prevents admins (or either party) from bypassing blocks via association workflows.
+        const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+          Number(senderId),
+          Number(targetUserId),
+        );
+        if (blockedEitherWay) {
+          await this.notificationModel.update(
+            { status: 'rejected', updatedAt: new Date() } as any,
+            { where: { id: notificationId } as any },
+          );
+          await this.recipientModel.update(
+            { isRead: true, readAt: new Date() } as any,
+            { where: { notificationId } as any },
+          );
+          throw new ForbiddenException('Not allowed');
         }
 
         // Get both users' profiles with their associated user data
@@ -2034,6 +2154,30 @@ export class NotificationService {
           const receiverUserId = (receiverCanonical as any).userId
             ? Number((receiverCanonical as any).userId)
             : null;
+
+          // Hard rule: do not allow tree links between blocked users (no admin bypass).
+          if (senderUserId && receiverUserId) {
+            const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+              senderUserId,
+              receiverUserId,
+            );
+            if (blockedEitherWay) {
+              await this.treeLinkRequestModel.update(
+                { status: 'rejected', respondedBy: userId, updatedAt: new Date() } as any,
+                { where: { id: treeLinkRequestId } as any, transaction },
+              );
+              await this.notificationModel.update(
+                { status: 'rejected', updatedAt: new Date() } as any,
+                { where: { id: notificationId } as any, transaction },
+              );
+              await this.recipientModel.update(
+                { isRead: true, readAt: new Date() } as any,
+                { where: { notificationId } as any, transaction },
+              );
+              await transaction.commit();
+              throw new ForbiddenException('Not allowed');
+            }
+          }
 
           const normalizeGender = (g: any): string => {
             const s = String(g || '').toLowerCase().trim();
@@ -2995,38 +3139,58 @@ export class NotificationService {
     );
 
     // Step 1: Create sender's card in target's family tree
-    // Duplicate support: always create a fresh card for sender in target family
-    const senderCardInTargetFamily = await FamilyTree.create(
-      {
-        familyCode: targetFamilyCode,
-        userId: senderId,
-        personId: targetPersonId,
-        generation: finalGeneration, // Use final matched generation
-        parents: [],
-        children: [],
-        spouses: [], // Will be updated after target card is created
-        siblings: [],
-      },
-      { transaction },
-    );
-    console.log(`✅ Created sender card in target family`);
+    // Idempotency: re-use existing cross-family card if it already exists.
+    let senderCardInTargetFamily = await FamilyTree.findOne({
+      where: { familyCode: targetFamilyCode, userId: senderId },
+      order: [['id', 'DESC']],
+      transaction,
+    });
+
+    if (!senderCardInTargetFamily) {
+      senderCardInTargetFamily = await FamilyTree.create(
+        {
+          familyCode: targetFamilyCode,
+          userId: senderId,
+          personId: targetPersonId,
+          generation: finalGeneration, // Use final matched generation
+          parents: [],
+          children: [],
+          spouses: [], // Will be updated after target card is created
+          siblings: [],
+        },
+        { transaction },
+      );
+      console.log(`✅ Created sender card in target family`);
+    } else {
+      console.log(`⚠️ Sender card already exists in target family (reusing)`);
+    }
 
     // Step 2: Create target's card in sender's family tree
-    // Duplicate support: always create a fresh card for target in sender family
-    const targetCardInSenderFamily = await FamilyTree.create(
-      {
-        familyCode: senderFamilyCode,
-        userId: targetUserId,
-        personId: senderPersonId,
-        generation: finalGeneration, // Use final matched generation
-        parents: [],
-        children: [],
-        spouses: [], // Will be updated after sender card is created
-        siblings: [],
-      },
-      { transaction },
-    );
-    console.log(`✅ Created target card in sender family`);
+    // Idempotency: re-use existing cross-family card if it already exists.
+    let targetCardInSenderFamily = await FamilyTree.findOne({
+      where: { familyCode: senderFamilyCode, userId: targetUserId },
+      order: [['id', 'DESC']],
+      transaction,
+    });
+
+    if (!targetCardInSenderFamily) {
+      targetCardInSenderFamily = await FamilyTree.create(
+        {
+          familyCode: senderFamilyCode,
+          userId: targetUserId,
+          personId: senderPersonId,
+          generation: finalGeneration, // Use final matched generation
+          parents: [],
+          children: [],
+          spouses: [], // Will be updated after sender card is created
+          siblings: [],
+        },
+        { transaction },
+      );
+      console.log(`✅ Created target card in sender family`);
+    } else {
+      console.log(`⚠️ Target card already exists in sender family (reusing)`);
+    }
 
     // Step 3: Find or create the target's original card in their own family
     let targetOriginalCard = await FamilyTree.findOne({

@@ -239,16 +239,20 @@ export class GalleryController {
     return this.galleryService.addGalleryComment(body, req.user.userId);
   }
 
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
   @Get(':id/comments')
   @ApiOperation({ summary: 'Get all comments for a gallery' })
-  async getComments(@Param('id') galleryId: number) {
-    return this.galleryService.getGalleryComments(galleryId);
+  async getComments(@Param('id') galleryId: number, @Req() req) {
+    return this.galleryService.getGalleryComments(galleryId, 1, 10, req.user?.userId);
   }
 
   @Get(':id/comment-count')
   @ApiOperation({ summary: 'Get total comment count for a gallery' })
-  async getGalleryCommentCount(@Param('id') galleryId: number) {
-    return this.galleryService.getGalleryCommentCount(galleryId);
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  async getGalleryCommentCount(@Param('id') galleryId: number, @Req() req) {
+    return this.galleryService.getGalleryCommentCount(galleryId, req.user?.userId);
   }
 
   @Get(':galleryId')

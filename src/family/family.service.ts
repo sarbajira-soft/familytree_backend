@@ -519,18 +519,38 @@ export class FamilyService {
       });
 
       if (!remainingActive) {
-        const [famUpdated] = await this.familyLinkModel.update(
-          { status: 'inactive' } as any,
-          {
-            where: {
-              familyCodeLow: low,
-              familyCodeHigh: high,
-              source: 'tree',
-              status: 'active',
-            } as any,
-          },
-        );
-        deactivatedFamilyLink = Number(famUpdated || 0) > 0;
+        // Bug 66: If both sides removed their external cards (no remaining external-linked cards between these families),
+        // then family-to-family visibility should be revoked (events/posts/etc).
+        const remainingExternalCard = await this.familyTreeModel.findOne({
+          where: {
+            isExternalLinked: true,
+            [Op.or]: [
+              {
+                familyCode,
+                canonicalFamilyCode,
+              } as any,
+              {
+                familyCode: canonicalFamilyCode,
+                canonicalFamilyCode: familyCode,
+              } as any,
+            ],
+          } as any,
+        });
+
+        if (!remainingExternalCard) {
+          const [famUpdated] = await this.familyLinkModel.update(
+            { status: 'inactive' } as any,
+            {
+              where: {
+                familyCodeLow: low,
+                familyCodeHigh: high,
+                status: 'active',
+                source: { [Op.in]: ['tree', 'spouse'] } as any,
+              } as any,
+            },
+          );
+          deactivatedFamilyLink = Number(famUpdated || 0) > 0;
+        }
       }
     }
 
@@ -1220,6 +1240,18 @@ export class FamilyService {
   }
 
   async createFamily(dto: CreateFamilyDto, createdBy: number) {
+    // A user can only have one "primary" familyCode (user_profile.familyCode) in this app.
+    // Creating a new family therefore becomes a "switch primary family" operation when the
+    // user already belongs to another family.
+    const existingProfile = await this.userProfileModel.findOne({
+      where: { userId: createdBy } as any,
+      attributes: ['familyCode', 'associatedFamilyCodes', 'userId'],
+    });
+    const previousFamilyCodeRaw = (existingProfile as any)?.familyCode || null;
+    const previousFamilyCode = previousFamilyCodeRaw
+      ? String(previousFamilyCodeRaw).trim().toUpperCase()
+      : null;
+
     const existing = await this.familyModel.findOne({
       where: { familyCode: dto.familyCode },
     });
@@ -1244,19 +1276,39 @@ export class FamilyService {
       createdBy,
     });
 
-    // Add creator to family_member table as default member
+    // Ensure the creator has a single active membership row (the system historically assumes 1 row/user).
+    // If they previously joined another family, this will remove that membership and replace it with the
+    // new primary family membership.
+    await this.familyMemberModel.destroy({ where: { memberId: createdBy } as any });
+
+    // Add creator to family_member table as default approved member
     await this.familyMemberModel.create({
-      memberId: createdBy, // The user who created the family
+      memberId: createdBy,
       familyCode: created.familyCode,
-      creatorId: null, // No one invited them — they are the creator
+      creatorId: null,
       approveStatus: 'approved',
-    });
+    } as any);
 
     // Update user's UserProfile with familyCode
     await this.userProfileModel.update(
       { familyCode: created.familyCode },
       { where: { userId: createdBy } },
     );
+
+    // Preserve previous primary family visibility by adding it to associatedFamilyCodes.
+    // This helps users keep access/navigation after switching primary family.
+    try {
+      const nextFamilyCode = String(created.familyCode || '').trim().toUpperCase();
+      if (previousFamilyCode && previousFamilyCode !== nextFamilyCode) {
+        await this.relationshipEdgeService.updateAssociatedFamilyCodes(
+          createdBy,
+          previousFamilyCode,
+        );
+      }
+    } catch (e) {
+      // Non-fatal: family is created; association is a best-effort convenience.
+      console.warn('Failed to preserve previous family association:', e?.message || e);
+    }
 
     // Get the updated user with new role to generate fresh token
     const updatedUser = await this.userModel.findByPk(createdBy);
@@ -1316,6 +1368,12 @@ export class FamilyService {
         }
       }
       throw new NotFoundException('Family not found');
+    }
+
+    // Blocked users must not be allowed to edit family details.
+    // This is Bug 65: enforce write-authorization at the backend.
+    if (loggedId) {
+      await this.assertUserNotBlockedInFamily(Number(loggedId), String(family.familyCode));
     }
 
     // Delete old file from S3 if a new file is uploaded
@@ -1544,6 +1602,45 @@ export class FamilyService {
 
     console.log('✅ Members in tree:', memberIdsInTree);
 
+    const cleanupRemovedMemberProfiles = async (removedMemberIds: number[]) => {
+      const ids = Array.from(
+        new Set(
+          (removedMemberIds || [])
+            .map((x) => Number(x))
+            .filter((x) => Number.isFinite(x) && x > 0),
+        ),
+      );
+      if (ids.length === 0) return;
+
+      const profiles = await this.userProfileModel.findAll({
+        where: { userId: { [Op.in]: ids } as any },
+        attributes: ['userId', 'familyCode', 'associatedFamilyCodes'],
+      });
+
+      await Promise.all(
+        profiles.map(async (p: any) => {
+          const associated = Array.isArray(p.associatedFamilyCodes)
+            ? p.associatedFamilyCodes.filter(Boolean)
+            : [];
+          const nextAssociated = associated.filter(
+            (code: any) => String(code || '').trim() !== String(familyCode || '').trim(),
+          );
+
+          const shouldClearPrimary =
+            String(p.familyCode || '').trim() === String(familyCode || '').trim();
+
+          if (!shouldClearPrimary && nextAssociated.length === associated.length) {
+            return;
+          }
+
+          await p.update({
+            ...(shouldClearPrimary ? { familyCode: null } : {}),
+            associatedFamilyCodes: nextAssociated,
+          } as any);
+        }),
+      );
+    };
+
     // Remove non-admin family members who are not in the new tree
     if (memberIdsInTree.length > 0) {
       const membershipsToDelete = await this.familyMemberModel.findAll({
@@ -1573,6 +1670,12 @@ export class FamilyService {
             },
           })
         : 0;
+
+      // ✅ Bug 53: Also clear familyCode for users removed from this family's tree
+      // (otherwise they’re orphaned: they disappear from UI but can’t create/join another family).
+      if (memberIdsToDelete.length > 0) {
+        await cleanupRemovedMemberProfiles(memberIdsToDelete);
+      }
 
       console.log(
         `✅ Removed ${deletedMembers} non-admin family members not in new tree`,
@@ -1613,6 +1716,11 @@ export class FamilyService {
               },
             })
           : 0;
+
+        // ✅ Bug 53: clear familyCode for removed users
+        if (memberIdsToDelete.length > 0) {
+          await cleanupRemovedMemberProfiles(memberIdsToDelete);
+        }
 
         console.log(
           `✅ Removed ${deletedMembers} non-admin members from family_member table (keeping creator and admins)`,

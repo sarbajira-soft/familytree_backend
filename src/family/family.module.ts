@@ -19,6 +19,7 @@ import { RelationshipEdgeService } from './relationship-edge.service';
 import { UploadModule } from '../uploads/upload.module';
 import { RelationshipPathService } from './relationship-path.service';
 import { UserModule } from '../user/user.module';
+import { BlockingModule } from '../blocking/blocking.module';
 
 
 @Module({
@@ -35,6 +36,7 @@ import { UserModule } from '../user/user.module';
     ]),
     forwardRef(() => NotificationModule),
     forwardRef(() => UserModule),
+    BlockingModule,
     UploadModule,
   ],
   controllers: [FamilyController, FamilyMemberController],

@@ -943,16 +943,49 @@ export class GalleryService {
     }
   }
 
-  async getGalleryComments(galleryId: number, page = 1, limit = 10) {
+  async getGalleryComments(
+    galleryId: number,
+    page = 1,
+    limit = 10,
+    requestingUserId?: number,
+  ) {
     const gallery = await this.galleryModel.findByPk(galleryId);
     if (!gallery) {
       throw new NotFoundException('Gallery not found');
     }
 
+    // Enforce access to private galleries
+    if (gallery.familyCode && gallery.privacy === 'private') {
+      if (!requestingUserId) {
+        throw new ForbiddenException('Not allowed to view this gallery');
+      }
+      await this.assertUserCanAccessFamilyOrLinked(requestingUserId, gallery.familyCode);
+    }
+
+    // Hard rule: blocked users cannot view each other's galleries/comments (even public).
+    if (requestingUserId && gallery.createdBy && gallery.createdBy !== requestingUserId) {
+      const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+        requestingUserId,
+        gallery.createdBy,
+      );
+      if (blockedEitherWay) {
+        throw new NotFoundException('Gallery not found');
+      }
+    }
+
     const offset = (page - 1) * limit;
 
+    const blockedUserIds = requestingUserId
+      ? await this.blockingService.getBlockedUserIdsForUser(requestingUserId)
+      : [];
+
     const { rows, count } = await this.galleryCommentModel.findAndCountAll({
-      where: { galleryId },
+      where: {
+        galleryId,
+        ...(blockedUserIds.length > 0
+          ? { userId: { [Op.notIn]: blockedUserIds } }
+          : {}),
+      },
       order: [['createdAt', 'DESC']],
       limit,
       offset,
@@ -988,15 +1021,43 @@ export class GalleryService {
     };
   }
 
-  async getGalleryCommentCount(galleryId: number) {
+  async getGalleryCommentCount(galleryId: number, requestingUserId?: number) {
+    const gallery = await this.galleryModel.findByPk(galleryId);
+    if (!gallery) {
+      throw new NotFoundException('Gallery not found');
+    }
+
+    if (gallery.familyCode && gallery.privacy === 'private') {
+      if (!requestingUserId) {
+        throw new ForbiddenException('Not allowed');
+      }
+      await this.assertUserCanAccessFamilyOrLinked(requestingUserId, gallery.familyCode);
+    }
+
+    if (requestingUserId && gallery.createdBy && gallery.createdBy !== requestingUserId) {
+      const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+        requestingUserId,
+        gallery.createdBy,
+      );
+      if (blockedEitherWay) {
+        throw new NotFoundException('Gallery not found');
+      }
+    }
+
+    const blockedUserIds = requestingUserId
+      ? await this.blockingService.getBlockedUserIdsForUser(requestingUserId)
+      : [];
+
     const count = await this.galleryCommentModel.count({
-      where: { galleryId },
+      where: {
+        galleryId,
+        ...(blockedUserIds.length > 0
+          ? { userId: { [Op.notIn]: blockedUserIds } }
+          : {}),
+      },
     });
 
-    return {
-      galleryId,
-      commentCount: count,
-    };
+    return { galleryId, commentCount: count };
   }
 
   async getGalleryById(
@@ -1084,6 +1145,23 @@ export class GalleryService {
    * Edit a gallery comment - reuses base service
    */
   async editGalleryComment(commentId: number, userId: number, newCommentText: string) {
+    const comment = await this.galleryCommentModel.findByPk(commentId);
+    if (!comment) {
+      throw new NotFoundException('Comment not found');
+    }
+    const gallery = await this.galleryModel.findByPk((comment as any).galleryId);
+    if (!gallery) {
+      throw new NotFoundException('Gallery not found');
+    }
+
+    const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      userId,
+      (gallery as any).createdBy,
+    );
+    if (blockedEitherWay && (gallery as any).createdBy !== userId) {
+      throw new ForbiddenException('Not allowed');
+    }
+
     return this.baseCommentService.editComment(
       this.galleryCommentModel,
       commentId,
@@ -1097,6 +1175,23 @@ export class GalleryService {
    * Delete a gallery comment - reuses base service
    */
   async deleteGalleryComment(commentId: number, userId: number) {
+    const comment = await this.galleryCommentModel.findByPk(commentId);
+    if (!comment) {
+      throw new NotFoundException('Comment not found');
+    }
+    const gallery = await this.galleryModel.findByPk((comment as any).galleryId);
+    if (!gallery) {
+      throw new NotFoundException('Gallery not found');
+    }
+
+    const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      userId,
+      (gallery as any).createdBy,
+    );
+    if (blockedEitherWay && (gallery as any).createdBy !== userId) {
+      throw new ForbiddenException('Not allowed');
+    }
+
     return this.baseCommentService.deleteComment(
       this.galleryCommentModel,
       commentId,
@@ -1113,6 +1208,23 @@ export class GalleryService {
     userId: number,
     replyText: string,
   ) {
+    const gallery = await this.galleryModel.findByPk(galleryId);
+    if (!gallery) {
+      throw new NotFoundException('Gallery not found');
+    }
+
+    if (gallery.familyCode && gallery.privacy === 'private') {
+      await this.assertUserCanAccessFamilyOrLinked(userId, gallery.familyCode);
+    }
+
+    const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      userId,
+      (gallery as any).createdBy,
+    );
+    if (blockedEitherWay && (gallery as any).createdBy !== userId) {
+      throw new ForbiddenException('Not allowed');
+    }
+
     return this.baseCommentService.replyToComment(
       this.galleryCommentModel,
       parentCommentId,

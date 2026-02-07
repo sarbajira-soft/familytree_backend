@@ -750,6 +750,12 @@ export class NotificationService {
     if (!senderNodeUid || !receiverFamilyCode || !receiverNodeUid || !relationshipType) {
       throw new BadRequestException('Missing required fields');
     }
+    if (String(receiverFamilyCode).trim().length > 30) {
+      throw new BadRequestException('Invalid family code');
+    }
+    if (String(senderNodeUid).length > 64 || String(receiverNodeUid).length > 64) {
+      throw new BadRequestException('Invalid node reference');
+    }
     if (!['parent', 'child', 'sibling'].includes(String(relationshipType))) {
       throw new BadRequestException('Invalid relationshipType');
     }
@@ -770,8 +776,54 @@ export class NotificationService {
       throw new BadRequestException('Requester must belong to a family');
     }
 
+    // Validation: requester account must be active and allowed to act.
+    const requesterUser = await this.userModel.findByPk(Number(requesterUserId), {
+      attributes: ['id', 'status'],
+    });
+    if (!requesterUser || Number((requesterUser as any).status) !== 1) {
+      throw new ForbiddenException('Your account is not active');
+    }
+
+    // Only admins can initiate a tree link request.
+    const requesterIsAdmin = await this.isFamilyAdmin(requesterUserId, String(senderFamilyCode));
+    if (!requesterIsAdmin) {
+      throw new ForbiddenException('Only admins can send link requests');
+    }
+
+    // If requester is blocked by admin in their own family, they can’t send link requests to any cards.
+    const requesterMembership = await this.familyMemberModel.findOne({
+      where: {
+        familyCode: String(senderFamilyCode),
+        memberId: Number(requesterUserId),
+      } as any,
+      attributes: ['isBlocked'],
+      order: [['id', 'DESC']],
+    });
+    if (requesterMembership && Boolean((requesterMembership as any).isBlocked)) {
+      throw new ForbiddenException('Your access is restricted. You can’t send link requests');
+    }
+
     if (String(senderFamilyCode) === String(receiverFamilyCode)) {
       throw new BadRequestException('Cannot create a cross-family link within the same family');
+    }
+
+    // Block creation if there is already a pending request between the same two families (either direction).
+    const pendingBetweenFamilies = await this.treeLinkRequestModel.findOne({
+      where: {
+        status: 'pending',
+        [Op.or]: [
+          { senderFamilyCode: String(senderFamilyCode), receiverFamilyCode: String(receiverFamilyCode) },
+          { senderFamilyCode: String(receiverFamilyCode), receiverFamilyCode: String(senderFamilyCode) },
+        ],
+      } as any,
+      order: [['id', 'DESC']],
+    });
+    if (pendingBetweenFamilies) {
+      return {
+        message: 'Link request already pending.',
+        requestId: Number((pendingBetweenFamilies as any).id),
+        notification: null,
+      };
     }
 
     // Prevent requesting a link that already exists as active.
@@ -829,17 +881,98 @@ export class NotificationService {
       throw new BadRequestException('Receiver node must be a local (non-external) card');
     }
 
-    // Hard rule: if the two underlying users are blocked either way, do not allow a link request.
-    // This prevents admins from connecting blocked pairs via tree-link workflows.
+    // Extra validation rules based on card ownership.
     const senderNodeUserId = (senderNode as any).userId ? Number((senderNode as any).userId) : null;
     const receiverNodeUserId = (receiverNode as any).userId ? Number((receiverNode as any).userId) : null;
+
+    // Receiving end must be an app user to allow linking.
+    if (!receiverNodeUserId) {
+      throw new BadRequestException(
+        'This person does not have an app account yet. Ask them to join the app first.',
+      );
+    }
+
+    // Cannot link to your own app user (even across families).
+    if (senderNodeUserId && receiverNodeUserId && Number(senderNodeUserId) === Number(receiverNodeUserId)) {
+      throw new BadRequestException('You can’t link to your own account');
+    }
+
+    // Target user must be active (when the receiver card is tied to an app user).
+    if (receiverNodeUserId) {
+      const receiverUser = await this.userModel.findByPk(Number(receiverNodeUserId), {
+        attributes: ['id', 'status'],
+      });
+      if (!receiverUser || Number((receiverUser as any).status) !== 1) {
+        throw new BadRequestException('Target user account is not active');
+      }
+
+      // If the target member is blocked by their family admin, they are not eligible for linking.
+      const receiverMembership = await this.familyMemberModel.findOne({
+        where: {
+          familyCode: String(receiverFamilyCode),
+          memberId: Number(receiverNodeUserId),
+        } as any,
+        attributes: ['isBlocked'],
+        order: [['id', 'DESC']],
+      });
+      if (receiverMembership && Boolean((receiverMembership as any).isBlocked)) {
+        throw new BadRequestException('Target member is not available');
+      }
+
+      // Prevent linking to members already in the sender's tree (local or external-linked).
+      const alreadyInSenderTree = await FamilyTree.findOne({
+        where: { familyCode: senderFamilyCode, userId: Number(receiverNodeUserId) } as any,
+      });
+      if (alreadyInSenderTree) {
+        throw new BadRequestException('This member is already in your family tree');
+      }
+    }
+
+    // Prevent linking to non-app members that are already present in the sender's tree via external links.
+    const receiverCanonicalInSenderTree = await FamilyTree.findOne({
+      where: {
+        familyCode: senderFamilyCode,
+        canonicalFamilyCode: receiverFamilyCode,
+        canonicalNodeUid: receiverNodeUid,
+      } as any,
+      order: [['id', 'DESC']],
+    });
+    if (receiverCanonicalInSenderTree) {
+      throw new BadRequestException('This member is already in your family tree');
+    }
+
+    // Prevent linking if the sender card’s user already exists in the receiver's tree.
+    if (senderNodeUserId) {
+      const alreadyInReceiverTree = await FamilyTree.findOne({
+        where: { familyCode: receiverFamilyCode, userId: Number(senderNodeUserId) } as any,
+      });
+      if (alreadyInReceiverTree) {
+        throw new BadRequestException('This link can’t be created because the member already exists in the target tree');
+      }
+    }
+
+    // Prevent linking if the sender card is already present in the receiver's tree via external links.
+    const senderCanonicalInReceiverTree = await FamilyTree.findOne({
+      where: {
+        familyCode: receiverFamilyCode,
+        canonicalFamilyCode: senderFamilyCode,
+        canonicalNodeUid: senderNodeUid,
+      } as any,
+      order: [['id', 'DESC']],
+    });
+    if (senderCanonicalInReceiverTree) {
+      throw new BadRequestException('This link can’t be created because the member already exists in the target tree');
+    }
+
+    // Hard rule: if the two underlying users are blocked either way, do not allow a link request.
+    // This prevents admins from connecting blocked pairs via tree-link workflows.
     if (senderNodeUserId && receiverNodeUserId) {
       const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
         senderNodeUserId,
         receiverNodeUserId,
       );
       if (blockedEitherWay) {
-        throw new ForbiddenException('Not allowed');
+        throw new ForbiddenException('This link can’t be created because one of the members is blocked');
       }
     }
 
@@ -876,12 +1009,35 @@ export class NotificationService {
       return normalizeGender((profile as any)?.gender);
     };
 
-    if (normalizedParentRole) {
-      // For relationshipType=parent: sender is the parent being linked into receiver family
-      // For relationshipType=child: receiver is the parent being linked into sender family
+    const needsParentRole =
+      String(relationshipType) === 'parent' || String(relationshipType) === 'child';
+    let finalParentRole = normalizedParentRole;
+
+    if (needsParentRole && !finalParentRole) {
       const parentNode = String(relationshipType) === 'parent' ? senderNode : receiverNode;
       const parentGender = await getGenderForTreeNode(parentNode);
-      assertParentRoleMatchesGender(normalizedParentRole, parentGender);
+      if (!parentGender) {
+        throw new BadRequestException(
+          'Please set gender for the parent card to continue.',
+        );
+      }
+      finalParentRole = parentGender === 'male' ? 'father' : 'mother';
+    }
+
+    if (!needsParentRole) {
+      finalParentRole = null;
+    }
+
+    if (finalParentRole) {
+      if (!['father', 'mother'].includes(finalParentRole)) {
+        throw new BadRequestException('Invalid parentRole (must be father or mother)');
+      }
+      if (String(relationshipType) === 'sibling') {
+        throw new BadRequestException('parentRole is only applicable for parent/child links');
+      }
+      const parentNode = String(relationshipType) === 'parent' ? senderNode : receiverNode;
+      const parentGender = await getGenderForTreeNode(parentNode);
+      assertParentRoleMatchesGender(finalParentRole, parentGender);
     }
 
     // Authorization: requester must own this card OR be an admin of the sender family.
@@ -986,7 +1142,7 @@ export class NotificationService {
             }
 
             return {
-              message: 'Tree link request already pending',
+              message: 'Link request already pending.',
               requestId: (existingPending as any).id,
               notification: { notificationId: existingNotification.id },
             };
@@ -1019,7 +1175,7 @@ export class NotificationService {
           );
 
           return {
-            message: 'Tree link request already pending',
+            message: 'Link request already pending.',
             requestId: (existingPending as any).id,
             notification,
           };
@@ -1029,7 +1185,7 @@ export class NotificationService {
       }
 
       return {
-        message: 'Tree link request already pending',
+        message: 'Link request already pending.',
         requestId: (existingPending as any).id,
         notification: null,
       };
@@ -1069,7 +1225,7 @@ export class NotificationService {
         senderNodeUid,
         receiverNodeUid,
         relationshipType,
-        parentRole: normalizedParentRole || null,
+        parentRole: finalParentRole || null,
         status: 'pending',
         createdBy: requesterUserId,
       } as any);
@@ -1088,7 +1244,7 @@ export class NotificationService {
       });
       if (existing) {
         return {
-          message: 'Tree link request already pending',
+          message: 'Link request already pending.',
           requestId: (existing as any).id,
           notification: null,
         };
@@ -1115,7 +1271,7 @@ export class NotificationService {
           senderNodeUid,
           receiverNodeUid,
           relationshipType,
-          parentRole: normalizedParentRole || null,
+          parentRole: finalParentRole || null,
         },
         userIds: eligibleRecipientIds,
       } as any,
@@ -1126,6 +1282,180 @@ export class NotificationService {
       message: 'Tree link request sent',
       requestId: requestRow.id,
       notification,
+    };
+  }
+
+  async revokeTreeLinkRequest(treeLinkRequestId: number, actingUserId: number) {
+    const id = Number(treeLinkRequestId);
+    if (!id || Number.isNaN(id) || id <= 0) {
+      throw new BadRequestException('treeLinkRequestId must be a positive number');
+    }
+    if (!actingUserId) {
+      throw new ForbiddenException('Unauthorized');
+    }
+
+    const requestRow = await this.treeLinkRequestModel.findByPk(id);
+    if (!requestRow) {
+      throw new NotFoundException('Link request not found');
+    }
+
+    const status = String((requestRow as any).status || 'pending');
+    if (status !== 'pending') {
+      return { success: true, message: 'Request already processed' };
+    }
+
+    const senderFamilyCode = String((requestRow as any).senderFamilyCode || '').trim();
+    const createdBy = Number((requestRow as any).createdBy || 0);
+
+    // Only the initiator or sender-family admins can revoke.
+    const canRevoke =
+      (createdBy && Number(createdBy) === Number(actingUserId)) ||
+      (senderFamilyCode && (await this.isFamilyAdmin(actingUserId, senderFamilyCode)));
+
+    if (!canRevoke) {
+      throw new ForbiddenException('You don’t have permission to revoke this request');
+    }
+
+    const transaction = await this.sequelize.transaction();
+    try {
+      await this.treeLinkRequestModel.update(
+        { status: 'revoked', respondedBy: actingUserId, updatedAt: new Date() } as any,
+        { where: { id } as any, transaction },
+      );
+
+      // Mark any pending TREE_LINK_REQUEST notifications tied to this request as revoked too.
+      const notifications = await this.notificationModel.findAll({
+        where: {
+          type: 'TREE_LINK_REQUEST',
+          status: 'pending',
+          data: { treeLinkRequestId: id },
+        } as any,
+        attributes: ['id'],
+        transaction,
+      });
+
+      const notifIds = (notifications as any[])
+        .map((n: any) => Number(n.id))
+        .filter((x) => Number.isFinite(x) && x > 0);
+
+      if (notifIds.length > 0) {
+        await this.notificationModel.update(
+          { status: 'revoked', updatedAt: new Date() } as any,
+          { where: { id: { [Op.in]: notifIds } } as any, transaction },
+        );
+        await this.recipientModel.update(
+          { isRead: true, readAt: new Date() } as any,
+          { where: { notificationId: { [Op.in]: notifIds } } as any, transaction },
+        );
+      }
+
+      await transaction.commit();
+      return { success: true, message: 'Link request revoked' };
+    } catch (e) {
+      await transaction.rollback();
+      throw e;
+    }
+  }
+
+  async getPendingTreeLinkRequestsForUser(actingUserId: number) {
+    if (!actingUserId) {
+      throw new ForbiddenException('Unauthorized');
+    }
+
+    const rows = await this.treeLinkRequestModel.findAll({
+      where: {
+        createdBy: Number(actingUserId),
+        status: 'pending',
+      } as any,
+      order: [['createdAt', 'DESC']],
+    });
+
+    if (!rows || rows.length === 0) {
+      return { message: 'No pending link requests', data: [] };
+    }
+
+    const { FamilyTree } = await import('../family/model/family-tree.model');
+    const results: any[] = [];
+
+    for (const row of rows as any[]) {
+      const senderFamilyCode = String(row.senderFamilyCode || '').trim();
+      const receiverFamilyCode = String(row.receiverFamilyCode || '').trim();
+      const senderNodeUid = String(row.senderNodeUid || '').trim();
+      const receiverNodeUid = String(row.receiverNodeUid || '').trim();
+
+      const [senderNode, receiverNode] = await Promise.all([
+        FamilyTree.findOne({
+          where: { familyCode: senderFamilyCode, nodeUid: senderNodeUid } as any,
+          attributes: ['name', 'personId', 'nodeUid', 'userId'],
+        }),
+        FamilyTree.findOne({
+          where: { familyCode: receiverFamilyCode, nodeUid: receiverNodeUid } as any,
+          attributes: ['name', 'personId', 'nodeUid', 'userId'],
+        }),
+      ]);
+
+      if (!senderNode || !receiverNode) {
+        // Auto-cancel if the target card was removed.
+        await this.treeLinkRequestModel.update(
+          { status: 'cancelled', updatedAt: new Date() } as any,
+          { where: { id: row.id } as any },
+        );
+
+        const notifications = await this.notificationModel.findAll({
+          where: {
+            type: 'TREE_LINK_REQUEST',
+            status: 'pending',
+            data: { treeLinkRequestId: Number(row.id) },
+          } as any,
+          attributes: ['id'],
+        });
+
+        const notifIds = (notifications as any[])
+          .map((n: any) => Number(n.id))
+          .filter((x) => Number.isFinite(x) && x > 0);
+
+        if (notifIds.length > 0) {
+          await this.notificationModel.update(
+            { status: 'cancelled', updatedAt: new Date() } as any,
+            { where: { id: { [Op.in]: notifIds } } as any },
+          );
+          await this.recipientModel.update(
+            { isRead: true, readAt: new Date() } as any,
+            { where: { notificationId: { [Op.in]: notifIds } } as any },
+          );
+        }
+
+        continue;
+      }
+
+      results.push({
+        id: Number(row.id),
+        status: 'pending',
+        createdAt: row.createdAt,
+        relationshipType: row.relationshipType,
+        parentRole: row.parentRole,
+        senderFamilyCode,
+        receiverFamilyCode,
+        senderNodeUid,
+        receiverNodeUid,
+        senderPerson: {
+          name: (senderNode as any)?.name || null,
+          personId: (senderNode as any)?.personId || null,
+          nodeUid: (senderNode as any)?.nodeUid || null,
+          userId: (senderNode as any)?.userId || null,
+        },
+        receiverPerson: {
+          name: (receiverNode as any)?.name || null,
+          personId: (receiverNode as any)?.personId || null,
+          nodeUid: (receiverNode as any)?.nodeUid || null,
+          userId: (receiverNode as any)?.userId || null,
+        },
+      });
+    }
+
+    return {
+      message: `${results.length} pending link request(s) found`,
+      data: results,
     };
   }
 
@@ -2143,7 +2473,25 @@ export class NotificationService {
           ]);
 
           if (!senderCanonical || !receiverCanonical) {
-            throw new BadRequestException('Unable to locate canonical nodes for tree link');
+            // If a user/card was removed before approval, cancel the request instead of erroring out.
+            await this.treeLinkRequestModel.update(
+              { status: 'cancelled', respondedBy: userId, updatedAt: new Date() } as any,
+              { where: { id: treeLinkRequestId } as any, transaction },
+            );
+            await this.notificationModel.update(
+              { status: 'cancelled', updatedAt: new Date() } as any,
+              { where: { id: notificationId } as any, transaction },
+            );
+            await this.recipientModel.update(
+              { isRead: true, readAt: new Date() } as any,
+              { where: { notificationId } as any, transaction },
+            );
+            await transaction.commit();
+            return {
+              success: true,
+              message:
+                'Link request was cancelled because the target card is no longer available.',
+            };
           }
 
           const senderPersonId = Number((senderCanonical as any).personId);
@@ -2175,7 +2523,9 @@ export class NotificationService {
                 { where: { notificationId } as any, transaction },
               );
               await transaction.commit();
-              throw new ForbiddenException('Not allowed');
+              throw new ForbiddenException(
+                'This link can’t be created because one of the members is blocked',
+              );
             }
           }
 

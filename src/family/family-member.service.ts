@@ -927,7 +927,7 @@ export class FamilyMemberService {
       `
         SELECT "userId"
         FROM public.ft_user_profile
-        WHERE "associatedFamilyCodes" @> :needle::json
+        WHERE "associatedFamilyCodes"::jsonb @> :needle::jsonb
       `,
       {
         replacements: { needle: JSON.stringify([normalizedFamilyCode]) },
@@ -1000,7 +1000,97 @@ export class FamilyMemberService {
       );
     }
 
-    const result = [...baseResult, ...associatedResult];
+    // Include linked-family members (tree link connections) in All Members list.
+    let linkedResult: any[] = [];
+    try {
+      const linkedRows = (await this.sequelize.query(
+        `
+          SELECT
+            CASE
+              WHEN "familyCodeLow" = :code THEN "familyCodeHigh"
+              ELSE "familyCodeLow"
+            END AS "linkedCode"
+          FROM public.ft_family_link
+          WHERE "status" = 'active'
+            AND (:code = "familyCodeLow" OR :code = "familyCodeHigh")
+        `,
+        {
+          replacements: { code: normalizedFamilyCode },
+          type: QueryTypes.SELECT,
+        },
+      )) as Array<{ linkedCode: string }>;
+
+      const linkedCodes = Array.from(
+        new Set(
+          (linkedRows || [])
+            .map((r) => String((r as any)?.linkedCode || '').trim())
+            .filter((c) => c),
+        ),
+      );
+
+      if (linkedCodes.length > 0) {
+        const existingIds = new Set<number>([...baseUserIds, ...associatedUserIds]);
+        const linkedUsers = await this.userModel.findAll({
+          where: { '$userProfile.familyCode$': { [Op.in]: linkedCodes } } as any,
+          attributes: ['id', 'email', 'mobile', 'status', 'role'],
+          include: [
+            {
+              model: this.userProfileModel,
+              as: 'userProfile',
+              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'familyCode'],
+            },
+          ],
+          order: [['id', 'DESC']],
+        });
+
+        linkedResult = await Promise.all(
+          (linkedUsers as any[])
+            .filter((u: any) => !existingIds.has(Number(u?.id)))
+            .map(async (u: any) => {
+              let profileImage = null;
+              if (u?.userProfile?.profile) {
+                try {
+                  profileImage = this.uploadService.getFileUrl(u.userProfile.profile, 'profile');
+                } catch (error) {
+                  console.error('Error getting S3 URL for profile image:', error);
+                  const baseUrl = process.env.BASE_URL || '';
+                  const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
+                  profileImage = `${baseUrl.replace(/\/$/, '')}/${profilePath}/${u.userProfile.profile}`;
+                }
+              }
+
+              return {
+                id: -Number(u.id) * 10, // Avoid collision with other synthetic ids.
+                memberId: null,
+                familyCode,
+                creatorId: null,
+                approveStatus: 'linked',
+                isLinkedUsed: false,
+                isBlocked: false,
+                blockedByUserId: null,
+                blockedAt: null,
+                createdAt: null,
+                updatedAt: null,
+                user: {
+                  ...u.toJSON(),
+                  fullName: u?.userProfile
+                    ? `${u.userProfile.firstName || ''} ${u.userProfile.lastName || ''}`.trim()
+                    : null,
+                  profileImage,
+                },
+                membershipType: 'linked',
+                familyRole: 'Member',
+                isFamilyAdmin: false,
+              };
+            }),
+        );
+      }
+    } catch (err) {
+      // Non-blocking: if linked-family query fails, still return base members.
+      console.error('Error loading linked family members:', err);
+    }
+
+    const result = [...baseResult, ...associatedResult, ...linkedResult];
 
     return {
       message: `${result.length} approved family members found.`,

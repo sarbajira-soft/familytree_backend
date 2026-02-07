@@ -586,6 +586,42 @@ export class FamilyController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Get('tree-link-requests/sent')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List pending tree link requests created by the logged-in user' })
+  @ApiResponse({ status: 200, description: 'Pending tree link requests returned' })
+  async listSentTreeLinkRequests(@Req() req) {
+    const actingUserId: number = req.user?.userId;
+    if (!actingUserId) {
+      throw new ForbiddenException('Unauthorized: missing user context');
+    }
+
+    return this.notificationService.getPendingTreeLinkRequestsForUser(actingUserId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('revoke-tree-link-request')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Revoke (cancel) a pending tree link request (admin/creator only)' })
+  @HttpCode(HttpStatus.OK)
+  async revokeTreeLinkRequest(
+    @Req() req,
+    @Body() body: { treeLinkRequestId: number },
+  ) {
+    const actingUserId: number = req.user?.userId;
+    const treeLinkRequestId = Number(body?.treeLinkRequestId);
+
+    if (!actingUserId) {
+      throw new ForbiddenException('Unauthorized: missing user context');
+    }
+    if (!treeLinkRequestId || Number.isNaN(treeLinkRequestId) || treeLinkRequestId <= 0) {
+      throw new BadRequestException('treeLinkRequestId is required and must be a positive number');
+    }
+
+    return this.notificationService.revokeTreeLinkRequest(treeLinkRequestId, actingUserId);
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Post('unlink-tree-link')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Unlink (remove) an external-linked card from this family tree' })

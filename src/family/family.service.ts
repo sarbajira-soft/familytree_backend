@@ -1521,13 +1521,22 @@ export class FamilyService {
     const personIdsInPayload = members.map((m) => m.id);
     console.log('📋 PersonIds in payload:', personIdsInPayload);
 
+    // If the payload is only the root member, treat this as a full tree reset.
+    // In that case we should also delete external-linked duplicate cards, otherwise
+    // they can persist and show up in the newly created tree.
+    const isFullTreeReset = Array.isArray(members) && members.length === 1;
+
     // Delete entries where personId is NOT in the payload
     const deletedEntries = await this.familyTreeModel.destroy({
       where: {
         familyCode,
         personId: { [Op.notIn]: personIdsInPayload },
-        // Hybrid mode: never delete external-linked duplicate cards during normal tree saves.
-        isExternalLinked: { [Op.ne]: true },
+        ...(isFullTreeReset
+          ? {}
+          : {
+              // Hybrid mode: never delete external-linked duplicate cards during normal tree saves.
+              isExternalLinked: { [Op.ne]: true },
+            }),
       },
     });
     console.log(
@@ -1623,20 +1632,29 @@ export class FamilyService {
             ? p.associatedFamilyCodes.filter(Boolean)
             : [];
           const nextAssociated = associated.filter(
-            (code: any) => String(code || '').trim() !== String(familyCode || '').trim(),
+            (code: any) =>
+              String(code || '').trim() !== String(familyCode || '').trim(),
           );
 
           const shouldClearPrimary =
-            String(p.familyCode || '').trim() === String(familyCode || '').trim();
+            String(p.familyCode || '').trim() ===
+            String(familyCode || '').trim();
 
           if (!shouldClearPrimary && nextAssociated.length === associated.length) {
             return;
           }
 
-          await p.update({
-            ...(shouldClearPrimary ? { familyCode: null } : {}),
-            associatedFamilyCodes: nextAssociated,
-          } as any);
+          // IMPORTANT: Don't call instance.save()/update() without a PK loaded.
+          // Use scoped Model.update to avoid global updates.
+          await this.userProfileModel.update(
+            {
+              ...(shouldClearPrimary ? { familyCode: null } : {}),
+              associatedFamilyCodes: nextAssociated,
+            } as any,
+            {
+              where: { userId: Number(p.userId) } as any,
+            },
+          );
         }),
       );
     };
@@ -2501,6 +2519,9 @@ export class FamilyService {
             name: 'Unknown',
             gender: 'unknown',
             age: null,
+            contactNumber: null,
+            mobile: null,
+            countryCode: null,
             generation: entry.generation,
             parents: entry.parents || [],
             children: entry.children || [],
@@ -2519,6 +2540,12 @@ export class FamilyService {
         if (userProfile?.profile) {
           img = this.uploadService.getFileUrl(userProfile.profile, 'profile');
         }
+        const mobile = (entry as any)?.user?.mobile || null;
+        const countryCode = (entry as any)?.user?.countryCode || null;
+        const contactNumber =
+          userProfile?.contactNumber ||
+          (countryCode && mobile ? `${countryCode}${mobile}` : mobile) ||
+          null;
         return {
           id: entry.personId, // Use personId as id
           nodeUid: (entry as any).nodeUid,
@@ -2533,6 +2560,9 @@ export class FamilyService {
             : 'Unknown',
           gender: this.normalizeGender(userProfile?.gender),
           age: userProfile?.age || null,
+          contactNumber,
+          mobile,
+          countryCode,
           generation: entry.generation,
           lifeStatus: entry.lifeStatus || 'living',
           parents: entry.parents || [],

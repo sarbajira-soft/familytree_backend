@@ -89,8 +89,10 @@ export class FamilyMemberController {
   async approveMember(
     @Param('memberId') memberId: number,
     @Param('familyCode') familyCode: string,
+    @Req() req,
   ) {
-    return this.familyMemberService.approveFamilyMember(memberId, familyCode);
+    const approverId = req.user?.userId;
+    return this.familyMemberService.approveFamilyMember(memberId, familyCode, approverId);
   }
 
   // Reject member (admin action)

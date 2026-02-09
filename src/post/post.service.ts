@@ -146,6 +146,14 @@ export class PostService {
     return `${baseUrl}/uploads/posts/${filename}`;
   }
 
+  private normalizeFamilyCodeInput(value: any): string | null {
+    if (value === null || value === undefined) return null;
+    if (typeof value !== 'string') return null;
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+    return trimmed.toUpperCase();
+  }
+
   private getPostImageUrl(filename: string | null): string | null {
     return this.getPostMediaUrl(filename);
   }
@@ -356,24 +364,46 @@ export class PostService {
 
     this.ensurePostHasContent(hasCaption, hasImage, hasVideo);
 
-    // Enforce admin family-block policy for family/private content
-    if (dto.familyCode && (dto.privacy === 'private' || dto.privacy === 'family')) {
-      await this.assertUserCanAccessFamilyContent(createdBy, dto.familyCode);
+    const privacy = (dto.privacy ?? 'public') as 'public' | 'private' | 'family';
+    let familyCode = this.normalizeFamilyCodeInput((dto as any).familyCode);
+
+    // For family/private posts, derive familyCode from the creator’s profile if not provided.
+    if (privacy === 'private' || privacy === 'family') {
+      if (!familyCode) {
+        const profile = await this.userProfileModel.findOne({
+          where: { userId: createdBy },
+          attributes: ['familyCode'],
+        });
+        familyCode = this.normalizeFamilyCodeInput((profile as any)?.familyCode);
+      }
+
+      if (!familyCode) {
+        throw new BadRequestException(
+          'You must join a family to create private/family posts',
+        );
+      }
+
+      await this.assertUserCanAccessFamilyContent(createdBy, familyCode);
+    } else {
+      // Public posts should not carry a familyCode.
+      familyCode = null;
     }
+
+    const dtoForBroadcast = { ...(dto as any), familyCode: familyCode || undefined } as CreatePostDto;
 
     // Step 1: Create post
     const post = await this.postModel.create({
       caption: captionToStore,
-      familyCode: dto.familyCode || null,
+      familyCode,
       createdBy,
       status: dto.status ?? 1,
       postImage: hasImage ? postImage : null,
       postVideo: hasVideo ? postVideo : null,
-      privacy: dto.privacy ?? 'public',
+      privacy,
     });
 
-    await this.notifyFamilyPostCreation(dto, post, createdBy);
-    this.broadcastNewPost(dto, post, createdBy);
+    await this.notifyFamilyPostCreation(dtoForBroadcast, post, createdBy);
+    this.broadcastNewPost(dtoForBroadcast, post, createdBy);
 
     // Return post details
     return {
@@ -422,11 +452,42 @@ export class PostService {
 
     this.ensurePostHasContent(hasCaption, hasImage, hasVideo);
 
+    const privacy = ((dto as any).privacy ?? post.privacy) as
+      | 'public'
+      | 'private'
+      | 'family';
+
+    const familyCodeInput = this.normalizeFamilyCodeInput((dto as any).familyCode);
+
+    let familyCodeFinal: string | null =
+      familyCodeInput ?? this.normalizeFamilyCodeInput((post as any).familyCode);
+
+    if (privacy === 'private' || privacy === 'family') {
+      if (!familyCodeFinal) {
+        const profile = await this.userProfileModel.findOne({
+          where: { userId },
+          attributes: ['familyCode'],
+        });
+        familyCodeFinal = this.normalizeFamilyCodeInput((profile as any)?.familyCode);
+      }
+
+      if (!familyCodeFinal) {
+        throw new BadRequestException(
+          'You must join a family to use private/family privacy',
+        );
+      }
+
+      await this.assertUserCanAccessFamilyContent(userId, familyCodeFinal);
+    } else {
+      // Public posts should not carry a familyCode.
+      familyCodeFinal = null;
+    }
+
     // Prepare update data using the normalized values
     const updateData: any = {
       caption: finalCaption,
-      privacy: dto.privacy ?? post.privacy,
-      familyCode: dto.familyCode ?? post.familyCode,
+      privacy,
+      familyCode: familyCodeFinal,
       status: dto.status ?? post.status,
     };
 
@@ -476,16 +537,24 @@ export class PostService {
     if (postId) whereClause.id = postId;
 
     if (privacy === 'private' || privacy === 'family') {
-      if (!familyCode) {
-        throw new BadRequestException(
-          'familyCode is required for private/family privacy',
-        );
+      // If familyCode is provided, scope to that family (and enforce access).
+      // If familyCode is omitted, return the viewer’s "family feed" across all accessible family codes.
+      if (familyCode) {
+        await this.assertUserCanAccessFamilyOrLinked(userId, familyCode);
+        whereClause.familyCode = familyCode;
+      } else {
+        const accessible = userId
+          ? await this.getAccessibleFamilyCodesForUser(userId)
+          : [];
+
+        if (!accessible || accessible.length === 0) {
+          throw new ForbiddenException('Not allowed to access this family content');
+        }
+
+        whereClause.familyCode = { [Op.in]: accessible };
       }
 
-      await this.assertUserCanAccessFamilyOrLinked(userId, familyCode);
-
       whereClause.privacy = privacy;
-      whereClause.familyCode = familyCode;
     } else if (privacy === 'public') {
       whereClause.privacy = 'public';
     }
@@ -605,6 +674,18 @@ export class PostService {
       where: { postId, userId },
     });
 
+    const postOwnerId = post.createdBy;
+    const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      userId,
+      postOwnerId,
+    );
+
+    // Blocking policy: no interactions between blocked users.
+    // Allow removing an existing like (cleanup), but block adding a new like.
+    if (!existingLike && usersBlockedEitherWay && postOwnerId !== userId) {
+      throw new ForbiddenException('Not allowed');
+    }
+
     if (existingLike) {
       await existingLike.destroy();
     } else {
@@ -622,12 +703,7 @@ export class PostService {
       ? `${userProfile.firstName} ${userProfile.lastName}`
       : 'Unknown User';
 
-    const postOwnerId = post.createdBy;
-
-    const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
-      userId,
-      postOwnerId,
-    );
+    // Note: usersBlockedEitherWay computed above for interaction enforcement + notifications.
 
     // SEND NOTIFICATION ONLY IF LIKE AND NOT SELF-LIKE
     if (!existingLike && postOwnerId !== userId && !usersBlockedEitherWay) {
@@ -781,7 +857,7 @@ export class PostService {
     });
 
     if (!post) {
-      throw new Error(`Post with ID ${postId} not found`);
+      throw new NotFoundException(`Post with ID ${postId} not found`);
     }
 
     if (
@@ -792,6 +868,17 @@ export class PostService {
         throw new ForbiddenException('Not allowed to view this post');
       }
       await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
+    }
+
+    // Hard rule: blocked users cannot view each other's posts (even public).
+    if (requestingUserId && post.createdBy && post.createdBy !== requestingUserId) {
+      const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+        requestingUserId,
+        post.createdBy,
+      );
+      if (blockedEitherWay) {
+        throw new NotFoundException('Post not found');
+      }
     }
 
     const postJson: PostWithProfile = post.get({ plain: true }) as PostWithProfile;
@@ -828,6 +915,17 @@ export class PostService {
         requestingUserId,
         post.familyCode,
       );
+    }
+
+    // Hard rule: blocked users cannot view each other's posts/comments.
+    if (requestingUserId && post.createdBy && post.createdBy !== requestingUserId) {
+      const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+        requestingUserId,
+        post.createdBy,
+      );
+      if (blockedEitherWay) {
+        throw new NotFoundException('Post not found');
+      }
     }
 
     const offset = (page - 1) * limit;
@@ -887,14 +985,82 @@ export class PostService {
     };
   }
 
-  async getCommentCount(postId: number) {
-    const count = await this.postCommentModel.count({ where: { postId } });
-    return { postId, likes: count };
+  async getCommentCount(postId: number, requestingUserId?: number) {
+    const post = await this.postModel.findByPk(postId);
+    if (!post) {
+      throw new NotFoundException('Post not found');
+    }
+
+    if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
+      if (!requestingUserId) {
+        throw new ForbiddenException('Not allowed');
+      }
+      await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
+    }
+
+    if (requestingUserId && post.createdBy && post.createdBy !== requestingUserId) {
+      const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+        requestingUserId,
+        post.createdBy,
+      );
+      if (blockedEitherWay) {
+        throw new NotFoundException('Post not found');
+      }
+    }
+
+    const blockedUserIds = requestingUserId
+      ? await this.blockingService.getBlockedUserIdsForUser(requestingUserId)
+      : [];
+
+    const count = await this.postCommentModel.count({
+      where: {
+        postId,
+        ...(blockedUserIds.length > 0
+          ? { userId: { [Op.notIn]: blockedUserIds } }
+          : {}),
+      },
+    });
+
+    return { postId, commentCount: count };
   }
 
-  async getLikeCount(postId: number) {
-    const count = await this.postLikeModel.count({ where: { postId } });
-    return { postId, likes: count };
+  async getLikeCount(postId: number, requestingUserId?: number) {
+    const post = await this.postModel.findByPk(postId);
+    if (!post) {
+      throw new NotFoundException('Post not found');
+    }
+
+    if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
+      if (!requestingUserId) {
+        throw new ForbiddenException('Not allowed');
+      }
+      await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
+    }
+
+    if (requestingUserId && post.createdBy && post.createdBy !== requestingUserId) {
+      const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+        requestingUserId,
+        post.createdBy,
+      );
+      if (blockedEitherWay) {
+        throw new NotFoundException('Post not found');
+      }
+    }
+
+    const blockedUserIds = requestingUserId
+      ? await this.blockingService.getBlockedUserIdsForUser(requestingUserId)
+      : [];
+
+    const count = await this.postLikeModel.count({
+      where: {
+        postId,
+        ...(blockedUserIds.length > 0
+          ? { userId: { [Op.notIn]: blockedUserIds } }
+          : {}),
+      },
+    });
+
+    return { postId, likeCount: count };
   }
 
   async deletePost(postId: number, userId: number) {

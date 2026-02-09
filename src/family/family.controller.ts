@@ -32,6 +32,7 @@ import { ApiConsumes, ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiBody
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { imageFileFilter } from '../utils/upload.utils';
 import { NotificationService } from '../notification/notification.service';
+import { BlockingService } from '../blocking/blocking.service';
 
 @ApiTags('Family')
 @Controller('family')
@@ -40,6 +41,7 @@ export class FamilyController {
     private readonly familyService: FamilyService,
     private readonly uploadService: UploadService,
     private readonly notificationService: NotificationService,
+    private readonly blockingService: BlockingService,
   ) {}
 
   @UseGuards(JwtAuthGuard)
@@ -319,13 +321,23 @@ export class FamilyController {
     return this.familyService.replaceManualTreeWithComplete(data.oldFamilyCode, data.newCompleteTreeData);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Post('user/:userId/add-spouse')
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Add spouse relationship and update associated family codes' })
   @ApiResponse({ status: 201, description: 'Spouse relationship created and associated codes updated' })
   async addSpouseRelationship(
     @Param('userId') userId: number,
     @Body('spouseUserId') spouseUserId: number
   ) {
+    const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      Number(userId),
+      Number(spouseUserId),
+    );
+    if (blockedEitherWay) {
+      throw new ForbiddenException('Not allowed');
+    }
+
     return this.familyService.addSpouseRelationship(userId, spouseUserId);
   }
 
@@ -347,6 +359,19 @@ export class FamilyController {
       throw new BadRequestException('Missing requesterId or targetUserId');
     }
 
+    if (Number(requesterId) === Number(targetUserId)) {
+      throw new BadRequestException('You cannot send an association request to yourself');
+    }
+
+    // Hard rule: if either user has blocked the other, no association requests can be sent (no admin bypass).
+    const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      requesterId,
+      targetUserId,
+    );
+    if (blockedEitherWay) {
+      throw new ForbiddenException('Not allowed');
+    }
+
     // Get requester's family code from user profile instead of relying on token or body
     const requesterProfile = await this.familyService.getFamilyByUserId(requesterId);
     if (!requesterProfile || !requesterProfile.familyCode) {
@@ -362,6 +387,23 @@ export class FamilyController {
     const targetProfile = await this.familyService.getFamilyByUserId(targetUserId);
     if (!targetProfile || !targetProfile.familyCode) {
       throw new BadRequestException('Target user must have a family code to receive association request');
+    }
+
+    // Prevent duplicates: if there's already a pending request between these users (either direction), re-use it.
+    const existingPending =
+      await this.notificationService.findPendingAssociationRequestBetweenUsers({
+        userA: requesterId,
+        userB: targetUserId,
+        familyA: requesterProfile.familyCode,
+        familyB: targetProfile.familyCode,
+      } as any);
+
+    if (existingPending) {
+      return {
+        message: 'Association request already pending',
+        notificationId: existingPending.id,
+        requestId: existingPending.referenceId || existingPending.id,
+      };
     }
 
     // Get requester's name for better notification message
@@ -541,6 +583,42 @@ export class FamilyController {
       relationshipType,
       parentRole,
     } as any);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('tree-link-requests/sent')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List pending tree link requests created by the logged-in user' })
+  @ApiResponse({ status: 200, description: 'Pending tree link requests returned' })
+  async listSentTreeLinkRequests(@Req() req) {
+    const actingUserId: number = req.user?.userId;
+    if (!actingUserId) {
+      throw new ForbiddenException('Unauthorized: missing user context');
+    }
+
+    return this.notificationService.getPendingTreeLinkRequestsForUser(actingUserId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('revoke-tree-link-request')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Revoke (cancel) a pending tree link request (admin/creator only)' })
+  @HttpCode(HttpStatus.OK)
+  async revokeTreeLinkRequest(
+    @Req() req,
+    @Body() body: { treeLinkRequestId: number },
+  ) {
+    const actingUserId: number = req.user?.userId;
+    const treeLinkRequestId = Number(body?.treeLinkRequestId);
+
+    if (!actingUserId) {
+      throw new ForbiddenException('Unauthorized: missing user context');
+    }
+    if (!treeLinkRequestId || Number.isNaN(treeLinkRequestId) || treeLinkRequestId <= 0) {
+      throw new BadRequestException('treeLinkRequestId is required and must be a positive number');
+    }
+
+    return this.notificationService.revokeTreeLinkRequest(treeLinkRequestId, actingUserId);
   }
 
   @UseGuards(JwtAuthGuard)

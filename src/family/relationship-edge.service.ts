@@ -31,6 +31,37 @@ export class RelationshipEdgeService {
     relationshipType: string,
     transaction?: Transaction,
   ): Promise<{ relationship: UserRelationship; generatedFamilyCode: string }> {
+    // Idempotency: this relationship is treated as bidirectional across the app.
+    // If an edge already exists (either direction), reuse it instead of creating a new one.
+    // This prevents duplicate spouse requests from corrupting the tree/associated codes.
+    const existing = await this.userRelationshipModel.findOne({
+      where: {
+        relationshipType,
+        [Op.or]: [
+          { user1Id, user2Id },
+          { user1Id: user2Id, user2Id: user1Id },
+        ],
+      } as any,
+      transaction,
+      order: [['id', 'DESC']],
+    });
+
+    if (existing) {
+      const generatedFamilyCode = (existing as any).generatedFamilyCode;
+
+      // Ensure both users have the relationship code present (safe no-op if already set).
+      if (generatedFamilyCode) {
+        await this.updateAssociatedFamilyCodes(user1Id, generatedFamilyCode, transaction);
+        await this.updateAssociatedFamilyCodes(user2Id, generatedFamilyCode, transaction);
+      }
+
+      this.logger.log(
+        `Reused existing relationship edge: ${user1Id} <-> ${user2Id} (${relationshipType}) with family code: ${generatedFamilyCode}`,
+      );
+
+      return { relationship: existing, generatedFamilyCode };
+    }
+
     // Generate unique family code for this relationship
     const generatedFamilyCode = this.generateUniqueFamilyCode();
 

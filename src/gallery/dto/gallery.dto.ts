@@ -44,14 +44,15 @@ export class CreateGalleryDto {
   @IsString()
   familyCode?: string;
 
-  @ApiProperty({
+  @ApiPropertyOptional({
     example: 42,
-    description: 'User ID of the creator',
+    description:
+      'User ID of the creator (optional; derived from auth token on the server).',
   })
+  @IsOptional()
   @Type(() => Number)
   @IsNumber()
-  @IsNotEmpty()
-  createdBy: number;
+  createdBy?: number;
 
   @ApiPropertyOptional({
     example: 'private',

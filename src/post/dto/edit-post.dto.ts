@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsIn, IsNotEmpty, ValidateIf } from 'class-validator';
+import { IsString, IsOptional, IsIn } from 'class-validator';
 
 export class EditPostDto {
   @ApiPropertyOptional({ example: 'My updated post' })
@@ -9,12 +9,11 @@ export class EditPostDto {
 
   @ApiPropertyOptional({ 
     example: 'FAM123',
-    description: 'Family code is required when privacy is "private" or "family"'
+    description:
+      'Optional. If omitted, backend derives from the editor’s profile when privacy is "private" or "family".'
   })
   @IsString()
   @IsOptional()
-  @ValidateIf((o) => o.privacy === 'private' || o.privacy === 'family')
-  @IsNotEmpty({ message: 'Family code is required when privacy is private or family' })
   familyCode?: string;
 
   @ApiPropertyOptional({ example: 'public', enum: ['public', 'private', 'family'] })

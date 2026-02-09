@@ -944,7 +944,6 @@ export class UserService {
         'countryId',
         'address',
         'bio',
-        'familyCode',
       ];
 
       profileFields.forEach((field) => {
@@ -962,38 +961,74 @@ export class UserService {
       // FAMILY JOIN LOGIC
       // -----------------------------
       if (dto.familyCode) {
-        // Update profile
-        targetProfile.familyCode = dto.familyCode;
+        const requestedFamilyCode = String(dto.familyCode || '').trim().toUpperCase();
+        const currentFamilyCode = String(targetProfile.familyCode || '').trim().toUpperCase();
 
-        const existing = await this.familyMemberModel.findOne({
-          where: { memberId: userId, familyCode: dto.familyCode },
-        });
+        // If user is switching families or joining for the first time, it must go through approval.
+        // Never auto-approve or directly mutate userProfile.familyCode here.
+        if (requestedFamilyCode && requestedFamilyCode !== currentFamilyCode) {
+          // If a user already has a primary family, do NOT allow changing it via Edit Profile.
+          // This blocks "admin joins another admin family without consent" and keeps family state consistent.
+          if (currentFamilyCode) {
+            throw new BadRequestException({
+              message:
+                'Family code cannot be changed from Edit Profile. Use the Join Family flow (admin approval required).',
+            });
+          }
 
-        if (!existing) {
-          await this.familyMemberModel.create({
-            memberId: userId,
-            familyCode: dto.familyCode,
-            creatorId: null,
-            approveStatus: 'approved',
+          // Store the requested familyCode so the app can show "pending approval" UX.
+          targetProfile.familyCode = requestedFamilyCode;
+
+          const existingMembership = await this.familyMemberModel.findOne({
+            where: { memberId: userId, familyCode: requestedFamilyCode } as any,
+            order: [['id', 'DESC']],
           });
 
-          const adminUserIds =
-            await this.notificationService.getAdminsForFamily(dto.familyCode);
+          if (!existingMembership) {
+            await this.familyMemberModel.create({
+              memberId: userId,
+              familyCode: requestedFamilyCode,
+              creatorId: null,
+              approveStatus: 'pending',
+            } as any);
+          } else if ((existingMembership as any).approveStatus !== 'approved') {
+            await existingMembership.update({ approveStatus: 'pending' } as any);
+          }
+
+          // Notify target family admins (once per requester/family while pending)
+          const adminUserIds = await this.notificationService.getAdminsForFamily(
+            requestedFamilyCode,
+          );
 
           if (adminUserIds?.length > 0) {
-            await this.notificationService.createNotification(
-              {
-                type: 'FAMILY_MEMBER_JOINED',
-                title: 'Family Member Joined',
-                message: `User ${targetProfile.firstName || ''} ${
-                  targetProfile.lastName || ''
-                } has joined the family.`,
-                familyCode: dto.familyCode,
-                referenceId: userId,
-                userIds: adminUserIds,
-              },
-              userId,
-            );
+            const alreadyPending =
+              await this.notificationService.hasPendingFamilyJoinRequest(
+                requestedFamilyCode,
+                userId,
+              );
+
+            if (!alreadyPending) {
+              const requesterName = `${targetProfile.firstName || ''} ${
+                targetProfile.lastName || ''
+              }`.trim() || 'A user';
+
+              await this.notificationService.createNotification(
+                {
+                  type: 'FAMILY_JOIN_REQUEST',
+                  title: 'Family Join Request',
+                  message: `${requesterName} requested to join your family.`,
+                  familyCode: requestedFamilyCode,
+                  referenceId: userId,
+                  data: {
+                    requesterId: userId,
+                    requesterName,
+                    requestedFamilyCode,
+                  },
+                  userIds: adminUserIds,
+                } as any,
+                userId,
+              );
+            }
           }
         }
       }

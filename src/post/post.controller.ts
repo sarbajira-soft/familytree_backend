@@ -157,13 +157,17 @@ export class PostController {
   }
 
   @Get(':postId/comments/count')
-  async getCommentCount(@Param('postId') postId: number) {
-    return this.postService.getCommentCount(postId);
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  async getCommentCount(@Param('postId') postId: number, @Req() req) {
+    return this.postService.getCommentCount(postId, req.user?.userId);
   }
   
   @Get(':postId/like/count')
-  async getLikeCount(@Param('postId') postId: number) {
-    return this.postService.getLikeCount(postId);
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  async getLikeCount(@Param('postId') postId: number, @Req() req) {
+    return this.postService.getLikeCount(postId, req.user?.userId);
   }
 
   @UseGuards(JwtAuthGuard)

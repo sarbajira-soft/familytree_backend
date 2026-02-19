@@ -27,8 +27,9 @@ CREATE INDEX IF NOT EXISTS idx_ft_user_block_blocked ON public.ft_user_block("bl
 CREATE INDEX IF NOT EXISTS idx_ft_user_block_active_pair ON public.ft_user_block("blockerUserId", "blockedUserId") WHERE "deletedAt" IS NULL;
 CREATE INDEX IF NOT EXISTS idx_ft_user_block_active_reverse_pair ON public.ft_user_block("blockedUserId", "blockerUserId") WHERE "deletedAt" IS NULL;
 
-CREATE UNIQUE INDEX IF NOT EXISTS uidx_ft_user_block_active_unique
-  ON public.ft_user_block("blockerUserId", "blockedUserId", "blockType")
+-- BLOCK OVERRIDE: Active uniqueness now depends only on blocker/blocked pair.
+CREATE UNIQUE INDEX IF NOT EXISTS unique_active_block
+  ON public.ft_user_block("blockerUserId", "blockedUserId")
   WHERE "deletedAt" IS NULL;
 
 -- Performance: common lookup for family membership checks

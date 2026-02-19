@@ -70,9 +70,7 @@ export class EventService {
       throw new ForbiddenException('Not allowed to access this family content');
     }
 
-    if ((membership as any).isBlocked) {
-      throw new ForbiddenException('You have been blocked from this family');
-    }
+    // BLOCK OVERRIDE: Legacy family-member block flag removed; access checks no longer use ft_family_members.isBlocked.
   }
 
   private async getAccessibleFamilyCodesForUser(userId: number): Promise<string[]> {
@@ -82,13 +80,14 @@ export class EventService {
 
     const memberships = await this.familyMemberModel.findAll({
       where: { memberId: userId, approveStatus: 'approved' } as any,
-      attributes: ['familyCode', 'isBlocked'],
+      // BLOCK OVERRIDE: Removed legacy blocked-membership projection.
+      attributes: ['familyCode'],
     });
 
     const base = Array.from(
       new Set(
         (memberships as any[])
-          .filter((m: any) => !!(m as any).familyCode && !(m as any).isBlocked)
+          .filter((m: any) => !!(m as any).familyCode)
           .map((m: any) => String((m as any).familyCode)),
       ),
     );
@@ -285,18 +284,7 @@ export class EventService {
   }
 
   async getEventsForUser(userId: number) {
-    const familyMember = await this.familyMemberModel.findOne({
-      where: {
-        memberId: userId,
-        approveStatus: 'approved',
-      },
-    });
-
-    if (familyMember && (familyMember as any).familyCode) {
-      if ((familyMember as any).isBlocked) {
-        throw new ForbiddenException('You have been blocked from this family');
-      }
-    }
+    // BLOCK OVERRIDE: Removed legacy family-level block gating based on ft_family_members columns.
 
     const events = await this.eventModel.findAll({
       where: { 

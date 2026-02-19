@@ -413,7 +413,7 @@ export class FamilyMergeService {
           ? profile.associatedFamilyCodes
           : [],
         isAppUser: user?.isAppUser ?? false,
-        isBlocked: membership?.isBlocked ?? false,
+        // BLOCK OVERRIDE: Removed legacy family-member block shape from merge payload.
         isAdmin: user ? user.role === 2 || user.role === 3 : false,
         familyCode: familyCode,
         parents: Array.isArray(person.parents) ? person.parents : [],

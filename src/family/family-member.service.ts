@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException, Inject, forwardRef, ForbiddenException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Inject, forwardRef } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { Op, QueryTypes } from 'sequelize';
@@ -174,6 +174,47 @@ export class FamilyMemberService {
       },
       attributes: ['userId', 'firstName', 'familyCode'],
     });
+  }
+
+  private async applyParentNameMatches(
+    profile: UserProfile,
+    normalizeName: (v: any) => string,
+    familyMatchMap: Record<string, { names: Set<string>; scores: Map<string, number> }>,
+  ) {
+    const fatherNorm = normalizeName((profile as any).fatherName);
+    const motherNorm = normalizeName((profile as any).motherName);
+    if (!fatherNorm || !motherNorm) {
+      return;
+    }
+
+    const parentCandidates = await this.userProfileModel.findAll({
+      where: {
+        familyCode: { [Op.ne]: null },
+        fatherName: { [Op.iLike]: `%${String((profile as any).fatherName).trim()}%` },
+        motherName: { [Op.iLike]: `%${String((profile as any).motherName).trim()}%` },
+      },
+      attributes: ['userId', 'familyCode', 'fatherName', 'motherName'],
+    });
+
+    for (const m of parentCandidates as any[]) {
+      const famCode = String(m.familyCode || '').trim();
+      if (!famCode) continue;
+      if (normalizeName(m.fatherName) !== fatherNorm) continue;
+      if (normalizeName(m.motherName) !== motherNorm) continue;
+
+      if (!familyMatchMap[famCode]) {
+        familyMatchMap[famCode] = { names: new Set(), scores: new Map() };
+      }
+
+      if ((profile as any).fatherName) {
+        familyMatchMap[famCode].names.add((profile as any).fatherName);
+        familyMatchMap[famCode].scores.set((profile as any).fatherName, 150);
+      }
+      if ((profile as any).motherName) {
+        familyMatchMap[famCode].names.add((profile as any).motherName);
+        familyMatchMap[famCode].scores.set((profile as any).motherName, 150);
+      }
+    }
   }
 
   private static computeMatchScore(matchFirstName: string, searchName: string) {
@@ -658,24 +699,24 @@ export class FamilyMemberService {
     try {
       await this.sequelize.transaction(async (transaction) => {
         const cards = await this.familyTreeModel.findAll({
-          where: { familyCode, userId: memberId } as any,
+          where: { familyCode, userId: memberId },
           transaction,
         });
 
         const deletedPersonIds = cards
-          .map((c: any) => Number((c as any).personId))
+          .map((c: any) => Number(c.personId))
           .filter((id) => Number.isFinite(id));
 
         if (cards.length > 0) {
           await this.familyTreeModel.destroy({
-            where: { familyCode, userId: memberId } as any,
+            where: { familyCode, userId: memberId },
             transaction,
           });
         }
 
         if (deletedPersonIds.length > 0) {
           const remaining = await this.familyTreeModel.findAll({
-            where: { familyCode } as any,
+            where: { familyCode },
             transaction,
           });
 
@@ -686,25 +727,25 @@ export class FamilyMemberService {
               .filter((x) => Number.isFinite(x) && !del.has(Number(x)));
 
           for (const entry of remaining as any[]) {
-            const nextParents = cleanArray((entry as any).parents);
-            const nextChildren = cleanArray((entry as any).children);
-            const nextSpouses = cleanArray((entry as any).spouses);
-            const nextSiblings = cleanArray((entry as any).siblings);
+            const nextParents = cleanArray(entry.parents);
+            const nextChildren = cleanArray(entry.children);
+            const nextSpouses = cleanArray(entry.spouses);
+            const nextSiblings = cleanArray(entry.siblings);
 
             const changed =
-              JSON.stringify(nextParents) !== JSON.stringify((entry as any).parents) ||
-              JSON.stringify(nextChildren) !== JSON.stringify((entry as any).children) ||
-              JSON.stringify(nextSpouses) !== JSON.stringify((entry as any).spouses) ||
-              JSON.stringify(nextSiblings) !== JSON.stringify((entry as any).siblings);
+              JSON.stringify(nextParents) !== JSON.stringify(entry.parents) ||
+              JSON.stringify(nextChildren) !== JSON.stringify(entry.children) ||
+              JSON.stringify(nextSpouses) !== JSON.stringify(entry.spouses) ||
+              JSON.stringify(nextSiblings) !== JSON.stringify(entry.siblings);
 
             if (changed) {
-              await (entry as any).update(
+              await entry.update(
                 {
                   parents: nextParents,
                   children: nextChildren,
                   spouses: nextSpouses,
                   siblings: nextSiblings,
-                } as any,
+                },
                 { transaction },
               );
             }
@@ -726,115 +767,13 @@ export class FamilyMemberService {
     return { message: 'Family member removed successfully' };
   }
 
-  async blockFamilyMember(memberId: number, familyCode: string, actingUserId: number) {
-    // Load family to determine owner/root user
-    const family = await this.familyModel.findOne({ where: { familyCode } });
-    if (!family) {
-      throw new NotFoundException('Family not found');
-    }
-
-    // Prevent blocking the family owner/root
-    if (memberId === family.createdBy) {
-      throw new BadRequestException('Cannot block the family owner');
-    }
-
-    // Prevent blocking self
-    if (memberId === actingUserId) {
-      throw new BadRequestException('You cannot block yourself');
-    }
-
-    const membership = await this.familyMemberModel.findOne({
-      where: { memberId, familyCode },
-    });
-
-    if (!membership) {
-      throw new NotFoundException('Family member not found');
-    }
-
-    // Only admins or the family owner can block members
-    const isOwner = family.createdBy === actingUserId;
-    const isAdmin = await this.isAdminOfFamily(actingUserId, familyCode);
-
-    if (!isOwner && !isAdmin) {
-      throw new BadRequestException('Access denied: Only family admins can block members');
-    }
-
-    if (membership.isBlocked) {
-      return { message: 'Family member is already blocked', data: membership };
-    }
-
-    await membership.update({
-      isBlocked: true,
-      blockedByUserId: actingUserId,
-      blockedAt: new Date(),
-    });
-
-    return {
-      message: 'Family member blocked successfully',
-      data: membership,
-    };
-  }
-
-  async unblockFamilyMember(memberId: number, familyCode: string, actingUserId: number) {
-    const family = await this.familyModel.findOne({ where: { familyCode } });
-    if (!family) {
-      throw new NotFoundException('Family not found');
-    }
-
-    const membership = await this.familyMemberModel.findOne({
-      where: { memberId, familyCode },
-    });
-
-    if (!membership) {
-      throw new NotFoundException('Family member not found');
-    }
-
-    // Only admins or the family owner can unblock members
-    const isOwner = family.createdBy === actingUserId;
-    const isAdmin = await this.isAdminOfFamily(actingUserId, familyCode);
-
-    if (!isOwner && !isAdmin) {
-      throw new BadRequestException('Access denied: Only family admins can unblock members');
-    }
-
-    if (!membership.isBlocked) {
-      return { message: 'Family member is not blocked', data: membership };
-    }
-
-    await membership.update({
-      isBlocked: false,
-      blockedByUserId: null,
-      blockedAt: null,
-    });
-
-    return {
-      message: 'Family member unblocked successfully',
-      data: membership,
-    };
-  }
+  // BLOCK OVERRIDE: Removed legacy family-member block/unblock write flow in favor of user-level ft_user_block.
 
   // Get all approved family members by family code
   async getAllFamilyMembers(familyCode: string, requestingUserId?: number) {
-    // If the requesting user is blocked from this family, deny access
-    if (requestingUserId) {
-      const membership = await this.familyMemberModel.findOne({
-        where: {
-          memberId: requestingUserId,
-          familyCode,
-        },
-      });
-
-      if (membership && (membership as any).isBlocked) {
-        throw new ForbiddenException('You have been blocked from this family');
-      }
-    }
+    // BLOCK OVERRIDE: Removed legacy family-member block gate; access now relies on user-level block checks.
 
     const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
-    const requesterIsFamilyAdmin = await this.isAdminOfFamily(
-      Number(requestingUserId),
-      String(familyCode),
-    );
-
     // Get all users whose primary family is this familyCode OR who are approved members
     const members = await this.familyMemberModel.findAll({
       where: {
@@ -898,20 +837,19 @@ export class FamilyMemberService {
           profileImage,
         },
         membershipType: 'member',
-        // Hide blocked status from non-admin users to avoid leaking moderation state.
-        isBlocked: requesterIsFamilyAdmin ? Boolean(member?.isBlocked) : false,
-        familyRole:
-          user?.role >= 2 &&
-          String(user?.userProfile?.familyCode || '').trim().toUpperCase() ===
-            normalizedFamilyCode
-            ? user.role === 3
-              ? 'Superadmin'
-              : 'Admin'
-            : 'Member',
+        familyRole: (() => {
+          const isFamilyAdmin =
+            user?.role >= 2 &&
+            String(user?.userProfile?.familyCode || '').trim().toUpperCase() === normalizedFamilyCode;
+
+          if (!isFamilyAdmin) {
+            return 'Member';
+          }
+          return user.role === 3 ? 'Superadmin' : 'Admin';
+        })(),
         isFamilyAdmin:
           user?.role >= 2 &&
-          String(user?.userProfile?.familyCode || '').trim().toUpperCase() ===
-            normalizedFamilyCode,
+          String(user?.userProfile?.familyCode || '').trim().toUpperCase() === normalizedFamilyCode,
       };
     }));
 
@@ -923,7 +861,7 @@ export class FamilyMemberService {
         .filter((id: any) => Number.isFinite(id) && id > 0),
     );
 
-    const associatedRows = (await this.sequelize.query(
+    const associatedRows = await this.sequelize.query(
       `
         SELECT "userId"
         FROM public.ft_user_profile
@@ -933,7 +871,7 @@ export class FamilyMemberService {
         replacements: { needle: JSON.stringify([normalizedFamilyCode]) },
         type: QueryTypes.SELECT,
       },
-    )) as Array<{ userId: number }>;
+    );
 
     const associatedUserIds = Array.from(
       new Set(
@@ -980,9 +918,6 @@ export class FamilyMemberService {
             creatorId: null,
             approveStatus: 'associated',
             isLinkedUsed: false,
-            isBlocked: false,
-            blockedByUserId: null,
-            blockedAt: null,
             createdAt: null,
             updatedAt: null,
             user: {
@@ -1003,7 +938,7 @@ export class FamilyMemberService {
     // Include linked-family members (tree link connections) in All Members list.
     let linkedResult: any[] = [];
     try {
-      const linkedRows = (await this.sequelize.query(
+      const linkedRows = await this.sequelize.query(
         `
           SELECT
             CASE
@@ -1018,13 +953,13 @@ export class FamilyMemberService {
           replacements: { code: normalizedFamilyCode },
           type: QueryTypes.SELECT,
         },
-      )) as Array<{ linkedCode: string }>;
+      );
 
       const linkedCodes = Array.from(
         new Set(
           (linkedRows || [])
             .map((r) => String((r as any)?.linkedCode || '').trim())
-            .filter((c) => c),
+            .filter(Boolean),
         ),
       );
 
@@ -1066,9 +1001,6 @@ export class FamilyMemberService {
                 creatorId: null,
                 approveStatus: 'linked',
                 isLinkedUsed: false,
-                isBlocked: false,
-                blockedByUserId: null,
-                blockedAt: null,
                 createdAt: null,
                 updatedAt: null,
                 user: {
@@ -1284,7 +1216,7 @@ export class FamilyMemberService {
     const normalizeName = (v: any) =>
       String(v || '')
         .trim()
-        .replace(/\s+/g, ' ')
+        .replaceAll(/\s+/g, ' ')
         .toLowerCase();
 
     // 2. Collect all names to search
@@ -1299,39 +1231,7 @@ export class FamilyMemberService {
     const familyMatchMap = this.buildFamilyMatchMap(uniqueNames, allMatches);
 
     // 3b. Parent-name match (exact, case-insensitive). This specifically fixes the "same parents" use case.
-    const fatherNorm = normalizeName((profile as any).fatherName);
-    const motherNorm = normalizeName((profile as any).motherName);
-    if (fatherNorm && motherNorm) {
-      const parentCandidates = await this.userProfileModel.findAll({
-        where: {
-          familyCode: { [Op.ne]: null },
-          fatherName: { [Op.iLike]: `%${String((profile as any).fatherName).trim()}%` },
-          motherName: { [Op.iLike]: `%${String((profile as any).motherName).trim()}%` },
-        },
-        attributes: ['userId', 'familyCode', 'fatherName', 'motherName'],
-      });
-
-      for (const m of parentCandidates as any[]) {
-        const famCode = String(m.familyCode || '').trim();
-        if (!famCode) continue;
-        if (normalizeName(m.fatherName) !== fatherNorm) continue;
-        if (normalizeName(m.motherName) !== motherNorm) continue;
-
-        if (!familyMatchMap[famCode]) {
-          familyMatchMap[famCode] = { names: new Set(), scores: new Map() };
-        }
-
-        // Strong signal: both parents match exactly.
-        if ((profile as any).fatherName) {
-          familyMatchMap[famCode].names.add((profile as any).fatherName);
-          familyMatchMap[famCode].scores.set((profile as any).fatherName, 150);
-        }
-        if ((profile as any).motherName) {
-          familyMatchMap[famCode].names.add((profile as any).motherName);
-          familyMatchMap[famCode].scores.set((profile as any).motherName, 150);
-        }
-      }
-    }
+    await this.applyParentNameMatches(profile, normalizeName, familyMatchMap);
 
     const foundFamilies = await this.buildFoundFamilies(familyMatchMap);
 

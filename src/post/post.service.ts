@@ -68,9 +68,7 @@ export class PostService {
       throw new ForbiddenException('Not allowed to access this family content');
     }
 
-    if (membership?.isBlocked) {
-      throw new ForbiddenException('You have been blocked from this family');
-    }
+    // BLOCK OVERRIDE: Legacy family-member block flag removed; access checks no longer use ft_family_members.isBlocked.
   }
 
   private async getAccessibleFamilyCodesForUser(userId: number): Promise<string[]> {
@@ -80,13 +78,14 @@ export class PostService {
 
     const memberships = await this.familyMemberModel.findAll({
       where: { memberId: userId, approveStatus: 'approved' },
-      attributes: ['familyCode', 'isBlocked'],
+      // BLOCK OVERRIDE: Removed legacy blocked-membership projection.
+      attributes: ['familyCode'],
     });
 
     const base = Array.from(
       new Set(
         memberships
-          .filter((member) => !!member.familyCode && !member.isBlocked)
+          .filter((member) => !!member.familyCode)
           .map((member) => String(member.familyCode)),
       ),
     );

@@ -33,13 +33,5 @@ export class FamilyMember extends Model<FamilyMember> {
   @Column({ type: DataType.BOOLEAN, allowNull: false, field: 'isLinkedUsed' })
   isLinkedUsed: boolean;
 
-  @Default(false)
-  @Column({ type: DataType.BOOLEAN, allowNull: false })
-  isBlocked: boolean;
-
-  @Column({ type: DataType.INTEGER, allowNull: true })
-  blockedByUserId: number;
-
-  @Column({ type: DataType.DATE, allowNull: true })
-  blockedAt: Date;
+  // BLOCK OVERRIDE: Legacy family-member block columns removed in favor of ft_user_block.
 }

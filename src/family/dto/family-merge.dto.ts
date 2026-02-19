@@ -155,8 +155,7 @@ export class FamilyMemberPreviewDto {
   @IsOptional()
   isAppUser?: boolean;
 
-  @IsOptional()
-  isBlocked?: boolean;
+  // BLOCK OVERRIDE: Removed legacy family-member block status from merge DTO.
 
   @IsOptional()
   isAdmin?: boolean;

@@ -50,6 +50,104 @@ export class FamilyService {
       await transaction.commit();
     } catch (e) {
       await transaction.rollback();
+      console.error('Failed to repair family tree after mutation:', e);
+    }
+  }
+
+  private async requireAdminActorForFamilyAction(params: {
+    actingUserId: number;
+    familyCode: string;
+    nodeUid: string;
+  }) {
+    const actingUserId = Number(params?.actingUserId);
+    const familyCode = String(params?.familyCode || '').trim().toUpperCase();
+    const nodeUid = String(params?.nodeUid || '').trim();
+
+    if (!actingUserId) {
+      throw new ForbiddenException('Unauthorized');
+    }
+    if (!familyCode || !nodeUid) {
+      throw new BadRequestException('familyCode and nodeUid are required');
+    }
+
+    await this.assertUserNotBlockedInFamily(actingUserId, familyCode);
+
+    const actorUser = await this.userModel.findOne({
+      where: { id: actingUserId },
+      include: [
+        {
+          model: this.userProfileModel,
+          as: 'userProfile',
+          attributes: ['familyCode'],
+        },
+      ],
+    });
+    if (!actorUser) {
+      throw new ForbiddenException('Unauthorized');
+    }
+
+    const actorRole = Number((actorUser as any).role);
+    const actorIsAdmin = actorRole === 2 || actorRole === 3;
+    if (!actorIsAdmin) {
+      throw new ForbiddenException('Only admins can unlink cards');
+    }
+
+    const actorFamilyCode = String((actorUser as any)?.userProfile?.familyCode || '')
+      .trim()
+      .toUpperCase();
+    const membership = await this.familyMemberModel.findOne({
+      where: {
+        memberId: actingUserId,
+        familyCode,
+        approveStatus: 'approved',
+      } as any,
+      order: [['id', 'DESC']],
+    });
+    const isAdminOfThisFamily = actorFamilyCode === familyCode || !!membership;
+    if (!isAdminOfThisFamily) {
+      throw new ForbiddenException('Not authorized to unlink cards in this family');
+    }
+
+    return { actingUserId, familyCode, nodeUid, actorUser, actorFamilyCode };
+  }
+
+  private async cleanupOrphanedRelationshipReferences(familyCode: string) {
+    const remainingEntries = await this.familyTreeModel.findAll({
+      where: { familyCode } as any,
+    });
+
+    const remainingPersonIdSet = new Set<number>(
+      remainingEntries
+        .map((e: any) => Number(e.personId))
+        .filter((id) => Number.isFinite(id)),
+    );
+
+    const cleanArray = (arr: any) => {
+      if (!arr || !Array.isArray(arr)) return [];
+      return arr
+        .map((id) => (typeof id === 'string' ? Number.parseInt(id, 10) : id))
+        .filter((id) => !Number.isNaN(id) && remainingPersonIdSet.has(id));
+    };
+
+    for (const entry of remainingEntries as any[]) {
+      const cleanedParents = cleanArray(entry.parents);
+      const cleanedChildren = cleanArray(entry.children);
+      const cleanedSpouses = cleanArray(entry.spouses);
+      const cleanedSiblings = cleanArray(entry.siblings);
+
+      const parentsChanged = JSON.stringify(cleanedParents) !== JSON.stringify(entry.parents);
+      const childrenChanged = JSON.stringify(cleanedChildren) !== JSON.stringify(entry.children);
+      const spousesChanged = JSON.stringify(cleanedSpouses) !== JSON.stringify(entry.spouses);
+      const siblingsChanged = JSON.stringify(cleanedSiblings) !== JSON.stringify(entry.siblings);
+
+      if (parentsChanged || childrenChanged || spousesChanged || siblingsChanged) {
+        await entry.update({
+          parents: cleanedParents,
+          children: cleanedChildren,
+          spouses: cleanedSpouses,
+          siblings: cleanedSiblings,
+        });
+      }
     }
   }
 
@@ -65,7 +163,7 @@ export class FamilyService {
       ],
     });
 
-    if (!user || !user.userProfile) {
+    if (!user?.userProfile) {
       return null;
     }
 
@@ -75,10 +173,10 @@ export class FamilyService {
         where: {
           memberId: userId,
           approveStatus: 'approved',
-        } as any,
+        },
         order: [['id', 'DESC']],
       });
-      const memberFamilyCode = (membership as any)?.familyCode || null;
+      const memberFamilyCode = membership?.familyCode || null;
       return {
         familyCode: memberFamilyCode,
         userId: user.id,
@@ -128,7 +226,7 @@ export class FamilyService {
 
       console.log('User with profile found:', user?.toJSON());
 
-      if (user && user.userProfile) {
+      if (user?.userProfile) {
         const firstName = user.userProfile.firstName || '';
         const lastName = user.userProfile.lastName || '';
         const fullName = `${firstName} ${lastName}`.trim();
@@ -259,12 +357,11 @@ export class FamilyService {
       where: {
         memberId: userId,
         approveStatus: 'approved',
-      } as any,
+      },
       order: [['id', 'DESC']],
     });
 
-    const viewerFamilyCode =
-      (userProfile as any)?.familyCode || (viewerMembership as any)?.familyCode;
+    const viewerFamilyCode = userProfile?.familyCode || viewerMembership?.familyCode;
     if (!viewerFamilyCode) {
       return [];
     }
@@ -287,9 +384,9 @@ export class FamilyService {
     const linkedCodes = Array.from(
       new Set(
         (links as any[])
-          .map((r) => {
-            const low = String((r as any)?.familyCodeLow || '').trim().toUpperCase();
-            const high = String((r as any)?.familyCodeHigh || '').trim().toUpperCase();
+          .map((r: any) => {
+            const low = String(r?.familyCodeLow || '').trim().toUpperCase();
+            const high = String(r?.familyCodeHigh || '').trim().toUpperCase();
             return low === String(viewerFamilyCode).trim().toUpperCase() ? high : low;
           })
           .filter((c) => c && c !== String(viewerFamilyCode).trim().toUpperCase()),
@@ -306,98 +403,48 @@ export class FamilyService {
     });
 
     const byCode = new Map(
-      (families as any[]).map((f) => [String((f as any).familyCode).trim().toUpperCase(), f]),
+      (families as any[]).map((f: any) => [String(f?.familyCode).trim().toUpperCase(), f]),
     );
 
     return linkedCodes.map((code) => {
       const f = byCode.get(String(code).trim().toUpperCase());
       return {
         familyCode: code,
-        familyName: f ? (f as any).familyName : null,
-        familyPhoto: f ? (f as any).familyPhoto : null,
+        familyName: f ? f.familyName : null,
+        familyPhoto: f ? f.familyPhoto : null,
       };
     });
   }
   constructor(
     @InjectModel(User)
-    private userModel: typeof User,
+    private readonly userModel: typeof User,
     @InjectConnection()
-    private sequelize: Sequelize,
+    private readonly sequelize: Sequelize,
     @InjectModel(UserProfile)
-    private userProfileModel: typeof UserProfile,
+    private readonly userProfileModel: typeof UserProfile,
     @InjectModel(Family)
-    private familyModel: typeof Family,
+    private readonly familyModel: typeof Family,
     @InjectModel(FamilyMember)
-    private familyMemberModel: typeof FamilyMember,
+    private readonly familyMemberModel: typeof FamilyMember,
     @InjectModel(FamilyTree)
-    private familyTreeModel: typeof FamilyTree,
+    private readonly familyTreeModel: typeof FamilyTree,
     @InjectModel(FamilyLink)
-    private familyLinkModel: typeof FamilyLink,
+    private readonly familyLinkModel: typeof FamilyLink,
     @InjectModel(TreeLink)
-    private treeLinkModel: typeof TreeLink,
-    private mailService: MailService,
+    private readonly treeLinkModel: typeof TreeLink,
+    private readonly mailService: MailService,
     private readonly notificationService: NotificationService,
     private readonly relationshipEdgeService: RelationshipEdgeService,
     private readonly relationshipPathService: RelationshipPathService,
     private readonly uploadService: UploadService,
-  ) {}
+  ) { }
 
   async unlinkTreeLinkExternalCard(params: {
     actingUserId: number;
     familyCode: string;
     nodeUid: string;
   }) {
-    const actingUserId = Number(params?.actingUserId);
-    const familyCode = String(params?.familyCode || '')
-      .trim()
-      .toUpperCase();
-    const nodeUid = String(params?.nodeUid || '').trim();
-
-    if (!actingUserId) {
-      throw new ForbiddenException('Unauthorized');
-    }
-    if (!familyCode || !nodeUid) {
-      throw new BadRequestException('familyCode and nodeUid are required');
-    }
-
-    // Must not be blocked in this family
-    await this.assertUserNotBlockedInFamily(actingUserId, familyCode);
-
-    // Only admins of this family can unlink (same guard as editing tree)
-    const actorUser = await this.userModel.findOne({
-      where: { id: actingUserId },
-      include: [
-        {
-          model: this.userProfileModel,
-          as: 'userProfile',
-          attributes: ['familyCode'],
-        },
-      ],
-    });
-    if (!actorUser) {
-      throw new ForbiddenException('Unauthorized');
-    }
-    const actorRole = Number((actorUser as any).role);
-    const actorIsAdmin = actorRole === 2 || actorRole === 3;
-    if (!actorIsAdmin) {
-      throw new ForbiddenException('Only admins can unlink cards');
-    }
-
-    const actorFamilyCode = String((actorUser as any)?.userProfile?.familyCode || '')
-      .trim()
-      .toUpperCase();
-    const membership = await this.familyMemberModel.findOne({
-      where: {
-        memberId: actingUserId,
-        familyCode,
-        approveStatus: 'approved',
-      } as any,
-      order: [['id', 'DESC']],
-    });
-    const isAdminOfThisFamily = actorFamilyCode === familyCode || !!membership;
-    if (!isAdminOfThisFamily) {
-      throw new ForbiddenException('Not authorized to unlink cards in this family');
-    }
+    const { familyCode, nodeUid } = await this.requireAdminActorForFamilyAction(params);
 
     const externalCard = await this.familyTreeModel.findOne({
       where: {
@@ -421,9 +468,9 @@ export class FamilyService {
         isExternalLinked: true,
         ...(canonicalFamilyCode && canonicalNodeUid
           ? {
-              canonicalFamilyCode,
-              canonicalNodeUid,
-            }
+            canonicalFamilyCode,
+            canonicalNodeUid,
+          }
           : { nodeUid }),
       } as any,
     });
@@ -439,52 +486,15 @@ export class FamilyService {
         isExternalLinked: true,
         ...(canonicalFamilyCode && canonicalNodeUid
           ? {
-              canonicalFamilyCode,
-              canonicalNodeUid,
-            }
+            canonicalFamilyCode,
+            canonicalNodeUid,
+          }
           : { nodeUid }),
       } as any,
     });
 
     // Clean up orphaned relationship references inside this family
-    const remainingEntries = await this.familyTreeModel.findAll({
-      where: { familyCode } as any,
-    });
-    const remainingPersonIds = remainingEntries
-      .map((e: any) => Number(e.personId))
-      .filter((id) => Number.isFinite(id));
-
-    const cleanArray = (arr: any) => {
-      if (!arr || !Array.isArray(arr)) return [];
-      return arr
-        .map((id) => (typeof id === 'string' ? parseInt(id) : id))
-        .filter((id) => !isNaN(id) && remainingPersonIds.includes(id));
-    };
-
-    for (const entry of remainingEntries as any[]) {
-      const cleanedParents = cleanArray((entry as any).parents);
-      const cleanedChildren = cleanArray((entry as any).children);
-      const cleanedSpouses = cleanArray((entry as any).spouses);
-      const cleanedSiblings = cleanArray((entry as any).siblings);
-
-      const parentsChanged =
-        JSON.stringify(cleanedParents) !== JSON.stringify((entry as any).parents);
-      const childrenChanged =
-        JSON.stringify(cleanedChildren) !== JSON.stringify((entry as any).children);
-      const spousesChanged =
-        JSON.stringify(cleanedSpouses) !== JSON.stringify((entry as any).spouses);
-      const siblingsChanged =
-        JSON.stringify(cleanedSiblings) !== JSON.stringify((entry as any).siblings);
-
-      if (parentsChanged || childrenChanged || spousesChanged || siblingsChanged) {
-        await (entry as any).update({
-          parents: cleanedParents,
-          children: cleanedChildren,
-          spouses: cleanedSpouses,
-          siblings: cleanedSiblings,
-        });
-      }
-    }
+    await this.cleanupOrphanedRelationshipReferences(familyCode);
 
     // Deactivate tree links if we can map to canonical
     let deactivatedTreeLinks = 0;
@@ -615,7 +625,7 @@ export class FamilyService {
       order: [['id', 'DESC']],
     });
     const actorFamilyCode = String(
-      actorProfileFamilyCode || (actorMembership as any)?.familyCode || '',
+      actorProfileFamilyCode || actorMembership?.familyCode || '',
     )
       .trim()
       .toUpperCase();
@@ -689,44 +699,7 @@ export class FamilyService {
     });
 
     if (removedExternalCards > 0) {
-      const remainingEntries = await this.familyTreeModel.findAll({
-        where: { familyCode: actorFamilyCode } as any,
-      });
-      const remainingPersonIds = remainingEntries
-        .map((e: any) => Number(e.personId))
-        .filter((id) => Number.isFinite(id));
-
-      const cleanArray = (arr: any) => {
-        if (!arr || !Array.isArray(arr)) return [];
-        return arr
-          .map((id) => (typeof id === 'string' ? parseInt(id) : id))
-          .filter((id) => !isNaN(id) && remainingPersonIds.includes(id));
-      };
-
-      for (const entry of remainingEntries as any[]) {
-        const cleanedParents = cleanArray((entry as any).parents);
-        const cleanedChildren = cleanArray((entry as any).children);
-        const cleanedSpouses = cleanArray((entry as any).spouses);
-        const cleanedSiblings = cleanArray((entry as any).siblings);
-
-        const parentsChanged =
-          JSON.stringify(cleanedParents) !== JSON.stringify((entry as any).parents);
-        const childrenChanged =
-          JSON.stringify(cleanedChildren) !== JSON.stringify((entry as any).children);
-        const spousesChanged =
-          JSON.stringify(cleanedSpouses) !== JSON.stringify((entry as any).spouses);
-        const siblingsChanged =
-          JSON.stringify(cleanedSiblings) !== JSON.stringify((entry as any).siblings);
-
-        if (parentsChanged || childrenChanged || spousesChanged || siblingsChanged) {
-          await (entry as any).update({
-            parents: cleanedParents,
-            children: cleanedChildren,
-            spouses: cleanedSpouses,
-            siblings: cleanedSiblings,
-          });
-        }
-      }
+      await this.cleanupOrphanedRelationshipReferences(actorFamilyCode);
     }
 
     await this.repairFamilyTreeAfterMutation({ familyCode: actorFamilyCode });
@@ -827,24 +800,13 @@ export class FamilyService {
     userId: number,
     familyCode: string,
   ): Promise<void> {
-    if (!userId || !familyCode) {
-      return;
-    }
-
-    const membership = await this.familyMemberModel.findOne({
-      where: {
-        memberId: userId,
-        familyCode,
-      },
-    });
-
-    if (membership && (membership as any).isBlocked) {
-      throw new ForbiddenException('You have been blocked from this family');
-    }
+    // BLOCK OVERRIDE: Legacy family-level block state removed; user-level blocking is handled in ft_user_block.
+    void userId;
+    void familyCode;
   }
 
   // Authorization helper: ensure a user can VIEW a given family's tree
-  // - Normal flow (/family/tree/:familyCode): user must be an APPROVED member of that family and not blocked
+  // - Normal flow (/family/tree/:familyCode): user must be an APPROVED member of that family
   // - Admin merge/preview flows may pass allowAdminPreview=true to allow cross-family preview for admins
   private async assertUserCanViewFamilyTree(
     userId: number,
@@ -866,18 +828,9 @@ export class FamilyService {
       },
     });
 
-    // If user is explicitly blocked in this family, always deny
-    if (membership && (membership as any).isBlocked) {
-      throw new ForbiddenException('You have been blocked from this family');
-    }
+    // BLOCK OVERRIDE: Legacy family-level block gate removed.
 
-    const allowCrossFamilyTreeView = ['1', 'true', 'yes'].includes(
-      String(process.env.ALLOW_CROSS_FAMILY_TREE_VIEW || '')
-        .trim()
-        .toLowerCase(),
-    );
-
-    if (allowCrossFamilyTreeView) {
+    if (this.isCrossFamilyTreeViewEnabled()) {
       return;
     }
 
@@ -899,43 +852,20 @@ export class FamilyService {
       return;
     }
 
-    try {
-      const viewerFamilyCodeFromProfile = (userProfile as any)?.familyCode;
-      const viewerMembership = await this.familyMemberModel.findOne({
-        where: {
-          memberId: userId,
-          approveStatus: 'approved',
-        } as any,
-        order: [['id', 'DESC']],
-      });
-
-      const viewerFamilyCode =
-        viewerFamilyCodeFromProfile || (viewerMembership as any)?.familyCode;
-      if (viewerFamilyCode) {
-        const linked = await this.hasActiveTreeFamilyLink({
-          familyA: viewerFamilyCode,
-          familyB: familyCode,
-        });
-        if (linked) {
-          return;
-        }
-      }
-    } catch (_) {
-      // Ignore and continue with normal authorization checks
+    if (await this.hasTreeLinkFamilyVisibility(userId, familyCode, userProfile)) {
+      return;
     }
 
     // Allow associated-family access (e.g., spouse-connected families)
     // Users may have access via associatedFamilyCodes without being a direct member.
     const associated = Array.isArray((userProfile as any)?.associatedFamilyCodes)
-      ? ((userProfile as any).associatedFamilyCodes as any[])
+      ? ((userProfile as any)?.associatedFamilyCodes as any[])
       : [];
 
-    const normalizedTargetFamilyCode = String(familyCode).trim().toUpperCase();
-    const hasAssociatedFamilyAccess = associated.some((c) => {
-      if (!c) return false;
-      return String(c).trim().toUpperCase() === normalizedTargetFamilyCode;
-    });
-
+    const hasAssociatedFamilyAccess = this.hasAssociatedFamilyAccess(
+      associated,
+      familyCode,
+    );
     if (hasAssociatedFamilyAccess) {
       return;
     }
@@ -943,194 +873,23 @@ export class FamilyService {
     // Family-level visibility (members): if the viewer belongs to a family,
     // allow viewing other families that are connected to ANY approved member in their family.
     // This is required so regular members (not only admins) can view spouse/associated family trees.
-    try {
-      const viewerFamilyCodeFromProfile = (userProfile as any)?.familyCode;
-      const viewerMembership = await this.familyMemberModel.findOne({
-        where: {
-          memberId: userId,
-          approveStatus: 'approved',
-        } as any,
-        order: [['id', 'DESC']],
-      });
-
-      const viewerFamilyCode =
-        viewerFamilyCodeFromProfile || (viewerMembership as any)?.familyCode;
-
-      if (viewerFamilyCode) {
-        const familyMembers = await this.familyMemberModel.findAll({
-          where: {
-            familyCode: viewerFamilyCode,
-            approveStatus: 'approved',
-          } as any,
-          attributes: ['memberId'],
-        });
-
-        const memberIds = (familyMembers as any[])
-          .map((m) => Number((m as any).memberId))
-          .filter((id) => id && !Number.isNaN(id));
-
-        if (memberIds.length > 0) {
-          const memberTreeEntry = await this.familyTreeModel.findOne({
-            where: {
-              familyCode,
-              userId: { [Op.in]: memberIds },
-            } as any,
-          });
-
-          if (memberTreeEntry) {
-            return;
-          }
-
-          const memberProfiles = await this.userProfileModel.findAll({
-            where: { userId: { [Op.in]: memberIds } } as any,
-            attributes: ['userId', 'associatedFamilyCodes'],
-          });
-
-          const normalizedTarget = String(familyCode).trim().toUpperCase();
-          const memberHasAssociation = (memberProfiles as any[]).some((p) => {
-            const codes = Array.isArray((p as any)?.associatedFamilyCodes)
-              ? ((p as any).associatedFamilyCodes as any[])
-              : [];
-            return codes.some(
-              (c) => c && String(c).trim().toUpperCase() === normalizedTarget,
-            );
-          });
-
-          if (memberHasAssociation) {
-            return;
-          }
-        }
-      }
-    } catch (_) {
-      // Ignore and continue with normal authorization checks
+    if (await this.hasFamilyLevelVisibilityViaMembers(userId, familyCode, userProfile)) {
+      return;
     }
 
     // Acting admin visibility: if the viewer is an admin of their own family,
     // allow viewing other families that are connected to ANY approved member in their family.
     // This is required when an admin sends a spouse/association request on behalf of a non-app member
     // (the admin may not be the direct relationship participant).
-    try {
-      const actingUser = await this.userModel.findByPk(userId);
-      const isAdmin = actingUser && (actingUser.role === 2 || actingUser.role === 3);
-
-      if (isAdmin) {
-        const adminFamilyCodeFromProfile = (userProfile as any)?.familyCode;
-        const adminMembership = await this.familyMemberModel.findOne({
-          where: {
-            memberId: userId,
-            approveStatus: 'approved',
-          } as any,
-          order: [['id', 'DESC']],
-        });
-
-        const adminFamilyCode =
-          adminFamilyCodeFromProfile || (adminMembership as any)?.familyCode;
-        if (adminFamilyCode) {
-          const adminFamilyMembers = await this.familyMemberModel.findAll({
-            where: {
-              familyCode: adminFamilyCode,
-              approveStatus: 'approved',
-            } as any,
-            attributes: ['memberId'],
-          });
-
-          const memberIds = (adminFamilyMembers as any[])
-            .map((m) => Number((m as any).memberId))
-            .filter((id) => id && !Number.isNaN(id));
-
-          if (memberIds.length > 0) {
-            const memberTreeEntry = await this.familyTreeModel.findOne({
-              where: {
-                familyCode,
-                userId: { [Op.in]: memberIds },
-              } as any,
-            });
-
-            if (memberTreeEntry) {
-              return;
-            }
-
-            // Fallback: check associatedFamilyCodes in JS (more reliable than JSON contains across dialects)
-            const memberProfiles = await this.userProfileModel.findAll({
-              where: { userId: { [Op.in]: memberIds } } as any,
-              attributes: ['userId', 'associatedFamilyCodes'],
-            });
-
-            const normalizedTarget = String(familyCode).trim().toUpperCase();
-            const memberHasAssociation = (memberProfiles as any[]).some((p) => {
-              const codes = Array.isArray((p as any)?.associatedFamilyCodes)
-                ? ((p as any).associatedFamilyCodes as any[])
-                : [];
-              return codes.some(
-                (c) => c && String(c).trim().toUpperCase() === normalizedTarget,
-              );
-            });
-
-            if (memberHasAssociation) {
-              return;
-            }
-          }
-        }
-      }
-    } catch (_) {
-      // Ignore and continue with normal authorization checks
+    if (await this.hasActingAdminVisibility(userId, familyCode, userProfile)) {
+      return;
     }
 
     // Allow spouse-linked access even if associatedFamilyCodes wasn't populated (common for non-app users).
     // If the viewer has a spouse relationship edge with any user that belongs to this family,
     // allow viewing this family's tree.
-    try {
-      const relationships = await this.relationshipEdgeService.getUserRelationships(
-        Number(userId),
-      );
-      const spouseRelationships = Array.isArray(relationships)
-        ? relationships.filter((r: any) => r?.relationshipType === 'spouse')
-        : [];
-
-      if (spouseRelationships.length > 0) {
-        const counterpartIds = Array.from(
-          new Set(
-            spouseRelationships
-              .map((r: any) =>
-                Number(r.user1Id) === Number(userId)
-                  ? Number(r.user2Id)
-                  : Number(r.user1Id),
-              )
-              .filter((id: any) => id && !Number.isNaN(Number(id))),
-          ),
-        );
-
-        if (counterpartIds.length > 0) {
-          const [counterpartMembership, counterpartProfile, counterpartTree] =
-            await Promise.all([
-              this.familyMemberModel.findOne({
-                where: {
-                  familyCode,
-                  memberId: { [Op.in]: counterpartIds },
-                  approveStatus: 'approved',
-                } as any,
-              }),
-              this.userProfileModel.findOne({
-                where: {
-                  userId: { [Op.in]: counterpartIds },
-                  familyCode,
-                } as any,
-              }),
-              this.familyTreeModel.findOne({
-                where: {
-                  familyCode,
-                  userId: { [Op.in]: counterpartIds },
-                } as any,
-              }),
-            ]);
-
-          if (counterpartMembership || counterpartProfile || counterpartTree) {
-            return;
-          }
-        }
-      }
-    } catch (_) {
-      // Ignore and continue with normal authorization checks
+    if (await this.hasSpouseLinkedAccess(userId, familyCode)) {
+      return;
     }
 
     // No approved membership
@@ -1142,7 +901,6 @@ export class FamilyService {
         hasApprovedMembership: Boolean(
           membership && (membership as any).approveStatus === 'approved',
         ),
-        isBlocked: Boolean(membership && (membership as any).isBlocked),
         hasViewerTreeEntry: Boolean(viewerTreeEntry),
         associatedCount: associated.length,
         associatedCodes: associated,
@@ -1153,7 +911,252 @@ export class FamilyService {
       );
     }
 
-    // Admin preview: allow admins to view for merge/analysis flows even without direct membership
+    await this.assertAdminPreviewAllowed(userId);
+  }
+
+  private isCrossFamilyTreeViewEnabled(): boolean {
+    return ['1', 'true', 'yes'].includes(
+      String(process.env.ALLOW_CROSS_FAMILY_TREE_VIEW || '').trim().toLowerCase(),
+    );
+  }
+
+  private hasAssociatedFamilyAccess(associated: any[], familyCode: string): boolean {
+    const normalizedTargetFamilyCode = String(familyCode).trim().toUpperCase();
+    return associated.some((c) => {
+      if (!c) return false;
+      return String(c).trim().toUpperCase() === normalizedTargetFamilyCode;
+    });
+  }
+
+  private async hasTreeLinkFamilyVisibility(
+    userId: number,
+    familyCode: string,
+    userProfile: any,
+  ): Promise<boolean> {
+    try {
+      const viewerFamilyCodeFromProfile = userProfile?.familyCode;
+      const viewerMembership = await this.familyMemberModel.findOne({
+        where: {
+          memberId: userId,
+          approveStatus: 'approved',
+        } as any,
+        order: [['id', 'DESC']],
+      });
+
+      const viewerFamilyCode =
+        viewerFamilyCodeFromProfile || viewerMembership?.familyCode;
+      if (!viewerFamilyCode) {
+        return false;
+      }
+      return await this.hasActiveTreeFamilyLink({
+        familyA: viewerFamilyCode,
+        familyB: familyCode,
+      });
+    } catch (error_) {
+      console.error('Error checking tree-link family visibility (viewer):', error_);
+      return false;
+    }
+  }
+
+  private async hasFamilyLevelVisibilityViaMembers(
+    userId: number,
+    familyCode: string,
+    userProfile: any,
+  ): Promise<boolean> {
+    try {
+      const viewerFamilyCodeFromProfile = userProfile?.familyCode;
+      const viewerMembership = await this.familyMemberModel.findOne({
+        where: {
+          memberId: userId,
+          approveStatus: 'approved',
+        } as any,
+        order: [['id', 'DESC']],
+      });
+
+      const viewerFamilyCode =
+        viewerFamilyCodeFromProfile || viewerMembership?.familyCode;
+
+      if (!viewerFamilyCode) {
+        return false;
+      }
+
+      const familyMembers = await this.familyMemberModel.findAll({
+        where: {
+          familyCode: viewerFamilyCode,
+          approveStatus: 'approved',
+        } as any,
+        attributes: ['memberId'],
+      });
+
+      const memberIds = (familyMembers as any[])
+        .map((m: any) => Number(m?.memberId))
+        .filter((id) => id && !Number.isNaN(id));
+
+      if (memberIds.length === 0) {
+        return false;
+      }
+
+      const memberTreeEntry = await this.familyTreeModel.findOne({
+        where: {
+          familyCode,
+          userId: { [Op.in]: memberIds },
+        } as any,
+      });
+
+      if (memberTreeEntry) {
+        return true;
+      }
+
+      return await this.anyUserHasAssociatedFamilyCode(memberIds, familyCode);
+    } catch (error_) {
+      console.error('Error checking family-level visibility (members):', error_);
+      return false;
+    }
+  }
+
+  private async hasActingAdminVisibility(
+    userId: number,
+    familyCode: string,
+    userProfile: any,
+  ): Promise<boolean> {
+    try {
+      const actingUser = await this.userModel.findByPk(userId);
+      const isAdmin = actingUser && (actingUser.role === 2 || actingUser.role === 3);
+      if (!isAdmin) {
+        return false;
+      }
+
+      const adminFamilyCodeFromProfile = userProfile?.familyCode;
+      const adminMembership = await this.familyMemberModel.findOne({
+        where: {
+          memberId: userId,
+          approveStatus: 'approved',
+        } as any,
+        order: [['id', 'DESC']],
+      });
+
+      const adminFamilyCode = adminFamilyCodeFromProfile || adminMembership?.familyCode;
+      if (!adminFamilyCode) {
+        return false;
+      }
+
+      const adminFamilyMembers = await this.familyMemberModel.findAll({
+        where: {
+          familyCode: adminFamilyCode,
+          approveStatus: 'approved',
+        } as any,
+        attributes: ['memberId'],
+      });
+
+      const memberIds = (adminFamilyMembers as any[])
+        .map((m: any) => Number(m?.memberId))
+        .filter((id) => id && !Number.isNaN(id));
+
+      if (memberIds.length === 0) {
+        return false;
+      }
+
+      const memberTreeEntry = await this.familyTreeModel.findOne({
+        where: {
+          familyCode,
+          userId: { [Op.in]: memberIds },
+        } as any,
+      });
+
+      if (memberTreeEntry) {
+        return true;
+      }
+
+      return await this.anyUserHasAssociatedFamilyCode(memberIds, familyCode);
+    } catch (error) {
+      console.error('Error checking acting-admin visibility:', error);
+      return false;
+    }
+  }
+
+  private async anyUserHasAssociatedFamilyCode(
+    userIds: number[],
+    familyCode: string,
+  ): Promise<boolean> {
+    const memberProfiles = await this.userProfileModel.findAll({
+      where: { userId: { [Op.in]: userIds } } as any,
+      attributes: ['userId', 'associatedFamilyCodes'],
+    });
+
+    const normalizedTarget = String(familyCode).trim().toUpperCase();
+    return (memberProfiles as any[]).some((p: any) => {
+      const codes = Array.isArray(p?.associatedFamilyCodes)
+        ? (p.associatedFamilyCodes as any[])
+        : [];
+      return codes.some(
+        (c) => c && String(c).trim().toUpperCase() === normalizedTarget,
+      );
+    });
+  }
+
+  private async hasSpouseLinkedAccess(
+    userId: number,
+    familyCode: string,
+  ): Promise<boolean> {
+    try {
+      const relationships = await this.relationshipEdgeService.getUserRelationships(
+        Number(userId),
+      );
+      const spouseRelationships = Array.isArray(relationships)
+        ? relationships.filter((r: any) => r?.relationshipType === 'spouse')
+        : [];
+
+      if (spouseRelationships.length === 0) {
+        return false;
+      }
+
+      const counterpartIds = Array.from(
+        new Set(
+          spouseRelationships
+            .map((r: any) =>
+              Number(r.user1Id) === Number(userId)
+                ? Number(r.user2Id)
+                : Number(r.user1Id),
+            )
+            .filter((id: any) => id && !Number.isNaN(Number(id))),
+        ),
+      );
+
+      if (counterpartIds.length === 0) {
+        return false;
+      }
+
+      const [counterpartMembership, counterpartProfile, counterpartTree] =
+        await Promise.all([
+          this.familyMemberModel.findOne({
+            where: {
+              familyCode,
+              memberId: { [Op.in]: counterpartIds },
+              approveStatus: 'approved',
+            } as any,
+          }),
+          this.userProfileModel.findOne({
+            where: {
+              userId: { [Op.in]: counterpartIds },
+              familyCode,
+            } as any,
+          }),
+          this.familyTreeModel.findOne({
+            where: {
+              familyCode,
+              userId: { [Op.in]: counterpartIds },
+            } as any,
+          }),
+        ]);
+
+      return Boolean(counterpartMembership || counterpartProfile || counterpartTree);
+    } catch (error) {
+      console.error('Error checking spouse-linked access:', error);
+      return false;
+    }
+  }
+
+  private async assertAdminPreviewAllowed(userId: number): Promise<void> {
     const user = await this.userModel.findByPk(userId);
     if (!user || (user.role !== 2 && user.role !== 3)) {
       throw new ForbiddenException('Only admins can preview other families');
@@ -1168,8 +1171,8 @@ export class FamilyService {
       return 0;
     }
 
-    const parsedAge = typeof age === 'number' ? age : parseInt(age, 10);
-    return isNaN(parsedAge) ? 0 : parsedAge;
+    const parsedAge = typeof age === 'number' ? age : Number.parseInt(age, 10);
+    return Number.isNaN(parsedAge) ? 0 : parsedAge;
   }
 
   private parseAgeNullable(age: any): number | null {
@@ -1184,8 +1187,8 @@ export class FamilyService {
       }
     }
 
-    const parsedAge = typeof age === 'number' ? age : parseInt(age, 10);
-    return isNaN(parsedAge) ? null : parsedAge;
+    const parsedAge = typeof age === 'number' ? age : Number.parseInt(age, 10);
+    return Number.isNaN(parsedAge) ? null : parsedAge;
   }
 
   /**
@@ -1480,14 +1483,90 @@ export class FamilyService {
   async createFamilyTree(dto: CreateFamilyTreeDto, loggedInUserId: number) {
     const startTime = Date.now();
     console.log(
-      `🚀 Starting createFamilyTree for ${dto.familyCode} with ${
-        dto.members?.length || 0
+      `🚀 Starting createFamilyTree for ${dto.familyCode} with ${dto.members?.length || 0
       } members`,
     );
 
     const { familyCode, members } = dto;
 
-    // Load actor details for authorization decisions (role, familyCode)
+    const actorContext = await this.getActorContextForTreeSave(
+      loggedInUserId,
+      familyCode,
+    );
+    await this.assertFamilyExistsForTreeSave(familyCode);
+
+    await this.deleteStaleFamilyTreeEntriesAndCleanup({
+      familyCode,
+      members,
+    });
+
+    const memberIdsInTree = this.getMemberIdsInTree(members);
+    console.log('✅ Members in tree:', memberIdsInTree);
+    await this.syncFamilyMemberTableForTreeSave({
+      familyCode,
+      memberIdsInTree,
+    });
+
+    const createdMembers: any[] = [];
+    const bulkContext = await this.buildCreateFamilyTreeBulkContext({
+      familyCode,
+      members,
+    });
+    const imageMap = await this.processFamilyTreeImages(members);
+
+    await this.planAndCreateNonAppUsers({
+      members,
+      bulkContext,
+    });
+
+    await this.prepareBulkWritesFromMembers({
+      familyCode,
+      members,
+      loggedInUserId,
+      actorContext,
+      bulkContext,
+      imageMap,
+      createdMembers,
+    });
+
+    await this.executeCreateFamilyTreeBulkWrites({
+      bulkContext,
+    });
+
+    await this.createRelationshipEdgesFromFamilyTree(
+      members.filter((m) => !(m as any).isExternalLinked),
+      familyCode,
+    );
+
+    await this.repairFamilyTreeAfterMutation({ familyCode });
+
+    await this.ensureRelationshipCodesExist(members);
+
+    const totalTime = Date.now() - startTime;
+    console.log(
+      `✅ Family tree sync completed successfully! Tree entries: ${createdMembers.length}`,
+    );
+    console.log(
+      `⚡ Total operation time: ${totalTime}ms (${(totalTime / 1000).toFixed(
+        2,
+      )}s)`,
+    );
+
+    return {
+      message: 'Family tree created successfully',
+      data: createdMembers,
+      performanceStats: {
+        totalTimeMs: totalTime,
+        membersProcessed: members.length,
+        avgTimePerMember: (totalTime / members.length).toFixed(2) + 'ms',
+      },
+    };
+  }
+
+  private async getActorContextForTreeSave(
+    loggedInUserId: number,
+    familyCode: string,
+  ) {
     const actorUser = await this.userModel.findOne({
       where: { id: loggedInUserId },
       include: [
@@ -1507,26 +1586,27 @@ export class FamilyService {
     const actorRole = actorUser.role;
     const actorIsAdmin = actorRole === 2 || actorRole === 3;
 
-    // Blocked users cannot modify this family's tree
     await this.assertUserNotBlockedInFamily(loggedInUserId, familyCode);
 
-    // Check if family exists
+    return { actorFamilyCode, actorRole, actorIsAdmin };
+  }
+
+  private async assertFamilyExistsForTreeSave(familyCode: string) {
     const family = await this.familyModel.findOne({ where: { familyCode } });
     if (!family) {
       throw new NotFoundException('Family not found');
     }
+  }
 
-    // 🚀 CRITICAL FIX: Delete family_tree entries not in the new tree
-    // Get all personIds from the payload
+  private async deleteStaleFamilyTreeEntriesAndCleanup(params: {
+    familyCode: string;
+    members: FamilyTreeMemberDto[];
+  }) {
+    const { familyCode, members } = params;
     const personIdsInPayload = members.map((m) => m.id);
     console.log('📋 PersonIds in payload:', personIdsInPayload);
 
-    // If the payload is only the root member, treat this as a full tree reset.
-    // In that case we should also delete external-linked duplicate cards, otherwise
-    // they can persist and show up in the newly created tree.
     const isFullTreeReset = Array.isArray(members) && members.length === 1;
-
-    // Delete entries where personId is NOT in the payload
     const deletedEntries = await this.familyTreeModel.destroy({
       where: {
         familyCode,
@@ -1534,73 +1614,22 @@ export class FamilyService {
         ...(isFullTreeReset
           ? {}
           : {
-              // Hybrid mode: never delete external-linked duplicate cards during normal tree saves.
-              isExternalLinked: { [Op.ne]: true },
-            }),
+            isExternalLinked: { [Op.ne]: true },
+          }),
       },
     });
     console.log(
       `🗑️ Deleted ${deletedEntries} family_tree entries not in payload`,
     );
 
-    // 🚀 CRITICAL: Clean up orphaned relationships
-    // After deleting entries, we need to remove references to deleted personIds
-    // from the remaining entries' relationship fields
     if (deletedEntries > 0) {
-      // Get all remaining entries
-      const remainingEntries = await this.familyTreeModel.findAll({
-        where: { familyCode },
-      });
-
-      const remainingPersonIds = remainingEntries
-        .map((e: any) => Number(e.personId))
-        .filter((id) => Number.isFinite(id));
-
-      // Update each entry to remove references to deleted personIds
-      for (const entry of remainingEntries) {
-        const cleanArray = (arr: any) => {
-          if (!arr || !Array.isArray(arr)) return [];
-          // Handle both string arrays ["2", "3"] and number arrays [2, 3]
-          return arr
-            .map((id) => (typeof id === 'string' ? parseInt(id) : id))
-            .filter((id) => !isNaN(id) && remainingPersonIds.includes(id));
-        };
-
-        const cleanedParents = cleanArray(entry.parents);
-        const cleanedChildren = cleanArray(entry.children);
-        const cleanedSpouses = cleanArray(entry.spouses);
-        const cleanedSiblings = cleanArray(entry.siblings);
-
-        // Check if any array changed
-        const parentsChanged =
-          JSON.stringify(cleanedParents) !== JSON.stringify(entry.parents);
-        const childrenChanged =
-          JSON.stringify(cleanedChildren) !== JSON.stringify(entry.children);
-        const spousesChanged =
-          JSON.stringify(cleanedSpouses) !== JSON.stringify(entry.spouses);
-        const siblingsChanged =
-          JSON.stringify(cleanedSiblings) !== JSON.stringify(entry.siblings);
-
-        if (
-          parentsChanged ||
-          childrenChanged ||
-          spousesChanged ||
-          siblingsChanged
-        ) {
-          await entry.update({
-            parents: cleanedParents,
-            children: cleanedChildren,
-            spouses: cleanedSpouses,
-            siblings: cleanedSiblings,
-          });
-        }
-      }
+      await this.cleanupOrphanedRelationshipReferences(familyCode);
       console.log(`🧹 Cleaned up orphaned relationships in remaining entries`);
     }
+  }
 
-    // ✅ SYNC FIX: Sync family_member table with tree data
-    // Get all member IDs that should remain (existing members in the tree)
-    const memberIdsInTree = members
+  private getMemberIdsInTree(members: FamilyTreeMemberDto[]): number[] {
+    return members
       .filter(
         (member) =>
           member.memberId &&
@@ -1608,58 +1637,63 @@ export class FamilyService {
           !(member as any).isExternalLinked,
       )
       .map((member) => Number(member.memberId));
+  }
 
-    console.log('✅ Members in tree:', memberIdsInTree);
+  private async cleanupRemovedMemberProfilesForTreeSave(params: {
+    familyCode: string;
+    removedMemberIds: number[];
+  }) {
+    const { familyCode, removedMemberIds } = params;
+    const ids = Array.from(
+      new Set(
+        (removedMemberIds || [])
+          .map(Number)
+          .filter((x) => Number.isFinite(x) && x > 0),
+      ),
+    );
+    if (ids.length === 0) return;
 
-    const cleanupRemovedMemberProfiles = async (removedMemberIds: number[]) => {
-      const ids = Array.from(
-        new Set(
-          (removedMemberIds || [])
-            .map((x) => Number(x))
-            .filter((x) => Number.isFinite(x) && x > 0),
-        ),
-      );
-      if (ids.length === 0) return;
+    const profiles = await this.userProfileModel.findAll({
+      where: { userId: { [Op.in]: ids } as any },
+      attributes: ['userId', 'familyCode', 'associatedFamilyCodes'],
+    });
 
-      const profiles = await this.userProfileModel.findAll({
-        where: { userId: { [Op.in]: ids } as any },
-        attributes: ['userId', 'familyCode', 'associatedFamilyCodes'],
-      });
+    await Promise.all(
+      profiles.map(async (p: any) => {
+        const associated = Array.isArray(p.associatedFamilyCodes)
+          ? p.associatedFamilyCodes.filter(Boolean)
+          : [];
+        const nextAssociated = associated.filter(
+          (code: any) =>
+            String(code || '').trim() !== String(familyCode || '').trim(),
+        );
 
-      await Promise.all(
-        profiles.map(async (p: any) => {
-          const associated = Array.isArray(p.associatedFamilyCodes)
-            ? p.associatedFamilyCodes.filter(Boolean)
-            : [];
-          const nextAssociated = associated.filter(
-            (code: any) =>
-              String(code || '').trim() !== String(familyCode || '').trim(),
-          );
+        const shouldClearPrimary =
+          String(p.familyCode || '').trim() === String(familyCode || '').trim();
 
-          const shouldClearPrimary =
-            String(p.familyCode || '').trim() ===
-            String(familyCode || '').trim();
+        if (!shouldClearPrimary && nextAssociated.length === associated.length) {
+          return;
+        }
 
-          if (!shouldClearPrimary && nextAssociated.length === associated.length) {
-            return;
-          }
+        await this.userProfileModel.update(
+          {
+            ...(shouldClearPrimary ? { familyCode: null } : {}),
+            associatedFamilyCodes: nextAssociated,
+          } as any,
+          {
+            where: { userId: Number(p.userId) } as any,
+          },
+        );
+      }),
+    );
+  }
 
-          // IMPORTANT: Don't call instance.save()/update() without a PK loaded.
-          // Use scoped Model.update to avoid global updates.
-          await this.userProfileModel.update(
-            {
-              ...(shouldClearPrimary ? { familyCode: null } : {}),
-              associatedFamilyCodes: nextAssociated,
-            } as any,
-            {
-              where: { userId: Number(p.userId) } as any,
-            },
-          );
-        }),
-      );
-    };
+  private async syncFamilyMemberTableForTreeSave(params: {
+    familyCode: string;
+    memberIdsInTree: number[];
+  }) {
+    const { familyCode, memberIdsInTree } = params;
 
-    // Remove non-admin family members who are not in the new tree
     if (memberIdsInTree.length > 0) {
       const membershipsToDelete = await this.familyMemberModel.findAll({
         where: {
@@ -1675,87 +1709,90 @@ export class FamilyService {
         ],
       });
 
-      // Keep admin users (role 2 or 3) even if they are not present in the tree
       const memberIdsToDelete = membershipsToDelete
         .filter((m: any) => !m.user || (m.user.role !== 2 && m.user.role !== 3))
         .map((m: any) => m.memberId);
 
       const deletedMembers = memberIdsToDelete.length
         ? await this.familyMemberModel.destroy({
-            where: {
-              familyCode,
-              memberId: { [Op.in]: memberIdsToDelete },
-            },
-          })
+          where: {
+            familyCode,
+            memberId: { [Op.in]: memberIdsToDelete },
+          },
+        })
         : 0;
 
-      // ✅ Bug 53: Also clear familyCode for users removed from this family's tree
-      // (otherwise they’re orphaned: they disappear from UI but can’t create/join another family).
       if (memberIdsToDelete.length > 0) {
-        await cleanupRemovedMemberProfiles(memberIdsToDelete);
+        await this.cleanupRemovedMemberProfilesForTreeSave({
+          familyCode,
+          removedMemberIds: memberIdsToDelete,
+        });
       }
 
       console.log(
         `✅ Removed ${deletedMembers} non-admin family members not in new tree`,
       );
-    } else {
-      // If no existing members in tree, remove all non-admin members except creator
-      const familyCreator = await this.familyModel.findOne({
-        where: { familyCode },
-        attributes: ['createdBy'],
-      });
-
-      if (familyCreator) {
-        const membershipsToDelete = await this.familyMemberModel.findAll({
-          where: {
-            familyCode,
-            memberId: { [Op.ne]: familyCreator.createdBy },
-          },
-          include: [
-            {
-              model: this.userModel,
-              as: 'user',
-              required: false,
-            },
-          ],
-        });
-
-        const memberIdsToDelete = membershipsToDelete
-          .filter(
-            (m: any) => !m.user || (m.user.role !== 2 && m.user.role !== 3),
-          )
-          .map((m: any) => m.memberId);
-
-        const deletedMembers = memberIdsToDelete.length
-          ? await this.familyMemberModel.destroy({
-              where: {
-                familyCode,
-                memberId: { [Op.in]: memberIdsToDelete },
-              },
-            })
-          : 0;
-
-        // ✅ Bug 53: clear familyCode for removed users
-        if (memberIdsToDelete.length > 0) {
-          await cleanupRemovedMemberProfiles(memberIdsToDelete);
-        }
-
-        console.log(
-          `✅ Removed ${deletedMembers} non-admin members from family_member table (keeping creator and admins)`,
-        );
-      }
+      return;
     }
 
-    const createdMembers = [];
+    const familyCreator = await this.familyModel.findOne({
+      where: { familyCode },
+      attributes: ['createdBy'],
+    });
 
-    // 🚀 PERFORMANCE OPTIMIZATION: Fetch all data in bulk queries
+    if (!familyCreator) {
+      return;
+    }
+
+    const membershipsToDelete = await this.familyMemberModel.findAll({
+      where: {
+        familyCode,
+        memberId: { [Op.ne]: familyCreator.createdBy },
+      },
+      include: [
+        {
+          model: this.userModel,
+          as: 'user',
+          required: false,
+        },
+      ],
+    });
+
+    const memberIdsToDelete = membershipsToDelete
+      .filter((m: any) => !m.user || (m.user.role !== 2 && m.user.role !== 3))
+      .map((m: any) => m.memberId);
+
+    const deletedMembers = memberIdsToDelete.length
+      ? await this.familyMemberModel.destroy({
+        where: {
+          familyCode,
+          memberId: { [Op.in]: memberIdsToDelete },
+        },
+      })
+      : 0;
+
+    if (memberIdsToDelete.length > 0) {
+      await this.cleanupRemovedMemberProfilesForTreeSave({
+        familyCode,
+        removedMemberIds: memberIdsToDelete,
+      });
+    }
+
+    console.log(
+      `✅ Removed ${deletedMembers} non-admin members from family_member table (keeping creator and admins)`,
+    );
+  }
+
+  private async buildCreateFamilyTreeBulkContext(params: {
+    familyCode: string;
+    members: FamilyTreeMemberDto[];
+  }) {
+    const { familyCode, members } = params;
     const memberIds = members.filter((m) => m.memberId).map((m) => m.memberId);
-
     const nodeUidsInPayload = members
-      .map((m) => ((m as any).nodeUid ? String((m as any).nodeUid) : null))
+      .map((m) => (m.nodeUid ? String(m.nodeUid) : null))
       .filter((v): v is string => !!v);
 
-    // Fetch all existing entries in ONE query
     const existingEntries = await this.familyTreeModel.findAll({
       where: {
         familyCode,
@@ -1768,42 +1805,22 @@ export class FamilyService {
       },
     });
 
-    // Fetch all existing users in ONE query
     const existingUsers =
       memberIds.length > 0
         ? await this.userModel.findAll({ where: { id: memberIds } })
         : [];
 
-    // Fetch all existing profiles in ONE query
     const existingProfiles =
       memberIds.length > 0
         ? await this.userProfileModel.findAll({ where: { userId: memberIds } })
         : [];
 
-    // Fetch all existing family members in ONE query
     const existingFamilyMembers =
       memberIds.length > 0
         ? await this.familyMemberModel.findAll({
-            where: { memberId: memberIds, familyCode },
-          })
+          where: { memberId: memberIds, familyCode },
+        })
         : [];
-
-    // Create Maps for O(1) lookup
-    const existingEntriesByPersonId = new Map(
-      existingEntries.map((entry: any) => [entry.personId, entry]),
-    );
-    const existingEntriesByNodeUid = new Map(
-      existingEntries.map((entry: any) => [String((entry as any).nodeUid), entry]),
-    );
-    const existingUsersMap = new Map(
-      existingUsers.map((user) => [user.id, user]),
-    );
-    const existingProfilesMap = new Map(
-      existingProfiles.map((profile) => [profile.userId, profile]),
-    );
-    const existingFamilyMembersMap = new Map(
-      existingFamilyMembers.map((fm) => [fm.memberId, fm]),
-    );
 
     console.log(`📊 Performance stats:
       - Family tree entries: ${existingEntries.length}/${members.length}
@@ -1812,12 +1829,37 @@ export class FamilyService {
       - Existing family members: ${existingFamilyMembers.length}
     `);
 
-    // 🚀 PERFORMANCE: Process all images in parallel BEFORE the loop
+    return {
+      entriesToUpdate: [] as any[],
+      entriesToCreate: [] as any[],
+      profilesToUpdate: [] as any[],
+      profilesToCreate: [] as any[],
+      usersToCreate: [] as any[],
+      familyMembersToCreate: [] as any[],
+      newUserIndexMap: new Map<number, number>(),
+      createdUsers: [] as any[],
+      existingEntriesByPersonId: new Map(
+        existingEntries.map((entry: any) => [entry.personId, entry]),
+      ),
+      existingEntriesByNodeUid: new Map(
+        existingEntries.map((entry: any) => [String(entry?.nodeUid), entry]),
+      ),
+      existingUsersMap: new Map(existingUsers.map((user) => [user.id, user])),
+      existingProfilesMap: new Map(
+        existingProfiles.map((profile) => [profile.userId, profile]),
+      ),
+      existingFamilyMembersMap: new Map(
+        existingFamilyMembers.map((fm) => [fm.memberId, fm]),
+      ),
+    };
+  }
+
+  private async processFamilyTreeImages(members: FamilyTreeMemberDto[]) {
     console.log('🖼️ Processing images in parallel...');
     const imageStartTime = Date.now();
 
     const imageProcessingPromises = members.map(async (member, index) => {
-      if (member.img && member.img.startsWith('data:image/')) {
+      if (member.img?.startsWith('data:image/')) {
         const uploadPath =
           process.env.PROFILE_PHOTO_UPLOAD_PATH || './uploads/profile';
         try {
@@ -1828,7 +1870,7 @@ export class FamilyService {
           return { index, image: null };
         }
       }
-      return { index, image: member.img }; // Already a URL or null
+      return { index, image: member.img };
     });
 
     const processedImages = await Promise.all(imageProcessingPromises);
@@ -1837,39 +1879,33 @@ export class FamilyService {
     );
 
     console.log(
-      `✅ Processed ${processedImages.length} images in ${
-        Date.now() - imageStartTime
+      `✅ Processed ${processedImages.length} images in ${Date.now() - imageStartTime
       }ms`,
     );
+    return imageMap;
+  }
 
-    // Prepare bulk operations
-    const entriesToUpdate = [];
-    const entriesToCreate = [];
-    const profilesToUpdate = [];
-    const profilesToCreate = [];
-    const usersToCreate = [];
-    const familyMembersToCreate = [];
-    const newUserIndexMap = new Map(); // Track which members need new users
+  private async planAndCreateNonAppUsers(params: {
+    members: FamilyTreeMemberDto[];
+    bulkContext: any;
+  }) {
+    const { members, bulkContext } = params;
 
-    // 🚀 STEP 1: Identify members needing new users and prepare data
     for (let memberIndex = 0; memberIndex < members.length; memberIndex++) {
       const member = members[memberIndex];
       if ((member as any).isExternalLinked) {
         continue;
       }
-      let userId = member.memberId; // Use memberId as userId
-
-      // Check if user exists
+      let userId = member.memberId;
       if (userId) {
-        const existingUser = existingUsersMap.get(userId);
+        const existingUser = bulkContext.existingUsersMap.get(userId);
         if (!existingUser) {
-          userId = null; // User doesn't exist
+          userId = null;
         }
       }
 
-      // If no userId, prepare for bulk user creation (non-app user: no email/mobile, no app consent)
       if (!userId) {
-        usersToCreate.push({
+        bulkContext.usersToCreate.push({
           email: null,
           countryCode: null,
           mobile: null,
@@ -1877,72 +1913,85 @@ export class FamilyService {
           role: 1,
           isAppUser: false,
         });
-
-        newUserIndexMap.set(memberIndex, usersToCreate.length - 1); // Track position
+        bulkContext.newUserIndexMap.set(
+          memberIndex,
+          bulkContext.usersToCreate.length - 1,
+        );
       }
     }
 
-    // 🚀 STEP 2: Bulk create all new users at once
-    let createdUsers = [];
-    if (usersToCreate.length > 0) {
+    if (bulkContext.usersToCreate.length > 0) {
       const userStartTime = Date.now();
-      console.log(`👥 Creating ${usersToCreate.length} new users in bulk...`);
-      createdUsers = await this.userModel.bulkCreate(usersToCreate);
       console.log(
-        `✅ Created ${createdUsers.length} users in ${
-          Date.now() - userStartTime
+        `👥 Creating ${bulkContext.usersToCreate.length} new users in bulk...`,
+      );
+      bulkContext.createdUsers = await this.userModel.bulkCreate(
+        bulkContext.usersToCreate,
+      );
+      console.log(
+        `✅ Created ${bulkContext.createdUsers.length} users in ${Date.now() - userStartTime
         }ms`,
       );
     }
+  }
 
-    // 🚀 STEP 3: Process all members with user IDs now available
+  private async prepareBulkWritesFromMembers(params: {
+    familyCode: string;
+    members: FamilyTreeMemberDto[];
+    loggedInUserId: number;
+    actorContext: any;
+    bulkContext: any;
+    imageMap: Map<number, any>;
+    createdMembers: any[];
+  }) {
+    const {
+      familyCode,
+      members,
+      loggedInUserId,
+      actorContext,
+      bulkContext,
+      imageMap,
+      createdMembers,
+    } = params;
+
     for (let memberIndex = 0; memberIndex < members.length; memberIndex++) {
       const member = members[memberIndex];
-      let userId = member.memberId; // Use memberId as userId
+      let userId = member.memberId;
 
-      // Check if this member got a new user created
-      const newUserIndex = newUserIndexMap.get(memberIndex);
+      const newUserIndex = bulkContext.newUserIndexMap.get(memberIndex);
       if (newUserIndex !== undefined) {
-        userId = createdUsers[newUserIndex].id;
+        userId = bulkContext.createdUsers[newUserIndex].id;
       }
 
-      // 🚀 PERFORMANCE: Check if entry exists using Map (O(1) lookup)
       const existingEntry =
-        ((member as any).nodeUid
-          ? existingEntriesByNodeUid.get(String((member as any).nodeUid))
-          : null) || existingEntriesByPersonId.get(member.id);
+        (member.nodeUid
+          ? bulkContext.existingEntriesByNodeUid.get(String(member.nodeUid))
+          : null) || bulkContext.existingEntriesByPersonId.get(member.id);
 
-      // IMPORTANT: Preserve external-linked cards even if the client payload omits isExternalLinked.
-      // External cards must only be removed via the dedicated unlink endpoint.
       const isExternalLinked =
-        !!(member as any).isExternalLinked || !!(existingEntry as any)?.isExternalLinked;
+        Boolean(member.isExternalLinked) || Boolean(existingEntry?.isExternalLinked);
 
-      if (!!(existingEntry as any)?.isExternalLinked && !(member as any).isExternalLinked) {
-        (member as any).isExternalLinked = true;
+      if (Boolean(existingEntry?.isExternalLinked) && !member.isExternalLinked) {
+        member.isExternalLinked = true;
       }
 
-      // 🚀 PERFORMANCE: Use Map lookup instead of database query
       if (userId && member.memberId && !isExternalLinked) {
-        const existingUser = existingUsersMap.get(userId);
+        const existingUser = bulkContext.existingUsersMap.get(userId);
         if (existingUser) {
-          // 🚀 PERFORMANCE: Use pre-processed image from Map
           const profileImage = imageMap.get(memberIndex);
 
-          // Authorization logic for profile updates from tree save:
-          // - App users: only they can update their own profile
-          // - Non-app users: only admins/superadmins from the same family can update
-          const isAppUser = !!(existingUser as any).isAppUser;
+          const isAppUser = Boolean((existingUser as any).isAppUser);
           const isSelf = userId === loggedInUserId;
-          const sameFamilyAsActor = !!(
-            actorFamilyCode &&
+          const sameFamilyAsActor = Boolean(
+            actorContext.actorFamilyCode &&
             familyCode &&
-            actorFamilyCode === familyCode
+            actorContext.actorFamilyCode === familyCode,
           );
-          const canUpdateProfile = isSelf || (!isAppUser && actorIsAdmin && sameFamilyAsActor);
+          const canUpdateProfile =
+            isSelf ||
+            (!isAppUser && actorContext.actorIsAdmin && sameFamilyAsActor);
 
-          // 🚀 PERFORMANCE: Use Map lookup instead of database query
-          const userProfile = existingProfilesMap.get(userId);
-
+          const userProfile = bulkContext.existingProfilesMap.get(userId);
           if (canUpdateProfile) {
             if (userProfile) {
               const { firstName, lastName } = this.splitName(member.name);
@@ -1952,26 +2001,20 @@ export class FamilyService {
                 lastName: lastName,
                 gender: member.gender,
               };
-
               if (parsedAge !== null) {
                 updateData.age = parsedAge;
               }
-
-              // Only update profile image if a new one is provided
               if (profileImage) {
                 updateData.profile = profileImage;
               }
-
-              // Prepare for bulk update
-              profilesToUpdate.push({
+              bulkContext.profilesToUpdate.push({
                 id: userProfile.id,
                 ...updateData,
               });
             } else {
-              // Prepare profile for bulk create
               const { firstName, lastName } = this.splitName(member.name);
               const parsedAge = this.parseAgeNullable(member.age);
-              profilesToCreate.push({
+              bulkContext.profilesToCreate.push({
                 userId: userId,
                 firstName: firstName,
                 lastName: lastName,
@@ -1983,11 +2026,9 @@ export class FamilyService {
             }
           }
 
-          // 🚀 PERFORMANCE: Use Map lookup for family member check
-          const existingMember = existingFamilyMembersMap.get(userId);
-
+          const existingMember = bulkContext.existingFamilyMembersMap.get(userId);
           if (!existingMember) {
-            familyMembersToCreate.push({
+            bulkContext.familyMembersToCreate.push({
               memberId: userId,
               familyCode: familyCode,
               creatorId: null,
@@ -1997,13 +2038,11 @@ export class FamilyService {
         }
       }
 
-      // For new users, prepare profiles and family members for bulk creation
-      if (userId && newUserIndexMap.has(memberIndex) && !isExternalLinked) {
+      if (userId && bulkContext.newUserIndexMap.has(memberIndex) && !isExternalLinked) {
         const profileImage = imageMap.get(memberIndex);
         const { firstName, lastName } = this.splitName(member.name);
         const parsedAge = this.parseAgeNullable(member.age);
-
-        profilesToCreate.push({
+        bulkContext.profilesToCreate.push({
           userId: userId,
           firstName: firstName,
           lastName: lastName,
@@ -2012,8 +2051,7 @@ export class FamilyService {
           profile: profileImage,
           familyCode: familyCode,
         });
-
-        familyMembersToCreate.push({
+        bulkContext.familyMembersToCreate.push({
           memberId: userId,
           familyCode: familyCode,
           creatorId: null,
@@ -2025,13 +2063,13 @@ export class FamilyService {
         familyCode,
         userId,
         personId: member.id,
-        nodeUid: (member as any).nodeUid || (existingEntry as any)?.nodeUid,
+        nodeUid: member.nodeUid || existingEntry?.nodeUid,
         isExternalLinked: isExternalLinked,
         canonicalFamilyCode: isExternalLinked
-          ? (member as any).canonicalFamilyCode || (existingEntry as any)?.canonicalFamilyCode || null
+          ? member.canonicalFamilyCode || existingEntry?.canonicalFamilyCode || null
           : null,
         canonicalNodeUid: isExternalLinked
-          ? (member as any).canonicalNodeUid || (existingEntry as any)?.canonicalNodeUid || null
+          ? member.canonicalNodeUid || existingEntry?.canonicalNodeUid || null
           : null,
         generation: member.generation,
         lifeStatus: member.lifeStatus ?? 'living',
@@ -2051,12 +2089,10 @@ export class FamilyService {
 
       try {
         if (existingEntry) {
-          // Prepare for bulk update
-          entriesToUpdate.push({
+          bulkContext.entriesToUpdate.push({
             id: existingEntry.id,
             ...entryData,
           });
-
           createdMembers.push({
             id: existingEntry.id,
             userId,
@@ -2074,11 +2110,9 @@ export class FamilyService {
             lifeStatus: entryData.lifeStatus,
           });
         } else {
-          // Prepare for bulk create
-          entriesToCreate.push(entryData);
-
+          bulkContext.entriesToCreate.push(entryData);
           createdMembers.push({
-            id: null, // Will be assigned after bulk create
+            id: null,
             userId,
             personId: member.id,
             nodeUid: entryData.nodeUid,
@@ -2107,26 +2141,27 @@ export class FamilyService {
       }
       console.log(member);
     }
+  }
 
-    // 🚀 BULK OPERATIONS: Execute all updates and creates in batches
+  private async executeCreateFamilyTreeBulkWrites(params: { bulkContext: any }) {
+    const { bulkContext } = params;
     const totalStartTime = Date.now();
     console.log(`📊 Bulk operations summary:
-      - Family tree entries: ${entriesToUpdate.length} updates, ${entriesToCreate.length} creates
-      - User profiles: ${profilesToUpdate.length} updates, ${profilesToCreate.length} creates
-      - Family members: ${familyMembersToCreate.length} creates
+      - Family tree entries: ${bulkContext.entriesToUpdate.length} updates, ${bulkContext.entriesToCreate.length} creates
+      - User profiles: ${bulkContext.profilesToUpdate.length} updates, ${bulkContext.profilesToCreate.length} creates
+      - Family members: ${bulkContext.familyMembersToCreate.length} creates
     `);
 
-    // Bulk update user profiles
-    if (profilesToUpdate.length > 0) {
+    if (bulkContext.profilesToUpdate.length > 0) {
       const startTime = Date.now();
       await Promise.all(
-        profilesToUpdate.map((profile) =>
+        bulkContext.profilesToUpdate.map((profile) =>
           this.userProfileModel.update(
             {
               firstName: profile.firstName,
               lastName: profile.lastName,
               gender: profile.gender,
-              ...(profile.age !== undefined ? { age: profile.age } : {}),
+              ...(profile.age === undefined ? {} : { age: profile.age }),
               ...(profile.profile && { profile: profile.profile }),
             },
             {
@@ -2136,39 +2171,33 @@ export class FamilyService {
         ),
       );
       console.log(
-        `✅ Bulk updated ${profilesToUpdate.length} profiles in ${
-          Date.now() - startTime
+        `✅ Bulk updated ${bulkContext.profilesToUpdate.length} profiles in ${Date.now() - startTime
         }ms`,
       );
     }
 
-    // Bulk create user profiles
-    if (profilesToCreate.length > 0) {
+    if (bulkContext.profilesToCreate.length > 0) {
       const startTime = Date.now();
-      await this.userProfileModel.bulkCreate(profilesToCreate);
+      await this.userProfileModel.bulkCreate(bulkContext.profilesToCreate);
       console.log(
-        `✅ Bulk created ${profilesToCreate.length} profiles in ${
-          Date.now() - startTime
+        `✅ Bulk created ${bulkContext.profilesToCreate.length} profiles in ${Date.now() - startTime
         }ms`,
       );
     }
 
-    // Bulk create family members
-    if (familyMembersToCreate.length > 0) {
+    if (bulkContext.familyMembersToCreate.length > 0) {
       const startTime = Date.now();
-      await this.familyMemberModel.bulkCreate(familyMembersToCreate);
+      await this.familyMemberModel.bulkCreate(bulkContext.familyMembersToCreate);
       console.log(
-        `✅ Bulk created ${familyMembersToCreate.length} family members in ${
-          Date.now() - startTime
+        `✅ Bulk created ${bulkContext.familyMembersToCreate.length} family members in ${Date.now() - startTime
         }ms`,
       );
     }
 
-    // Bulk update family tree entries
-    if (entriesToUpdate.length > 0) {
+    if (bulkContext.entriesToUpdate.length > 0) {
       const startTime = Date.now();
       await Promise.all(
-        entriesToUpdate.map((entry) =>
+        bulkContext.entriesToUpdate.map((entry) =>
           this.familyTreeModel.update(
             {
               userId: entry.userId,
@@ -2190,19 +2219,16 @@ export class FamilyService {
         ),
       );
       console.log(
-        `✅ Bulk updated ${entriesToUpdate.length} family tree entries in ${
-          Date.now() - startTime
+        `✅ Bulk updated ${bulkContext.entriesToUpdate.length} family tree entries in ${Date.now() - startTime
         }ms`,
       );
     }
 
-    // Bulk create family tree entries
-    if (entriesToCreate.length > 0) {
+    if (bulkContext.entriesToCreate.length > 0) {
       const startTime = Date.now();
-      await this.familyTreeModel.bulkCreate(entriesToCreate);
+      await this.familyTreeModel.bulkCreate(bulkContext.entriesToCreate);
       console.log(
-        `✅ Bulk created ${entriesToCreate.length} family tree entries in ${
-          Date.now() - startTime
+        `✅ Bulk created ${bulkContext.entriesToCreate.length} family tree entries in ${Date.now() - startTime
         }ms`,
       );
     }
@@ -2210,17 +2236,9 @@ export class FamilyService {
     console.log(
       `⚡ Total bulk operations completed in ${Date.now() - totalStartTime}ms`,
     );
+  }
 
-    // NEW: Create relationship edges for all relationships in the family tree
-    // IMPORTANT: Skip external-linked duplicated nodes to avoid cross-family membership/edge corruption.
-    await this.createRelationshipEdgesFromFamilyTree(
-      members.filter((m) => !(m as any).isExternalLinked),
-      familyCode,
-    );
-
-    await this.repairFamilyTreeAfterMutation({ familyCode });
-
-    // After creating all family tree entries, batch check and insert missing relationship codes
+  private async ensureRelationshipCodesExist(members: FamilyTreeMemberDto[]) {
     const allCodes = new Set<string>();
     for (const member of members) {
       if (member.relationshipCode) {
@@ -2231,47 +2249,27 @@ export class FamilyService {
       }
     }
     const codesArray = Array.from(allCodes);
-    if (codesArray.length > 0) {
-      const existing = await Relationship.findAll({
-        where: { key: codesArray },
-      });
-      const existingKeys = new Set(existing.map((r) => r.key));
-      const missingCodes = codesArray.filter((code) => !existingKeys.has(code));
-      if (missingCodes.length > 0) {
-        await Relationship.bulkCreate(
-          missingCodes.map((code) => ({
-            key: code,
-            description: code,
-            is_auto_generated: true,
-          })),
-          {
-            // Avoid crashing if the relationship code is inserted concurrently or already exists.
-            // (Unique constraint errors surface as Sequelize "Validation error")
-            ignoreDuplicates: true,
-          },
-        );
-      }
+    if (codesArray.length === 0) {
+      return;
     }
-
-    const totalTime = Date.now() - startTime;
-    console.log(
-      `✅ Family tree sync completed successfully! Tree entries: ${createdMembers.length}`,
-    );
-    console.log(
-      `⚡ Total operation time: ${totalTime}ms (${(totalTime / 1000).toFixed(
-        2,
-      )}s)`,
-    );
-
-    return {
-      message: 'Family tree created successfully',
-      data: createdMembers,
-      performanceStats: {
-        totalTimeMs: totalTime,
-        membersProcessed: members.length,
-        avgTimePerMember: (totalTime / members.length).toFixed(2) + 'ms',
+    const existing = await Relationship.findAll({
+      where: { key: codesArray },
+    });
+    const existingKeys = new Set(existing.map((r) => r.key));
+    const missingCodes = codesArray.filter((code) => !existingKeys.has(code));
+    if (missingCodes.length === 0) {
+      return;
+    }
+    await Relationship.bulkCreate(
+      missingCodes.map((code) => ({
+        key: code,
+        description: code,
+        is_auto_generated: true,
+      })),
+      {
+        ignoreDuplicates: true,
       },
-    };
+    );
   }
 
   /**
@@ -2368,11 +2366,6 @@ export class FamilyService {
     }
 
     // Transform family tree data to the required format
-    const baseUrl = process.env.BASE_URL || '';
-    const profilePhotoPath =
-      process.env.PROFILE_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') ||
-      'uploads/profile';
-
     // FIXED: Remove duplicate entries from database result
     const uniqueFamilyTree = familyTree.reduce((unique, entry) => {
       const existingIndex = unique.findIndex(
@@ -2419,7 +2412,7 @@ export class FamilyService {
 
     if (userIdsNeedingPrimaryFamily.length > 0) {
       const normalizedUserIds = userIdsNeedingPrimaryFamily
-        .map((id) => Number(id))
+        .map(Number)
         .filter((id) => Number.isFinite(id));
 
       if (normalizedUserIds.length > 0) {
@@ -2452,7 +2445,8 @@ export class FamilyService {
               inferredPrimaryFamilyCodeByUserId.set(uid, fc);
             }
           });
-        } catch (_) {
+        } catch (error_) {
+          console.error('Error inferring primary family codes (preferred order); falling back:', error_);
           const memberships = await this.sequelize.query<
             { userId: number; familyCode: string }[]
           >(
@@ -2511,10 +2505,10 @@ export class FamilyService {
         if (!entry.userId) {
           return {
             id: entry.personId,
-            nodeUid: (entry as any).nodeUid,
-            isExternalLinked: !!(entry as any).isExternalLinked,
-            canonicalFamilyCode: (entry as any).canonicalFamilyCode || null,
-            canonicalNodeUid: (entry as any).canonicalNodeUid || null,
+            nodeUid: entry.nodeUid,
+            isExternalLinked: Boolean(entry.isExternalLinked),
+            canonicalFamilyCode: entry.canonicalFamilyCode || null,
+            canonicalNodeUid: entry.canonicalNodeUid || null,
             memberId: null,
             name: 'Unknown',
             gender: 'unknown',
@@ -2540,23 +2534,23 @@ export class FamilyService {
         if (userProfile?.profile) {
           img = this.uploadService.getFileUrl(userProfile.profile, 'profile');
         }
-        const mobile = (entry as any)?.user?.mobile || null;
-        const countryCode = (entry as any)?.user?.countryCode || null;
+        const mobile = entry.user?.mobile || null;
+        const countryCode = entry.user?.countryCode || null;
         const contactNumber =
           userProfile?.contactNumber ||
           (countryCode && mobile ? `${countryCode}${mobile}` : mobile) ||
           null;
         return {
           id: entry.personId, // Use personId as id
-          nodeUid: (entry as any).nodeUid,
-          isExternalLinked: !!(entry as any).isExternalLinked,
-          canonicalFamilyCode: (entry as any).canonicalFamilyCode || null,
-          canonicalNodeUid: (entry as any).canonicalNodeUid || null,
+          nodeUid: entry.nodeUid,
+          isExternalLinked: Boolean(entry.isExternalLinked),
+          canonicalFamilyCode: entry.canonicalFamilyCode || null,
+          canonicalNodeUid: entry.canonicalNodeUid || null,
           memberId: entry.userId, // Include userId as memberId
           name: userProfile
             ? [userProfile.firstName, userProfile.lastName]
-                .filter(Boolean)
-                .join(' ') || 'Unknown'
+              .filter(Boolean)
+              .join(' ') || 'Unknown'
             : 'Unknown',
           gender: this.normalizeGender(userProfile?.gender),
           age: userProfile?.age || null,
@@ -2583,7 +2577,7 @@ export class FamilyService {
     );
 
     // Get all valid personIds for cleanup
-    const validPersonIds = people.map((p) => p.id);
+    const validPersonIds = new Set<number>(people.map((p) => p.id));
 
     // Fix ID reference issues first (convert memberIds to person ids in relationships)
     const memberIdToPersonIdMap = new Map();
@@ -2606,13 +2600,13 @@ export class FamilyService {
             // IMPORTANT: Relationship arrays in ft_family_tree are expected to store personIds.
             // Some historical data stored memberIds (userIds) instead. We only map memberId -> personId
             // when the reference is NOT already a valid personId in this tree.
-            const raw = typeof ref === 'string' ? parseInt(ref, 10) : ref;
-            if (!Number.isFinite(raw)) return NaN;
-            if (validPersonIds.includes(raw)) return raw;
+            const raw = typeof ref === 'string' ? Number.parseInt(ref, 10) : ref;
+            if (!Number.isFinite(raw)) return Number.NaN;
+            if (validPersonIds.has(raw)) return raw;
             const mapped = memberIdToPersonIdMap.get(raw);
             return mapped ?? raw;
           })
-          .filter((id) => !isNaN(id) && validPersonIds.includes(id));
+          .filter((id) => !Number.isNaN(id) && validPersonIds.has(id));
 
         // FIXED: Remove duplicates using Set
         return [...new Set(cleanedIds)];
@@ -2654,17 +2648,17 @@ export class FamilyService {
         const spouse = people.find((p) => p.id === spouseId);
         if (spouse) {
           // Create unique pair key to prevent duplicate processing
-          const pairKey = [person.id, spouseId].sort().join('-');
+          const pairKey = [person.id, spouseId].sort((a, b) => a - b).join('-');
 
           if (!processedSpousePairs.has(pairKey)) {
             processedSpousePairs.add(pairKey);
 
             // Collect all unique children from both parents
             const personChildrenSet = new Set(
-              person.children.map((id) => Number(id)),
+              person.children.map(Number),
             );
             const spouseChildrenSet = new Set(
-              spouse.children.map((id) => Number(id)),
+              spouse.children.map(Number),
             );
             const allChildrenSet = new Set([
               ...personChildrenSet,
@@ -2684,7 +2678,7 @@ export class FamilyService {
               const child = people.find((p) => p.id === childId);
               if (child) {
                 const childParentsSet = new Set(
-                  child.parents.map((id) => Number(id)),
+                  child.parents.map(Number),
                 );
                 childParentsSet.add(Number(person.id));
                 childParentsSet.add(Number(spouseId));
@@ -2937,53 +2931,86 @@ export class FamilyService {
   async getAssociatedFamilyTreeByUserId(userId: number) {
     await this.cleanupInvalidUserIdData();
 
-    // Get list of families where this user is blocked, so we can exclude them
-    const blockedMemberships = await this.familyMemberModel.findAll({
-      where: {
-        memberId: userId,
-        isBlocked: true,
-      } as any,
+    const blockedFamilyCodes = await this.getBlockedFamilyCodesForUser(userId);
+    const userProfile = await this.getUserProfileForAssociatedTree(userId);
+
+    const relationships =
+      await this.relationshipEdgeService.getUserRelationships(userId);
+
+    const allFamilyCodes = this.collectAssociatedFamilyCodes({
+      userProfile,
+      blockedFamilyCodes,
+      relationships,
     });
-    const blockedFamilyCodes = new Set<string>(
-      blockedMemberships.map((m: any) => m.familyCode),
+
+    if (allFamilyCodes.size === 0) {
+      throw new NotFoundException(
+        'No associated family trees found for this user',
+      );
+    }
+
+    const familyTreeEntries = await this.fetchFamilyTreeEntriesForFamilyCodes(
+      allFamilyCodes,
     );
 
-    // Get user's main and associated family codes
+    const allPeople = this.buildUnifiedPeopleMap({
+      familyTreeEntries,
+      relationships,
+    });
+
+    this.addRelationshipConnectionsToUnifiedPeople(allPeople, relationships);
+
+    // Fix generation inconsistencies before returning
+    this.fixGenerationConsistency(allPeople);
+
+    const people = this.serializeUnifiedPeople(allPeople);
+
+    return {
+      message: 'Associated family tree retrieved successfully',
+      rootUserId: userId,
+      familyCodes: Array.from(allFamilyCodes),
+      people,
+      totalConnections: relationships.length,
+    };
+  }
+
+  private async getBlockedFamilyCodesForUser(userId: number): Promise<Set<string>> {
+    // BLOCK OVERRIDE: Family-member blocked-family filtering removed with legacy columns.
+    void userId;
+    return new Set<string>();
+  }
+
+  private async getUserProfileForAssociatedTree(userId: number): Promise<any> {
     const userProfile = await this.userProfileModel.findOne({
       where: { userId },
       include: [{ model: this.userModel, as: 'user' }],
     });
-
     if (!userProfile) {
       throw new NotFoundException('User profile not found');
     }
+    return userProfile;
+  }
 
+  private collectAssociatedFamilyCodes(params: {
+    userProfile: any;
+    blockedFamilyCodes: Set<string>;
+    relationships: any[];
+  }): Set<string> {
+    const { userProfile, blockedFamilyCodes, relationships } = params;
     const allFamilyCodes = new Set<string>();
 
-    // Add main family code
-    if (
-      userProfile.familyCode &&
-      !blockedFamilyCodes.has(userProfile.familyCode)
-    ) {
+    if (userProfile.familyCode && !blockedFamilyCodes.has(userProfile.familyCode)) {
       allFamilyCodes.add(userProfile.familyCode);
     }
 
-    // Add associated family codes
-    if (
-      userProfile.associatedFamilyCodes &&
-      Array.isArray(userProfile.associatedFamilyCodes)
-    ) {
+    if (userProfile.associatedFamilyCodes && Array.isArray(userProfile.associatedFamilyCodes)) {
       userProfile.associatedFamilyCodes.forEach((code) => {
         if (code && !code.startsWith('REL_') && !blockedFamilyCodes.has(code)) {
-          // Skip relationship-generated and blocked codes
           allFamilyCodes.add(code);
         }
       });
     }
 
-    // Get relationships and their family codes
-    const relationships =
-      await this.relationshipEdgeService.getUserRelationships(userId);
     for (const rel of relationships) {
       if (
         rel.generatedFamilyCode &&
@@ -2994,15 +3021,11 @@ export class FamilyService {
       }
     }
 
-    if (allFamilyCodes.size === 0) {
-      throw new NotFoundException(
-        'No associated family trees found for this user',
-      );
-    }
+    return allFamilyCodes;
+  }
 
-    // Fetch all people from all associated family codes
-    const allPeople = new Map<string, any>();
-    const familyTreeEntries = await this.familyTreeModel.findAll({
+  private async fetchFamilyTreeEntriesForFamilyCodes(allFamilyCodes: Set<string>) {
+    return this.familyTreeModel.findAll({
       where: {
         familyCode: { [Op.in]: Array.from(allFamilyCodes) },
       },
@@ -3020,7 +3043,12 @@ export class FamilyService {
         },
       ],
     });
+  }
 
+  private buildUnifiedPeopleMap(params: { familyTreeEntries: any[]; relationships: any[] }) {
+    const { familyTreeEntries } = params;
+
+    const allPeople = new Map<string, any>();
     const personKeyByFamilyPersonId = new Map<string, string>();
     for (const entry of familyTreeEntries) {
       const familyCode = String((entry as any).familyCode || '');
@@ -3050,7 +3078,6 @@ export class FamilyService {
       process.env.PROFILE_PHOTO_UPLOAD_PATH?.replace(/^\.\/?/, '') ||
       'uploads/profile';
 
-    // Process each entry and build unified tree
     for (const entry of familyTreeEntries) {
       const entryFamilyCode = String((entry as any).familyCode || '');
       const entryPersonId = Number((entry as any).personId);
@@ -3072,73 +3099,23 @@ export class FamilyService {
               ) || `fp_${entryFamilyCode}_${relPersonId}`;
             return getOrCreateUniqueId(relKey);
           })
-          .filter((x) => x !== null) as number[];
+          .filter((x): x is number => x !== null);
       };
 
-      if (!allPeople.has(personKey)) {
-        let personData;
-
-        if (!(entry as any).userId) {
-          personData = {
-            id: personUniqueId,
-            memberId: null,
-            name: 'Unknown',
-            gender: 'unknown',
-            age: null,
-            generation: entry.generation,
-            parents: new Set(mapRelIds((entry as any).parents)),
-            children: new Set(mapRelIds((entry as any).children)),
-            spouses: new Set(mapRelIds((entry as any).spouses)),
-            siblings: new Set(mapRelIds((entry as any).siblings)),
-            img: null,
-            associatedFamilyCodes: [],
-            familyCode: entry.familyCode,
-            isManual: false,
-          };
-        } else {
-          const userProfile = entry.user?.userProfile;
-          let img = null;
-          if (userProfile?.profile) {
-            if (userProfile.profile.startsWith('http')) {
-              img = userProfile.profile;
-            } else {
-              img = `${baseUrl}/${profilePhotoPath}/${userProfile.profile}`;
-            }
-          }
-
-          personData = {
-            id: personUniqueId,
-            memberId: (entry as any).userId,
-            userId: (entry as any).userId,
-            name: userProfile
-              ? `${userProfile.firstName || ''} ${
-                  userProfile.lastName || ''
-                }`.trim()
-              : 'Unknown',
-            gender: this.normalizeGender(userProfile?.gender),
-            age: userProfile?.age || null,
-            generation: entry.generation,
-            parents: new Set(mapRelIds((entry as any).parents)),
-            children: new Set(mapRelIds((entry as any).children)),
-            spouses: new Set(mapRelIds((entry as any).spouses)),
-            siblings: new Set(mapRelIds((entry as any).siblings)),
-            img: img,
-            associatedFamilyCodes: userProfile?.associatedFamilyCodes || [],
-            familyCode: userProfile?.familyCode || entry.familyCode,
-            isManual: false,
-          };
-        }
-
-        allPeople.set(personKey, personData);
-      } else {
-        // Merge relationships from multiple trees
+      if (allPeople.has(personKey)) {
         const existing = allPeople.get(personKey);
-        existing.parents = new Set([...existing.parents, ...mapRelIds((entry as any).parents)]);
+        existing.parents = new Set([
+          ...existing.parents,
+          ...mapRelIds((entry as any).parents),
+        ]);
         existing.children = new Set([
           ...existing.children,
           ...mapRelIds((entry as any).children),
         ]);
-        existing.spouses = new Set([...existing.spouses, ...mapRelIds((entry as any).spouses)]);
+        existing.spouses = new Set([
+          ...existing.spouses,
+          ...mapRelIds((entry as any).spouses),
+        ]);
         existing.siblings = new Set([
           ...existing.siblings,
           ...mapRelIds((entry as any).siblings),
@@ -3163,51 +3140,98 @@ export class FamilyService {
             : [];
           existing.associatedFamilyCodes = Array.from(new Set([...current, ...extra]));
         }
+        continue;
       }
+
+      let personData;
+      if ((entry as any).userId) {
+        const userProfile = entry.user?.userProfile;
+        let img = null;
+        if (userProfile?.profile) {
+          if (userProfile.profile.startsWith('http')) {
+            img = userProfile.profile;
+          } else {
+            img = `${baseUrl}/${profilePhotoPath}/${userProfile.profile}`;
+          }
+        }
+
+        personData = {
+          id: personUniqueId,
+          memberId: (entry as any).userId,
+          userId: (entry as any).userId,
+          name: userProfile
+            ? `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim()
+            : 'Unknown',
+          gender: this.normalizeGender(userProfile?.gender),
+          age: userProfile?.age || null,
+          generation: entry.generation,
+          parents: new Set(mapRelIds((entry as any).parents)),
+          children: new Set(mapRelIds((entry as any).children)),
+          spouses: new Set(mapRelIds((entry as any).spouses)),
+          siblings: new Set(mapRelIds((entry as any).siblings)),
+          img: img,
+          associatedFamilyCodes: userProfile?.associatedFamilyCodes || [],
+          familyCode: userProfile?.familyCode || entry.familyCode,
+          isManual: false,
+        };
+      } else {
+        personData = {
+          id: personUniqueId,
+          memberId: null,
+          name: 'Unknown',
+          gender: 'unknown',
+          age: null,
+          generation: entry.generation,
+          parents: new Set(mapRelIds((entry as any).parents)),
+          children: new Set(mapRelIds((entry as any).children)),
+          spouses: new Set(mapRelIds((entry as any).spouses)),
+          siblings: new Set(mapRelIds((entry as any).siblings)),
+          img: null,
+          associatedFamilyCodes: [],
+          familyCode: entry.familyCode,
+          isManual: false,
+        };
+      }
+
+      allPeople.set(personKey, personData);
     }
 
-    // Add relationship edges as connections
+    return allPeople;
+  }
+
+  private addRelationshipConnectionsToUnifiedPeople(allPeople: Map<string, any>, relationships: any[]) {
     for (const rel of relationships) {
       const person1Key = `user_${rel.user1Id}`;
       const person2Key = `user_${rel.user2Id}`;
 
-      if (allPeople.has(person1Key) && allPeople.has(person2Key)) {
-        const person1 = allPeople.get(person1Key);
-        const person2 = allPeople.get(person2Key);
+      if (!(allPeople.has(person1Key) && allPeople.has(person2Key))) {
+        continue;
+      }
 
-        // Add relationship based on type using personId for consistency
-        if (rel.relationshipType === 'spouse') {
-          person1.spouses.add(person2.id);
-          person2.spouses.add(person1.id);
-        } else if (rel.relationshipType === 'parent-child') {
-          person1.children.add(person2.id);
-          person2.parents.add(person1.id);
-        } else if (rel.relationshipType === 'sibling') {
-          person1.siblings.add(person2.id);
-          person2.siblings.add(person1.id);
-        }
+      const person1 = allPeople.get(person1Key);
+      const person2 = allPeople.get(person2Key);
+
+      if (rel.relationshipType === 'spouse') {
+        person1.spouses.add(person2.id);
+        person2.spouses.add(person1.id);
+      } else if (rel.relationshipType === 'parent-child') {
+        person1.children.add(person2.id);
+        person2.parents.add(person1.id);
+      } else if (rel.relationshipType === 'sibling') {
+        person1.siblings.add(person2.id);
+        person2.siblings.add(person1.id);
       }
     }
+  }
 
-    // Fix generation inconsistencies before returning
-    this.fixGenerationConsistency(allPeople);
-
-    // Convert sets back to arrays for JSON serialization
-    const people = Array.from(allPeople.values()).map((person) => ({
+  private serializeUnifiedPeople(allPeople: Map<string, any>) {
+    return Array.from(allPeople.values()).map((person) => ({
       ...person,
       parents: Array.from(person.parents),
       children: Array.from(person.children),
       spouses: Array.from(person.spouses),
       siblings: Array.from(person.siblings),
     }));
-
-    return {
-      message: 'Associated family tree retrieved successfully',
-      rootUserId: userId,
-      familyCodes: Array.from(allFamilyCodes),
-      people,
-      totalConnections: relationships.length,
-    };
   }
 
   /**
@@ -3308,7 +3332,7 @@ export class FamilyService {
       where: { familyCode, userId: { [Op.not]: null } },
     });
 
-    if (!familyEntry || !familyEntry.userId) {
+    if (!familyEntry?.userId) {
       throw new NotFoundException('No valid user found in this family tree');
     }
 
@@ -3509,8 +3533,7 @@ export class FamilyService {
       order: [['id', 'DESC']],
     });
     const spouseFamilyCode =
-      (spouseProfile && spouseProfile.familyCode) ||
-      ((spouseMembership as any)?.familyCode || null);
+      spouseProfile?.familyCode || spouseMembership?.familyCode || null;
     const spouseHasFamilyCode = Boolean(spouseFamilyCode);
 
     // Create relationship edge
@@ -3551,8 +3574,7 @@ export class FamilyService {
       order: [['id', 'DESC']],
     });
     const yourFamilyCode =
-      (yourProfile && yourProfile.familyCode) ||
-      ((yourMembership as any)?.familyCode || null);
+      yourProfile?.familyCode || yourMembership?.familyCode || null;
     if (yourFamilyCode) {
       await this.relationshipEdgeService.updateAssociatedFamilyCodes(
         spouseUserId,
@@ -3594,65 +3616,71 @@ export class FamilyService {
 
       // Create spouse relationships
       if (member.spouses && member.spouses.length > 0) {
-        for (const spousePersonId of member.spouses) {
-          const spouseUserId = personIdToUserIdMap.get(spousePersonId);
-          if (spouseUserId && spouseUserId !== userId) {
-            try {
-              await this.relationshipEdgeService.createRelationshipEdge(
-                userId,
-                spouseUserId,
-                'spouse',
-              );
-            } catch (error) {
-              console.error(
-                `Error creating spouse relationship: ${userId} -> ${spouseUserId}`,
-                error,
-              );
-            }
-          }
-        }
+        await this.createEdgesForRelationType({
+          sourceUserId: userId,
+          targetPersonIds: member.spouses,
+          personIdToUserIdMap,
+          relationshipType: 'spouse',
+          errorLabel: 'spouse relationship',
+        });
       }
 
       // Create parent-child relationships
       if (member.children && member.children.length > 0) {
-        for (const childPersonId of member.children) {
-          const childUserId = personIdToUserIdMap.get(childPersonId);
-          if (childUserId && childUserId !== userId) {
-            try {
-              await this.relationshipEdgeService.createRelationshipEdge(
-                userId,
-                childUserId,
-                'parent-child',
-              );
-            } catch (error) {
-              console.error(
-                `Error creating parent-child relationship: ${userId} -> ${childUserId}`,
-                error,
-              );
-            }
-          }
-        }
+        await this.createEdgesForRelationType({
+          sourceUserId: userId,
+          targetPersonIds: member.children,
+          personIdToUserIdMap,
+          relationshipType: 'parent-child',
+          errorLabel: 'parent-child relationship',
+        });
       }
 
       // Create sibling relationships
       if (member.siblings && member.siblings.length > 0) {
-        for (const siblingPersonId of member.siblings) {
-          const siblingUserId = personIdToUserIdMap.get(siblingPersonId);
-          if (siblingUserId && siblingUserId !== userId) {
-            try {
-              await this.relationshipEdgeService.createRelationshipEdge(
-                userId,
-                siblingUserId,
-                'sibling',
-              );
-            } catch (error) {
-              console.error(
-                `Error creating sibling relationship: ${userId} -> ${siblingUserId}`,
-                error,
-              );
-            }
-          }
-        }
+        await this.createEdgesForRelationType({
+          sourceUserId: userId,
+          targetPersonIds: member.siblings,
+          personIdToUserIdMap,
+          relationshipType: 'sibling',
+          errorLabel: 'sibling relationship',
+        });
+      }
+    }
+  }
+
+  private async createEdgesForRelationType(params: {
+    sourceUserId: number;
+    targetPersonIds: number[];
+    personIdToUserIdMap: Map<number, number>;
+    relationshipType: 'spouse' | 'parent-child' | 'sibling';
+    errorLabel: string;
+  }): Promise<void> {
+    const {
+      sourceUserId,
+      targetPersonIds,
+      personIdToUserIdMap,
+      relationshipType,
+      errorLabel,
+    } = params;
+
+    for (const personId of targetPersonIds) {
+      const targetUserId = personIdToUserIdMap.get(personId);
+      if (!targetUserId || targetUserId === sourceUserId) {
+        continue;
+      }
+
+      try {
+        await this.relationshipEdgeService.createRelationshipEdge(
+          sourceUserId,
+          targetUserId,
+          relationshipType,
+        );
+      } catch (error) {
+        console.error(
+          `Error creating ${errorLabel}: ${sourceUserId} -> ${targetUserId}`,
+          error,
+        );
       }
     }
   }

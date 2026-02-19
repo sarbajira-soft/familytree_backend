@@ -219,15 +219,12 @@ CREATE TABLE IF NOT EXISTS public.ft_family_members (
   "creatorId" INTEGER,
   "approveStatus" public."enum_ft_family_members_approveStatus" DEFAULT 'pending'::public."enum_ft_family_members_approveStatus" NOT NULL,
   "isLinkedUsed" BOOLEAN DEFAULT false NOT NULL,
-  "isBlocked" BOOLEAN DEFAULT false NOT NULL,
-  "blockedByUserId" INTEGER,
-  "blockedAt" TIMESTAMP WITHOUT TIME ZONE,
+  -- BLOCK OVERRIDE: Legacy family-member block columns removed in favor of ft_user_block.
   "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
   "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_family_members_member FOREIGN KEY ("memberId") REFERENCES public.ft_user(id) ON DELETE CASCADE,
   CONSTRAINT fk_family_members_family FOREIGN KEY ("familyCode") REFERENCES public.ft_family("familyCode") ON DELETE CASCADE,
-  CONSTRAINT fk_family_members_creator FOREIGN KEY ("creatorId") REFERENCES public.ft_user(id) ON DELETE SET NULL,
-  CONSTRAINT fk_family_members_blocked_by FOREIGN KEY ("blockedByUserId") REFERENCES public.ft_user(id) ON DELETE SET NULL
+  CONSTRAINT fk_family_members_creator FOREIGN KEY ("creatorId") REFERENCES public.ft_user(id) ON DELETE SET NULL
 );
 
 -- Family Tree Table
@@ -649,7 +646,6 @@ CREATE INDEX IF NOT EXISTS idx_ft_family_members_family_code ON public.ft_family
 CREATE INDEX IF NOT EXISTS idx_ft_family_members_member_id ON public.ft_family_members("memberId");
 CREATE INDEX IF NOT EXISTS idx_ft_family_members_approve_status ON public.ft_family_members("approveStatus");
 CREATE INDEX IF NOT EXISTS idx_ft_family_members_family_approve ON public.ft_family_members("familyCode", "approveStatus");
-CREATE INDEX IF NOT EXISTS idx_ft_family_members_blocked ON public.ft_family_members("familyCode", "isBlocked");
 CREATE INDEX IF NOT EXISTS idx_ft_family_members_creator_id ON public.ft_family_members("creatorId");
 
 -- Family Tree Indexes

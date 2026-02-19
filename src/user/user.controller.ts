@@ -15,6 +15,7 @@ import {
   BadRequestException,
   UseGuards,
   UseInterceptors,
+  Logger,
   Delete
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
@@ -35,7 +36,6 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { generateFileName, imageFileFilter } from '../utils/upload.utils';
 import { MergeUserDto } from './dto/merge-user.dto';
 import { UploadService } from '../uploads/upload.service';
-import { log } from 'console';
 import { BlockingService } from '../blocking/blocking.service';
 import { NotificationService } from '../notification/notification.service';
 
@@ -43,12 +43,34 @@ import { NotificationService } from '../notification/notification.service';
 @ApiTags('User Module')
 @Controller('user')
 export class UserController {
+  private readonly logger = new Logger(UserController.name);
+
   constructor(
     private readonly userService: UserService,
     private readonly uploadService: UploadService,
     private readonly blockingService: BlockingService,
     private readonly notificationService: NotificationService,
   ) {}
+
+  /**
+   * BLOCK OVERRIDE: Normalize Sequelize model instances to plain objects
+   * before spreading into API payloads to avoid circular JSON structures.
+   */
+  private toPlainObject<T>(value: T): any {
+    if (!value) {
+      return value;
+    }
+
+    const modelValue = value as any;
+    if (typeof modelValue.toJSON === 'function') {
+      return modelValue.toJSON();
+    }
+    if (typeof modelValue.get === 'function') {
+      return modelValue.get({ plain: true });
+    }
+
+    return value;
+  }
 
   @Post('register')
   @ApiOperation({ summary: 'Register a new user' })
@@ -66,7 +88,7 @@ export class UserController {
       const result = await this.userService.register(registerDto);
       return result;
     } catch (error) {
-      console.error('Registration error:', error);
+      this.logger.error('Registration error', error?.stack || String(error));
       if (error instanceof BadRequestException) {
         throw error;
       }
@@ -161,7 +183,6 @@ export class UserController {
   @ApiSecurity('application-token')
   async getMyProfile(@Req() req) {
     const loggedInUser = req.user;
-    console.log(loggedInUser);
 
     const userdata = await this.userService.getUserProfile(
       Number(loggedInUser.userId),
@@ -194,39 +215,75 @@ export class UserController {
   @ApiSecurity('application-token')
   async getProfile(@Req() req, @Param('id', ParseIntPipe) id: number) {
     const loggedInUser = req.user;
+    const loggedInUserId = Number(loggedInUser.userId || loggedInUser.id);
     const targetUserId = Number(id);
 
     // Always allow self for any role
-    if (loggedInUser.userId === targetUserId) {
+    if (loggedInUserId === targetUserId) {
       const userdata = await this.userService.getUserProfile(id);
+      const plainUserData = this.toPlainObject(userdata);
       return {
         message: 'Profile fetched successfully',
-        data: userdata,
+        // BLOCK OVERRIDE: Injected new blockStatus contract.
+        data: {
+          ...plainUserData,
+          blockStatus: {
+            isBlockedByMe: false,
+            isBlockedByThem: false,
+          },
+        },
         currentUser: loggedInUser,
       };
     }
 
-    const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
-      Number(loggedInUser.userId),
+    const blockStatus = await this.blockingService.getBlockStatus(
+      loggedInUserId,
       targetUserId,
     );
-    if (usersBlockedEitherWay) {
-      throw new ForbiddenException('Access denied');
+
+    // BLOCK OVERRIDE: If target blocked viewer, return restricted payload for blocked-profile UI.
+    if (blockStatus.isBlockedByThem) {
+      return {
+        message: 'Profile fetched successfully',
+        data: {
+          blockStatus,
+        },
+        currentUser: loggedInUser,
+      };
+    }
+
+    const targetUser = await this.userService.getUserProfile(id);
+    const plainTargetUser = this.toPlainObject(targetUser);
+
+    // BLOCK OVERRIDE: If viewer blocked target, return limited profile payload.
+    if (blockStatus.isBlockedByMe) {
+      return {
+        message: 'Profile fetched successfully',
+        data: {
+          id: plainTargetUser?.id,
+          userProfile: {
+            firstName: plainTargetUser?.userProfile?.firstName || '',
+            lastName: plainTargetUser?.userProfile?.lastName || '',
+            profile: plainTargetUser?.userProfile?.profile || null,
+          },
+          blockStatus,
+        },
+        currentUser: loggedInUser,
+      };
     }
 
     // For any other user, require same familyCode
-    const [myProfile, targetUser] = await Promise.all([
-      this.userService.getUserProfile(loggedInUser.userId),
-      this.userService.getUserProfile(id),
-    ]);
+    const myProfile = await this.userService.getUserProfile(loggedInUserId);
+    const plainMyProfile = this.toPlainObject(myProfile);
 
-    const myFamilyCode = myProfile?.userProfile?.familyCode;
-    const targetFamilyCode = targetUser?.userProfile?.familyCode;
+    const myFamilyCode = plainMyProfile?.userProfile?.familyCode;
+    const targetFamilyCode = plainTargetUser?.userProfile?.familyCode;
 
     if (myFamilyCode && targetFamilyCode && myFamilyCode === targetFamilyCode) {
       return {
         message: 'Profile fetched successfully',
-        data: targetUser,
+        // BLOCK OVERRIDE: Injected new blockStatus contract.
+        data: { ...plainTargetUser, blockStatus },
         currentUser: loggedInUser,
       };
     }
@@ -240,7 +297,8 @@ export class UserController {
       if (canViewJoinRequester) {
         return {
           message: 'Profile fetched successfully',
-          data: targetUser,
+          // BLOCK OVERRIDE: Injected new blockStatus contract.
+          data: { ...plainTargetUser, blockStatus },
           currentUser: loggedInUser,
         };
       }
@@ -254,7 +312,8 @@ export class UserController {
         if (hasPendingJoinRequest) {
           return {
             message: 'Profile fetched successfully',
-            data: targetUser,
+            // BLOCK OVERRIDE: Injected new blockStatus contract.
+            data: { ...plainTargetUser, blockStatus },
             currentUser: loggedInUser,
           };
         }

@@ -21,6 +21,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { FamilyMemberService } from './family-member.service';
 import { CreateFamilyMemberDto } from './dto/create-family-member.dto';
 import { CreateUserAndJoinFamilyDto } from './dto/create-user-and-join-family.dto';
+import { BlockingService } from '../blocking/blocking.service';
 
 import {
   ApiBearerAuth,
@@ -36,7 +37,10 @@ import {
 @Controller('family/member')
 @ApiBearerAuth()
 export class FamilyMemberController {
-  constructor(private readonly familyMemberService: FamilyMemberService) {}
+  constructor(
+    private readonly familyMemberService: FamilyMemberService,
+    private readonly blockingService: BlockingService,
+  ) {}
 
   @Post('register-and-join-family')
   @UseGuards(JwtAuthGuard)
@@ -124,31 +128,7 @@ export class FamilyMemberController {
     return this.familyMemberService.deleteFamilyMember(memberId, familyCode, actingUserId);
   }
 
-  @Put('block/:memberId/:familyCode')
-  @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'Block family member in a family' })
-  @ApiResponse({ status: 200, description: 'Family member blocked successfully' })
-  async blockMember(
-    @Param('memberId', ParseIntPipe) memberId: number,
-    @Param('familyCode') familyCode: string,
-    @Req() req,
-  ) {
-    const actingUserId = req.user?.userId;
-    return this.familyMemberService.blockFamilyMember(memberId, familyCode, actingUserId);
-  }
-
-  @Put('unblock/:memberId/:familyCode')
-  @UseGuards(JwtAuthGuard)
-  @ApiOperation({ summary: 'Unblock family member in a family' })
-  @ApiResponse({ status: 200, description: 'Family member unblocked successfully' })
-  async unblockMember(
-    @Param('memberId', ParseIntPipe) memberId: number,
-    @Param('familyCode') familyCode: string,
-    @Req() req,
-  ) {
-    const actingUserId = req.user?.userId;
-    return this.familyMemberService.unblockFamilyMember(memberId, familyCode, actingUserId);
-  }
+  // BLOCK OVERRIDE: Removed legacy family-member block/unblock endpoints; user-level block uses /block routes.
 
   // Get all approved family members by family code
   @Get(':familyCode')
@@ -157,7 +137,31 @@ export class FamilyMemberController {
   @ApiResponse({ status: 200, description: 'List of family members returned' })
   async getFamilyMembers(@Param('familyCode') familyCode: string, @Req() req) {
     const requestingUserId = req.user?.userId;
-    return this.familyMemberService.getAllFamilyMembers(familyCode, requestingUserId);
+    const response = await this.familyMemberService.getAllFamilyMembers(
+      familyCode,
+      requestingUserId,
+    );
+
+    // BLOCK OVERRIDE: Injected new blockStatus contract into members payload.
+    const data = await Promise.all(
+      (response?.data || []).map(async (member: any) => {
+        const otherUserId = Number(member?.user?.id || member?.memberId);
+        if (!otherUserId || Number(otherUserId) === Number(requestingUserId)) {
+          return {
+            ...member,
+            blockStatus: { isBlockedByMe: false, isBlockedByThem: false },
+          };
+        }
+
+        const blockStatus = await this.blockingService.getBlockStatus(
+          Number(requestingUserId),
+          Number(otherUserId),
+        );
+        return { ...member, blockStatus };
+      }),
+    );
+
+    return { ...response, data };
   }
 
   // Get all pending family member requests for logged-in user

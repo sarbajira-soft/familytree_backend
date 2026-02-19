@@ -33,6 +33,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { imageFileFilter } from '../utils/upload.utils';
 import { NotificationService } from '../notification/notification.service';
 import { BlockingService } from '../blocking/blocking.service';
+import { FamilyLinkService } from '../notification/family-link.service';
 
 @ApiTags('Family')
 @Controller('family')
@@ -42,7 +43,8 @@ export class FamilyController {
     private readonly uploadService: UploadService,
     private readonly notificationService: NotificationService,
     private readonly blockingService: BlockingService,
-  ) {}
+    private readonly familyLinkService: FamilyLinkService,
+  ) { }
 
   @UseGuards(JwtAuthGuard)
   @Post('create')
@@ -61,7 +63,7 @@ export class FamilyController {
     @Body() body: CreateFamilyDto,
   ) {
     const loggedInUser = req.user;
-    
+
     if (file) {
       // Upload to S3 and get the file path
       body.familyPhoto = await this.uploadService.uploadFile(file, 'family');
@@ -101,13 +103,13 @@ export class FamilyController {
   ) {
     const loggedInUser = req.user;
     let fileName: string | undefined;
-    
+
     if (file) {
       // Upload to S3 and get the file path
       fileName = await this.uploadService.uploadFile(file, 'family');
       body.familyPhoto = fileName;
     }
-    
+
     return this.familyService.update(id, body, fileName, loggedInUser.userId);
   }
 
@@ -153,7 +155,7 @@ export class FamilyController {
     if (isNaN(personCount) || personCount < 1) {
       throw new BadRequestException('Invalid or missing person_count');
     }
-    
+
     // Upload all received images to S3 first (multer memoryStorage provides file.buffer; file.filename is undefined)
     const uploadedImageMap: Record<string, string> = {};
     if (Array.isArray(files) && files.length > 0) {
@@ -194,7 +196,7 @@ export class FamilyController {
           person[field] = body[key] !== undefined ? body[key] : null;
         }
       }
-      
+
       // Add relationshipCode from payload
       person.relationshipCode = body[`${prefix}relationshipCode`] || '';
       // Optionally, split comma-separated fields into arrays
@@ -243,8 +245,30 @@ export class FamilyController {
   @ApiOperation({ summary: 'Get family tree by family code' })
   @ApiResponse({ status: 200, description: 'Family tree retrieved successfully' })
   async getFamilyTree(@Param('familyCode') familyCode: string, @Req() req) {
-    const userId = req.user?.userId;
-    return this.familyService.getFamilyTree(familyCode, userId);
+    const userId = Number(req.user?.userId || req.user?.id);
+    const response = await this.familyService.getFamilyTree(familyCode, userId);
+
+    // BLOCK OVERRIDE: Injected new blockStatus contract into family tree people payload.
+    const people = await Promise.all(
+      (response?.people || []).map(async (person: any) => {
+        // BLOCK OVERRIDE: Prefer canonical userId when both userId/memberId exist.
+        const otherUserId = Number(person?.userId || person?.memberId);
+        if (!otherUserId || Number(otherUserId) === Number(userId)) {
+          return {
+            ...person,
+            blockStatus: { isBlockedByMe: false, isBlockedByThem: false },
+          };
+        }
+
+        const blockStatus = await this.blockingService.getBlockStatus(
+          userId,
+          otherUserId,
+        );
+        return { ...person, blockStatus };
+      }),
+    );
+
+    return { ...response, people };
   }
 
   @UseGuards(JwtAuthGuard)
@@ -262,8 +286,8 @@ export class FamilyController {
   @ApiOperation({ summary: 'Get associated family prefixes (spouse-connected)' })
   @ApiResponse({ status: 200, description: 'Associated family prefixes retrieved successfully' })
   async getAssociatedFamilyPrefixes(@Param('userId', ParseIntPipe) userId: number) {
-  return this.familyService.getAssociatedFamilyPrefixes(userId);
-}
+    return this.familyService.getAssociatedFamilyPrefixes(userId);
+  }
 
   @UseGuards(JwtAuthGuard)
   @Get('user/:userId/families')
@@ -466,32 +490,32 @@ export class FamilyController {
   ) {
     const userId: number = req.user?.userId;
     const requestId = Number(body?.requestId);
-    
+
     if (!userId) {
       throw new ForbiddenException('Unauthorized: missing user context');
     }
     if (!requestId || Number.isNaN(requestId) || requestId <= 0) {
       throw new BadRequestException('requestId is required and must be a positive number');
     }
-    
+
     try {
       const result = await this.notificationService.respondToNotification(
         requestId,
         'accept',
         userId
       );
-      
-      return { 
-        success: true, 
+
+      return {
+        success: true,
         message: 'Association request accepted successfully',
-        data: result 
+        data: result
       };
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error('acceptAssociation error:', { userId, requestId, error });
-      if (error instanceof BadRequestException || 
-          error instanceof ForbiddenException || 
-          error instanceof NotFoundException) {
+      if (error instanceof BadRequestException ||
+        error instanceof ForbiddenException ||
+        error instanceof NotFoundException) {
         throw error;
       }
       throw new InternalServerErrorException('Failed to process association request');
@@ -513,32 +537,32 @@ export class FamilyController {
   ) {
     const userId: number = req.user?.userId;
     const requestId = Number(body?.requestId);
-    
+
     if (!userId) {
       throw new ForbiddenException('Unauthorized: missing user context');
     }
     if (!requestId || Number.isNaN(requestId) || requestId <= 0) {
       throw new BadRequestException('requestId is required and must be a positive number');
     }
-    
+
     try {
       const result = await this.notificationService.respondToNotification(
         requestId,
         'reject',
         userId
       );
-      
-      return { 
-        success: true, 
+
+      return {
+        success: true,
         message: 'Association request rejected successfully',
-        data: result 
+        data: result
       };
     } catch (error) {
       // eslint-disable-next-line no-console
       console.error('rejectAssociation error:', { userId, requestId, error });
-      if (error instanceof BadRequestException || 
-          error instanceof ForbiddenException || 
-          error instanceof NotFoundException) {
+      if (error instanceof BadRequestException ||
+        error instanceof ForbiddenException ||
+        error instanceof NotFoundException) {
         throw error;
       }
       throw new InternalServerErrorException('Failed to process association rejection');
@@ -575,7 +599,7 @@ export class FamilyController {
       throw new BadRequestException('Missing senderNodeUid, receiverFamilyCode, receiverNodeUid, or relationshipType');
     }
 
-    return this.notificationService.createTreeLinkRequestNotification({
+    return this.familyLinkService.createTreeLinkRequestNotification({
       requesterUserId,
       senderNodeUid,
       receiverFamilyCode,
@@ -596,7 +620,7 @@ export class FamilyController {
       throw new ForbiddenException('Unauthorized: missing user context');
     }
 
-    return this.notificationService.getPendingTreeLinkRequestsForUser(actingUserId);
+    return this.familyLinkService.getPendingTreeLinkRequestsForUser(actingUserId);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -618,7 +642,7 @@ export class FamilyController {
       throw new BadRequestException('treeLinkRequestId is required and must be a positive number');
     }
 
-    return this.notificationService.revokeTreeLinkRequest(treeLinkRequestId, actingUserId);
+    return this.familyLinkService.revokeTreeLinkRequest(treeLinkRequestId, actingUserId);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -705,7 +729,7 @@ export class FamilyController {
   }
 
   // ==================== NEW ASSOCIATION ENDPOINTS (TODO: Implement service methods) ====================
-  
+
   // TODO: Implement these endpoints after creating the service methods
   // @UseGuards(JwtAuthGuard)
   // @Post('associations/request')
@@ -714,4 +738,4 @@ export class FamilyController {
   //   return this.familyService.sendAssociationRequest(requesterId, dto.targetUserId, dto.message);
   // }
 
- }
+}

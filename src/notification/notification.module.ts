@@ -8,6 +8,9 @@ import { NotificationController } from './notification.controller';
 import { NotificationService } from './notification.service';
 import { NotificationScheduler } from './notification.scheduler';
 import { NotificationGateway } from './notification.gateway';
+import { TreeMutationService } from './tree-mutation.service';
+import { FamilyLinkService } from './family-link.service';
+import { RelationshipService } from './relationship.service';
 
 import { MailService } from '../utils/mail.service';
 import { User } from '../user/model/user.model';
@@ -36,21 +39,23 @@ import { BlockingModule } from '../blocking/blocking.module';
     ]),
     ScheduleModule.forRoot(),
     JwtModule.registerAsync({
-    useFactory: () => ({
-      secret: process.env.JWT_SECRET,
-      signOptions: { expiresIn: '7d' },
+      useFactory: () => ({
+        secret: process.env.JWT_SECRET,
+        signOptions: { expiresIn: '7d' },
+      }),
     }),
-  }),
     forwardRef(() => FamilyModule),
     forwardRef(() => UserModule),
     BlockingModule,
   ],
   controllers: [NotificationController],
   providers: [
-    NotificationService, 
+    NotificationService,
+    TreeMutationService,
+    FamilyLinkService,
+    RelationshipService,
     NotificationScheduler,
     NotificationGateway,
-    MailService,
     {
       provide: 'SEQUELIZE',
       useExisting: Sequelize,
@@ -58,9 +63,9 @@ import { BlockingModule } from '../blocking/blocking.module';
   ],
   exports: [
     NotificationService,
+    FamilyLinkService,
     NotificationGateway,
-    MailService,
     SequelizeModule,
   ],
 })
-export class NotificationModule {}
+export class NotificationModule { }

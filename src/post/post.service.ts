@@ -1180,11 +1180,32 @@ export class PostService {
       throw new ForbiddenException('You cannot delete comment due to blocking');
     }
 
-    return this.baseCommentService.deleteComment(
-      this.postCommentModel,
-      commentId,
-      userId,
-    );
+    const isCommentOwner = Number((comment as any).userId) === Number(userId);
+    const isPostOwner = Number((post as any).createdBy) === Number(userId);
+
+    if (!isCommentOwner && !isPostOwner) {
+      throw new ForbiddenException('You can only delete your own comments');
+    }
+
+    // If the requester is the comment owner, keep the shared delete behavior.
+    if (isCommentOwner) {
+      return this.baseCommentService.deleteComment(
+        this.postCommentModel,
+        commentId,
+        userId,
+      );
+    }
+
+    // Post owner deleting someone else's comment: cascade delete replies + comment.
+    await this.postCommentModel.destroy({
+      where: { parentCommentId: commentId },
+    });
+    await (comment as any).destroy();
+
+    return {
+      success: true,
+      message: 'Comment and its replies deleted successfully',
+    };
   }
 
   /**

@@ -1,39 +1,36 @@
 import {
-  Controller,
-  Post,
-  Param,
-  Query,
-  Get,
-  Put,
-  Patch,
-  Req,
-  UploadedFile,
-  ForbiddenException,
+  BadRequestException,
   Body,
+  Controller,
   Delete,
+  ForbiddenException,
+  Get,
   HttpCode,
   HttpStatus,
-  ParseIntPipe,
-  BadRequestException,
+  InternalServerErrorException,
   NotFoundException,
-  UseGuards,
-  UseInterceptors,
+  Param,
+  ParseIntPipe,
+  Post,
+  Put,
+  Query,
+  Req,
+  UploadedFile,
   UploadedFiles,
-  InternalServerErrorException
+  UseGuards,
+  UseInterceptors
 } from '@nestjs/common';
-import { FileInterceptor, FilesInterceptor, FileFieldsInterceptor, AnyFilesInterceptor } from '@nestjs/platform-express';
+import { AnyFilesInterceptor, FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { memoryStorage } from 'multer';
-import { generateFileName } from '../utils/upload.utils';
-import { FamilyService } from './family.service';
-import { CreateFamilyDto } from './dto/create-family.dto';
-import { CreateFamilyTreeDto } from './dto/family-tree.dto';
-import { UploadService } from '../uploads/upload.service';
-import { ApiConsumes, ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiBody, ApiSecurity } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { imageFileFilter } from '../utils/upload.utils';
-import { NotificationService } from '../notification/notification.service';
 import { BlockingService } from '../blocking/blocking.service';
 import { FamilyLinkService } from '../notification/family-link.service';
+import { NotificationService } from '../notification/notification.service';
+import { UploadService } from '../uploads/upload.service';
+import { imageFileFilter } from '../utils/upload.utils';
+import { CreateFamilyDto } from './dto/create-family.dto';
+import { FamilyService } from './family.service';
 
 @ApiTags('Family')
 @Controller('family')

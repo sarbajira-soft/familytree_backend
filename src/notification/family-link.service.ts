@@ -1,27 +1,27 @@
 import {
-    Injectable,
-    Logger,
     BadRequestException,
     ForbiddenException,
-    NotFoundException,
     Inject,
+    Injectable,
+    Logger,
+    NotFoundException,
     forwardRef,
 } from '@nestjs/common';
-import { InjectModel, InjectConnection } from '@nestjs/sequelize';
-import { Sequelize } from 'sequelize-typescript';
+import { InjectConnection, InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
-import { User } from '../user/model/user.model';
-import { UserProfile } from '../user/model/user-profile.model';
-import { FamilyMember } from '../family/model/family-member.model';
+import { Sequelize } from 'sequelize-typescript';
+import { BlockingService } from '../blocking/blocking.service';
 import { FamilyLink } from '../family/model/family-link.model';
+import { FamilyMember } from '../family/model/family-member.model';
+import { FamilyTree } from '../family/model/family-tree.model';
 import { TreeLinkRequest } from '../family/model/tree-link-request.model';
 import { TreeLink } from '../family/model/tree-link.model';
-import { Notification } from './model/notification.model';
+import { UserProfile } from '../user/model/user-profile.model';
+import { User } from '../user/model/user.model';
 import { NotificationRecipient } from './model/notification-recipients.model';
-import { FamilyTree } from '../family/model/family-tree.model';
-import { BlockingService } from '../blocking/blocking.service';
-import { RelationshipService } from './relationship.service';
+import { Notification } from './model/notification.model';
 import { NotificationService } from './notification.service';
+import { RelationshipService } from './relationship.service';
 
 /**
  * FamilyLinkService — extracted from NotificationService.

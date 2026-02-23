@@ -2577,6 +2577,135 @@ export class FamilyService {
       }),
     );
 
+    // ENRICH: Fetch relationships for associated members from their primary families
+    // This fixes the issue where associated members show "UNRELATED" in the tree
+    const primaryFamilyCodesToFetch = new Set<string>();
+    const personIdByUserId = new Map<number, number>();
+    const userIdByPersonId = new Map<number, number>();
+    
+    people.forEach((person) => {
+      if (person.memberId && person.primaryFamilyCode && person.primaryFamilyCode !== familyCode) {
+        // This is an associated member - fetch their primary family tree
+        primaryFamilyCodesToFetch.add(person.primaryFamilyCode);
+        personIdByUserId.set(person.memberId, person.id);
+        userIdByPersonId.set(person.id, person.memberId);
+      }
+    });
+
+    if (primaryFamilyCodesToFetch.size > 0) {
+      try {
+        // Fetch primary family tree entries for associated members
+        const primaryFamilyTrees = await this.familyTreeModel.findAll({
+          where: {
+            familyCode: { [Op.in]: Array.from(primaryFamilyCodesToFetch) },
+          },
+          include: [
+            {
+              model: this.userModel,
+              as: 'user',
+              required: false,
+              attributes: ['id'],
+            },
+          ],
+        });
+
+        // Build a map of userId to their relationships in primary family
+        const relationshipsByUserId = new Map<number, { spouses: number[], parents: number[], children: number[] }>();
+        const personIdByUserIdInPrimary = new Map<number, number>();
+
+        primaryFamilyTrees.forEach((entry: any) => {
+          const entryUserId = entry.userId ? Number(entry.userId) : null;
+          if (entryUserId) {
+            personIdByUserIdInPrimary.set(entryUserId, entry.personId);
+            relationshipsByUserId.set(entryUserId, {
+              spouses: entry.spouses || [],
+              parents: entry.parents || [],
+              children: entry.children || [],
+            });
+          }
+        });
+
+        // Map relationships from primary family to current tree
+        people.forEach((person) => {
+          if (!person.memberId) return;
+          
+          const primaryRels = relationshipsByUserId.get(person.memberId);
+          if (!primaryRels) return;
+
+          const currentPersonId = person.id;
+
+          // Map spouse relationships - look for people in current tree with matching userIds
+          primaryRels.spouses.forEach((spousePersonIdInPrimary: number) => {
+            // Find which userId this spouse personId corresponds to in primary family
+            let spouseUserId: number | null = null;
+            for (const [uid, pid] of personIdByUserIdInPrimary.entries()) {
+              if (pid === spousePersonIdInPrimary) {
+                spouseUserId = uid;
+                break;
+              }
+            }
+            
+            if (spouseUserId) {
+              // Check if this spouse is in the current tree
+              const spouseInCurrentTree = people.find(
+                (p) => p.memberId === spouseUserId && p.id !== currentPersonId
+              );
+              if (spouseInCurrentTree && !person.spouses.includes(spouseInCurrentTree.id)) {
+                person.spouses.push(spouseInCurrentTree.id);
+                // Ensure bidirectional
+                if (!spouseInCurrentTree.spouses.includes(currentPersonId)) {
+                  spouseInCurrentTree.spouses.push(currentPersonId);
+                }
+              }
+            }
+          });
+
+          // Map parent relationships
+          primaryRels.parents.forEach((parentPersonIdInPrimary: number) => {
+            let parentUserId: number | null = null;
+            for (const [uid, pid] of personIdByUserIdInPrimary.entries()) {
+              if (pid === parentPersonIdInPrimary) {
+                parentUserId = uid;
+                break;
+              }
+            }
+            
+            if (parentUserId) {
+              const parentInCurrentTree = people.find(
+                (p) => p.memberId === parentUserId
+              );
+              if (parentInCurrentTree && !person.parents.includes(parentInCurrentTree.id)) {
+                person.parents.push(parentInCurrentTree.id);
+              }
+            }
+          });
+
+          // Map children relationships
+          primaryRels.children.forEach((childPersonIdInPrimary: number) => {
+            let childUserId: number | null = null;
+            for (const [uid, pid] of personIdByUserIdInPrimary.entries()) {
+              if (pid === childPersonIdInPrimary) {
+                childUserId = uid;
+                break;
+              }
+            }
+            
+            if (childUserId) {
+              const childInCurrentTree = people.find(
+                (p) => p.memberId === childUserId
+              );
+              if (childInCurrentTree && !person.children.includes(childInCurrentTree.id)) {
+                person.children.push(childInCurrentTree.id);
+              }
+            }
+          });
+        });
+      } catch (err) {
+        console.error('Error enriching relationships for associated members:', err);
+        // Continue without enrichment - don't break the tree loading
+      }
+    }
+
     // Get all valid personIds for cleanup
     const validPersonIds = new Set<number>(people.map((p) => p.id));
 

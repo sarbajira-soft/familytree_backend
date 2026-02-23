@@ -10,6 +10,7 @@
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
+    "admin:create-superadmin": "ts-node -r tsconfig-paths/register src/scripts/create-superadmin.ts",
     "deploy:lambda": "npm run build && zip -r nest-lambda.zip dist node_modules package.json",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",

@@ -17,6 +17,7 @@ import { ProductModule } from './product/product.module';
 import { EventModule } from './event/event.module';
 import { InviteModule } from './invite/invite.module';
 import { BlockingModule } from './blocking/blocking.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -65,6 +66,7 @@ import { BlockingModule } from './blocking/blocking.module';
     ProductModule,
     EventModule,
     InviteModule,
+    AdminModule,
   ],
 })
 export class AppModule {

@@ -947,6 +947,7 @@ export class FamilyMemberService {
             END AS "linkedCode"
           FROM public.ft_family_link
           WHERE "status" = 'active'
+            AND (source = 'tree' OR source IS NULL)
             AND (:code = "familyCodeLow" OR :code = "familyCodeHigh")
         `,
         {

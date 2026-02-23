@@ -1,46 +1,40 @@
 import {
+  Body,
   Controller,
-  Post,
-  Put,
   Delete,
   Get,
-  Param,
-  UploadedFile,
-  UseInterceptors,
-  Body,
-  UseGuards,
-  Req,
   HttpCode,
   HttpStatus,
+  Param,
   ParseIntPipe,
+  Post,
+  Put,
+  Req,
+  UploadedFile,
+  UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
-import { generateFileName, imageFileFilter } from '../utils/upload.utils';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { FamilyMemberService } from './family-member.service';
+import { generateFileName, imageFileFilter } from '../utils/upload.utils';
 import { CreateFamilyMemberDto } from './dto/create-family-member.dto';
 import { CreateUserAndJoinFamilyDto } from './dto/create-user-and-join-family.dto';
-import { BlockingService } from '../blocking/blocking.service';
+import { FamilyMemberService } from './family-member.service';
 
 import {
   ApiBearerAuth,
+  ApiConsumes,
   ApiOperation,
   ApiResponse,
-  ApiTags,
-  ApiConsumes,
-  ApiBody, 
-  ApiSecurity
+  ApiTags
 } from '@nestjs/swagger';
 
 @ApiTags('Family Member')
 @Controller('family/member')
 @ApiBearerAuth()
 export class FamilyMemberController {
-  constructor(
-    private readonly familyMemberService: FamilyMemberService,
-    private readonly blockingService: BlockingService,
-  ) {}
+  constructor(private readonly familyMemberService: FamilyMemberService) {}
 
   @Post('register-and-join-family')
   @UseGuards(JwtAuthGuard)
@@ -128,7 +122,7 @@ export class FamilyMemberController {
     return this.familyMemberService.deleteFamilyMember(memberId, familyCode, actingUserId);
   }
 
-  // BLOCK OVERRIDE: Removed legacy family-member block/unblock endpoints; user-level block uses /block routes.
+  // BLOCK OVERRIDE: Block/unblock moved to /blocking routes; family-member service does not implement these.
 
   // Get all approved family members by family code
   @Get(':familyCode')
@@ -137,31 +131,7 @@ export class FamilyMemberController {
   @ApiResponse({ status: 200, description: 'List of family members returned' })
   async getFamilyMembers(@Param('familyCode') familyCode: string, @Req() req) {
     const requestingUserId = req.user?.userId;
-    const response = await this.familyMemberService.getAllFamilyMembers(
-      familyCode,
-      requestingUserId,
-    );
-
-    // BLOCK OVERRIDE: Injected new blockStatus contract into members payload.
-    const data = await Promise.all(
-      (response?.data || []).map(async (member: any) => {
-        const otherUserId = Number(member?.user?.id || member?.memberId);
-        if (!otherUserId || Number(otherUserId) === Number(requestingUserId)) {
-          return {
-            ...member,
-            blockStatus: { isBlockedByMe: false, isBlockedByThem: false },
-          };
-        }
-
-        const blockStatus = await this.blockingService.getBlockStatus(
-          Number(requestingUserId),
-          Number(otherUserId),
-        );
-        return { ...member, blockStatus };
-      }),
-    );
-
-    return { ...response, data };
+    return this.familyMemberService.getAllFamilyMembers(familyCode, requestingUserId);
   }
 
   // Get all pending family member requests for logged-in user

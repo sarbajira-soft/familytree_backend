@@ -2346,6 +2346,7 @@ export class FamilyService {
           model: this.userModel,
           as: 'user',
           required: false, // Make it a LEFT JOIN instead of INNER JOIN
+          attributes: ['id', 'email', 'mobile', 'countryCode', 'role', 'status', 'isAppUser', 'medusaCustomerId'],
           include: [
             {
               model: this.userProfileModel,

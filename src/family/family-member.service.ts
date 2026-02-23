@@ -791,7 +791,7 @@ export class FamilyMemberService {
         {
           model: this.userModel,
           as: 'user',
-          attributes: ['id', 'email', 'mobile', 'status', 'role'],
+          attributes: ['id', 'email', 'mobile', 'status', 'role', 'isAppUser'],
           include: [
             {
               model: this.userProfileModel,
@@ -836,7 +836,10 @@ export class FamilyMemberService {
             : null,
           profileImage,
         },
-        membershipType: 'member',
+        membershipType: (() => {
+          const userPrimaryFamily = String(user?.userProfile?.familyCode || '').trim().toUpperCase();
+          return userPrimaryFamily === normalizedFamilyCode ? 'member' : 'associated';
+        })(),
         familyRole: (() => {
           const isFamilyAdmin =
             user?.role >= 2 &&
@@ -855,6 +858,7 @@ export class FamilyMemberService {
 
     // Include cross-family linked users (e.g. spouse associations) that have this familyCode
     // in their associatedFamilyCodes, even if they are not ft_family_members for this family.
+    // Exclude users already in baseResult to prevent duplicates.
     const baseUserIds = new Set<number>(
       baseResult
         .map((m: any) => Number(m?.user?.id))
@@ -885,7 +889,7 @@ export class FamilyMemberService {
     if (associatedUserIds.length > 0) {
       const associatedUsers = await this.userModel.findAll({
         where: { id: { [Op.in]: associatedUserIds } } as any,
-        attributes: ['id', 'email', 'mobile', 'status', 'role'],
+        attributes: ['id', 'email', 'mobile', 'status', 'role', 'isAppUser'],
         include: [
           {
             model: this.userProfileModel,
@@ -968,7 +972,7 @@ export class FamilyMemberService {
         const existingIds = new Set<number>([...baseUserIds, ...associatedUserIds]);
         const linkedUsers = await this.userModel.findAll({
           where: { '$userProfile.familyCode$': { [Op.in]: linkedCodes } } as any,
-          attributes: ['id', 'email', 'mobile', 'status', 'role'],
+          attributes: ['id', 'email', 'mobile', 'status', 'role', 'isAppUser'],
           include: [
             {
               model: this.userProfileModel,
@@ -1161,7 +1165,7 @@ export class FamilyMemberService {
         {
           model: this.userModel,
           as: 'user',
-          attributes: ['id', 'email', 'mobile', 'status', 'role'],
+          attributes: ['id', 'email', 'mobile', 'status', 'role', 'isAppUser'],
           include: [
             {
               model: this.userProfileModel,

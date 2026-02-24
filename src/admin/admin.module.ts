@@ -5,13 +5,17 @@ import { PassportModule } from '@nestjs/passport';
 import { SequelizeModule } from '@nestjs/sequelize';
 
 import { AdminController } from './admin.controller';
+import { AdminAuditLogService } from './admin-audit-log.service';
 import { AdminService } from './admin.service';
 import { AdminJwtStrategy } from './auth/admin-jwt.strategy';
+import { AdminJwtAuthGuard } from './auth/admin-jwt-auth.guard';
+import { AdminRolesGuard } from './auth/admin-roles.guard';
+import { AdminAuditLog } from './model/admin-audit-log.model';
 import { AdminLogin } from './model/admin-login.model';
 
 @Module({
   imports: [
-    SequelizeModule.forFeature([AdminLogin]),
+    SequelizeModule.forFeature([AdminLogin, AdminAuditLog]),
     PassportModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -32,7 +36,13 @@ import { AdminLogin } from './model/admin-login.model';
     }),
   ],
   controllers: [AdminController],
-  providers: [AdminService, AdminJwtStrategy],
+  providers: [
+    AdminService,
+    AdminAuditLogService,
+    AdminJwtStrategy,
+    AdminJwtAuthGuard,
+    AdminRolesGuard,
+  ],
   exports: [AdminService],
 })
 export class AdminModule {}

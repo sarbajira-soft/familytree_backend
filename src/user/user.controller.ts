@@ -38,6 +38,10 @@ import { MergeUserDto } from './dto/merge-user.dto';
 import { UploadService } from '../uploads/upload.service';
 import { BlockingService } from '../blocking/blocking.service';
 import { NotificationService } from '../notification/notification.service';
+import { InjectModel } from '@nestjs/sequelize';
+import { FamilyLink } from '../family/model/family-link.model';
+import { FamilyMember } from '../family/model/family-member.model';
+import { UserProfile } from './model/user-profile.model';
 
  
 @ApiTags('User Module')
@@ -50,6 +54,12 @@ export class UserController {
     private readonly uploadService: UploadService,
     private readonly blockingService: BlockingService,
     private readonly notificationService: NotificationService,
+    @InjectModel(FamilyLink)
+    private readonly familyLinkModel: typeof FamilyLink,
+    @InjectModel(FamilyMember)
+    private readonly familyMemberModel: typeof FamilyMember,
+    @InjectModel(UserProfile)
+    private readonly userProfileModel: typeof UserProfile,
   ) {}
 
   /**
@@ -70,6 +80,79 @@ export class UserController {
     }
 
     return value;
+  }
+
+  /**
+   * Check if two families are linked via FamilyLink table
+   */
+  private async areFamiliesLinked(familyCode1: string, familyCode2: string): Promise<boolean> {
+    if (!familyCode1 || !familyCode2 || familyCode1 === familyCode2) {
+      return familyCode1 === familyCode2;
+    }
+
+    const [low, high] = familyCode1 < familyCode2 
+      ? [familyCode1, familyCode2] 
+      : [familyCode2, familyCode1];
+
+    const link = await this.familyLinkModel.findOne({
+      where: {
+        familyCodeLow: low,
+        familyCodeHigh: high,
+        status: 'active',
+      },
+    });
+
+    return !!link;
+  }
+
+  /**
+   * Check if two families are associated via UserProfile associatedFamilyCodes
+   */
+  private async areFamiliesAssociated(familyCode1: string, familyCode2: string): Promise<boolean> {
+    if (!familyCode1 || !familyCode2 || familyCode1 === familyCode2) {
+      return familyCode1 === familyCode2;
+    }
+
+    this.logger.log(`areFamiliesAssociated: Checking if ${familyCode1} has ${familyCode2} in associatedFamilyCodes`);
+
+    // Use text search for json arrays - case insensitive
+    const [results1] = await this.userProfileModel.sequelize.query(
+      `SELECT 1 FROM ft_user_profile 
+       WHERE LOWER("familyCode") = LOWER(:familyCode1)
+       AND "associatedFamilyCodes"::text ILIKE '%' || :familyCode2 || '%'
+       LIMIT 1`,
+      {
+        replacements: { familyCode1, familyCode2 },
+        type: 'SELECT',
+      }
+    );
+
+    this.logger.log(`areFamiliesAssociated: Query1 results: ${JSON.stringify(results1)}`);
+
+    if (results1 && results1.length > 0) {
+      this.logger.log(`areFamiliesAssociated: Found association! ${familyCode1} has ${familyCode2}`);
+      return true;
+    }
+
+    // Check reverse direction
+    this.logger.log(`areFamiliesAssociated: Checking reverse - if ${familyCode2} has ${familyCode1}`);
+    
+    const [results2] = await this.userProfileModel.sequelize.query(
+      `SELECT 1 FROM ft_user_profile 
+       WHERE LOWER("familyCode") = LOWER(:familyCode2)
+       AND "associatedFamilyCodes"::text ILIKE '%' || :familyCode1 || '%'
+       LIMIT 1`,
+      {
+        replacements: { familyCode1, familyCode2 },
+        type: 'SELECT',
+      }
+    );
+
+    this.logger.log(`areFamiliesAssociated: Query2 results: ${JSON.stringify(results2)}`);
+
+    const found = results2 && results2.length > 0;
+    this.logger.log(`areFamiliesAssociated: Result = ${found}`);
+    return found;
   }
 
   @Post('register')
@@ -272,14 +355,18 @@ export class UserController {
       };
     }
 
-    // For any other user, require same familyCode
+    const targetIsPrivate = plainTargetUser?.userProfile?.isPrivate;
     const myProfile = await this.userService.getUserProfile(loggedInUserId);
     const plainMyProfile = this.toPlainObject(myProfile);
 
     const myFamilyCode = plainMyProfile?.userProfile?.familyCode;
     const targetFamilyCode = plainTargetUser?.userProfile?.familyCode;
 
-    if (myFamilyCode && targetFamilyCode && myFamilyCode === targetFamilyCode) {
+    this.logger.log(`Profile access check: isPrivate=${targetIsPrivate}, myFamilyCode=${myFamilyCode}, targetFamilyCode=${targetFamilyCode}`);
+
+    // If profile is NOT private (public), allow any authenticated user to view
+    if (!targetIsPrivate) {
+      this.logger.log(`Profile is public - allowing access`);
       return {
         message: 'Profile fetched successfully',
         // BLOCK OVERRIDE: Injected new blockStatus contract.
@@ -288,41 +375,58 @@ export class UserController {
       };
     }
 
-    if (myFamilyCode) {
-      const canViewJoinRequester = await this.notificationService.canRecipientViewJoinRequesterProfile(
-        myFamilyCode,
-        targetUserId,
-        Number(loggedInUser.userId),
-      );
-      if (canViewJoinRequester) {
+    // If profile IS private, check if viewer is in same family or linked/associated
+    if (targetIsPrivate) {
+      this.logger.log(`Profile is private - checking family/association access`);
+
+      // Same family check
+      if (myFamilyCode && targetFamilyCode && myFamilyCode === targetFamilyCode) {
+        this.logger.log(`Same family - allowing access`);
         return {
           message: 'Profile fetched successfully',
-          // BLOCK OVERRIDE: Injected new blockStatus contract.
           data: { ...plainTargetUser, blockStatus },
           currentUser: loggedInUser,
         };
       }
 
-      const role = Number((loggedInUser as any)?.role);
-      if (role === 2 || role === 3) {
-        const hasPendingJoinRequest = await this.notificationService.hasPendingFamilyJoinRequest(
-          myFamilyCode,
-          targetUserId,
-        );
-        if (hasPendingJoinRequest) {
+      // Check linked families
+      if (myFamilyCode && targetFamilyCode) {
+        const familiesAreLinked = await this.areFamiliesLinked(myFamilyCode, targetFamilyCode);
+        if (familiesAreLinked) {
+          this.logger.log(`Linked families - allowing access`);
           return {
             message: 'Profile fetched successfully',
-            // BLOCK OVERRIDE: Injected new blockStatus contract.
             data: { ...plainTargetUser, blockStatus },
             currentUser: loggedInUser,
           };
         }
       }
+
+      // Check associated families
+      if (myFamilyCode && targetFamilyCode) {
+        const familiesAreAssociated = await this.areFamiliesAssociated(myFamilyCode, targetFamilyCode);
+        if (familiesAreAssociated) {
+          this.logger.log(`Associated families - allowing access`);
+          return {
+            message: 'Profile fetched successfully',
+            data: { ...plainTargetUser, blockStatus },
+            currentUser: loggedInUser,
+          };
+        }
+      }
+
+      this.logger.error(`Private profile access denied: user ${loggedInUser.userId} cannot view user ${id}`);
+      throw new BadRequestException({
+        message: 'This profile is private. Only family members can view it.',
+      });
     }
 
-    throw new BadRequestException({
-      message: 'Access denied: You can only view profiles in your family',
-    });
+    // Default allow (should not reach here)
+    return {
+      message: 'Profile fetched successfully',
+      data: { ...plainTargetUser, blockStatus },
+      currentUser: loggedInUser,
+    };
   }
 
   @UseGuards(JwtAuthGuard)

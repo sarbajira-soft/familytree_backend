@@ -11,6 +11,7 @@ import { MailService } from '../utils/mail.service';
 import { NotificationService } from '../notification/notification.service';
 import { UploadService } from '../uploads/upload.service';
 import * as bcrypt from 'bcrypt';
+import { BlockingService } from '../blocking/blocking.service';
 import { repairFamilyTreeIntegrity } from './tree-integrity';
  
 import { CreateFamilyMemberDto } from './dto/create-family-member.dto';
@@ -40,6 +41,8 @@ export class FamilyMemberService {
     private readonly notificationService: NotificationService,
 
     private readonly uploadService: UploadService,
+
+    private readonly blockingService: BlockingService,
 
     private readonly sequelize: Sequelize,
   ) {}
@@ -827,8 +830,19 @@ export class FamilyMemberService {
         }
       }
 
+      // Get block status for this member relative to requesting user
+      let blockStatus = { isBlockedByMe: false, isBlockedByThem: false };
+      if (requestingUserId && user?.id && requestingUserId !== user.id) {
+        try {
+          blockStatus = await this.blockingService.getBlockStatus(requestingUserId, user.id);
+        } catch (e) {
+          // Non-blocking: if block check fails, assume not blocked
+        }
+      }
+
       return {
         ...member,
+        blockStatus,
         user: {
           ...user,
           fullName: user?.userProfile
@@ -914,6 +928,16 @@ export class FamilyMemberService {
             }
           }
 
+          // Get block status for this member relative to requesting user
+          let blockStatus = { isBlockedByMe: false, isBlockedByThem: false };
+          if (requestingUserId && u?.id && requestingUserId !== u.id) {
+            try {
+              blockStatus = await this.blockingService.getBlockStatus(requestingUserId, u.id);
+            } catch (e) {
+              // Non-blocking: if block check fails, assume not blocked
+            }
+          }
+
           return {
             // Negative id prevents collision with ft_family_members serial ids.
             id: -Number(u.id),
@@ -931,6 +955,7 @@ export class FamilyMemberService {
                 : null,
               profileImage,
             },
+            blockStatus,
             membershipType: 'associated',
             familyRole: 'Member',
             isFamilyAdmin: false,
@@ -999,8 +1024,18 @@ export class FamilyMemberService {
                 }
               }
 
+              // Get block status for this member relative to requesting user
+              let blockStatus = { isBlockedByMe: false, isBlockedByThem: false };
+              if (requestingUserId && u?.id && requestingUserId !== u.id) {
+                try {
+                  blockStatus = await this.blockingService.getBlockStatus(requestingUserId, u.id);
+                } catch (e) {
+                  // Non-blocking: if block check fails, assume not blocked
+                }
+              }
+
               return {
-                id: -Number(u.id) * 10, // Avoid collision with other synthetic ids.
+                id: -Number(u.id) * 10,
                 memberId: null,
                 familyCode,
                 creatorId: null,
@@ -1015,6 +1050,7 @@ export class FamilyMemberService {
                     : null,
                   profileImage,
                 },
+                blockStatus,
                 membershipType: 'linked',
                 familyRole: 'Member',
                 isFamilyAdmin: false,

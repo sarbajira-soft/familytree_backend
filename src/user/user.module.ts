@@ -10,6 +10,7 @@ import { UserProfile } from './model/user-profile.model';
 import { Invite } from './model/invite.model';
 import { Family } from '../family/model/family.model';
 import { FamilyMember } from '../family/model/family-member.model';
+import { FamilyLink } from '../family/model/family-link.model';
 import { Religion } from '../religion/model/religion.model';
 import { Language } from '../language/model/language.model';
 import { Gothram } from '../gothram/model/gothram.model';
@@ -30,6 +31,7 @@ import { BlockingModule } from '../blocking/blocking.module';
       UserProfile,
       Family,
       FamilyMember,
+      FamilyLink,
       Invite,
       Religion,
       Language,

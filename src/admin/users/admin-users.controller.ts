@@ -13,6 +13,15 @@ export class AdminUsersController {
 
   @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
   @AdminRoles('admin', 'superadmin')
+  @Get('stats')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get app users stats for admin panel (admin/superadmin)' })
+  usersStats(@Req() req) {
+    return this.adminUsersService.getUsersStats(req.user);
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
   @Get()
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List app users for admin panel (admin/superadmin)' })
@@ -53,6 +62,27 @@ export class AdminUsersController {
       q,
       privacy,
       media,
+    });
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Get(':id/galleries')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List galleries created by an app user (admin/superadmin)' })
+  userGalleries(
+    @Req() req,
+    @Param('id') id: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('q') q?: string,
+    @Query('privacy') privacy?: string,
+  ) {
+    return this.adminUsersService.listUserGalleries(req.user, Number(id), {
+      page: page ? Number(page) : 1,
+      limit: limit ? Number(limit) : 25,
+      q,
+      privacy,
     });
   }
 

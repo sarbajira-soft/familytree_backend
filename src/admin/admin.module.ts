@@ -18,17 +18,36 @@ import { Post } from '../post/model/post.model';
 import { PostLike } from '../post/model/post-like.model';
 import { PostComment } from '../post/model/post-comment.model';
 import { Gallery } from '../gallery/model/gallery.model';
+import { GalleryAlbum } from '../gallery/model/gallery-album.model';
+import { GalleryLike } from '../gallery/model/gallery-like.model';
+import { GalleryComment } from '../gallery/model/gallery-comment.model';
 import { Event } from '../event/model/event.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { AdminUsersController } from './users/admin-users.controller';
 import { AdminUsersService } from './users/admin-users.service';
 import { AdminPostsController } from './posts/admin-posts.controller';
 import { AdminPostsService } from './posts/admin-posts.service';
+import { AdminGalleriesController } from './galleries/admin-galleries.controller';
+import { AdminGalleriesService } from './galleries/admin-galleries.service';
 import { UploadModule } from '../uploads/upload.module';
 
 @Module({
   imports: [
-    SequelizeModule.forFeature([AdminLogin, AdminAuditLog, User, UserProfile, Post, PostLike, PostComment, Gallery, Event, FamilyMember]),
+    SequelizeModule.forFeature([
+      AdminLogin,
+      AdminAuditLog,
+      User,
+      UserProfile,
+      Post,
+      PostLike,
+      PostComment,
+      Gallery,
+      GalleryAlbum,
+      GalleryLike,
+      GalleryComment,
+      Event,
+      FamilyMember,
+    ]),
     UploadModule,
     PassportModule,
     JwtModule.registerAsync({
@@ -49,12 +68,13 @@ import { UploadModule } from '../uploads/upload.module';
       },
     }),
   ],
-  controllers: [AdminController, AdminUsersController, AdminPostsController],
+  controllers: [AdminController, AdminUsersController, AdminPostsController, AdminGalleriesController],
   providers: [
     AdminService,
     AdminAuditLogService,
     AdminUsersService,
     AdminPostsService,
+    AdminGalleriesService,
     AdminJwtStrategy,
     AdminJwtAuthGuard,
     AdminRolesGuard,

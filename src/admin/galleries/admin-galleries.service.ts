@@ -6,6 +6,7 @@ import { Gallery } from '../../gallery/model/gallery.model';
 import { GalleryAlbum } from '../../gallery/model/gallery-album.model';
 import { GalleryLike } from '../../gallery/model/gallery-like.model';
 import { GalleryComment } from '../../gallery/model/gallery-comment.model';
+import { User } from '../../user/model/user.model';
 import { UserProfile } from '../../user/model/user-profile.model';
 import { UploadService } from '../../uploads/upload.service';
 
@@ -20,6 +21,8 @@ export class AdminGalleriesService {
     private readonly galleryLikeModel: typeof GalleryLike,
     @InjectModel(GalleryComment)
     private readonly galleryCommentModel: typeof GalleryComment,
+    @InjectModel(User)
+    private readonly userModel: typeof User,
     @InjectModel(UserProfile)
     private readonly userProfileModel: typeof UserProfile,
     private readonly uploadService: UploadService,
@@ -251,6 +254,7 @@ export class AdminGalleriesService {
     });
 
     const galleryJson: any = typeof (gallery as any)?.toJSON === 'function' ? (gallery as any).toJSON() : gallery;
+    const createdBy = Number(galleryJson?.createdBy);
 
     const albumImages = albums.map((a: any) => {
       const json = typeof a?.toJSON === 'function' ? a.toJSON() : a;
@@ -268,6 +272,36 @@ export class AdminGalleriesService {
     const cover = galleryJson?.coverPhoto ? this.uploadService.getFileUrl(String(galleryJson.coverPhoto), 'gallery/cover') : null;
     const effectiveCover = cover || (albumImages[0]?.url || null);
 
+    const creatorRaw = Number.isFinite(createdBy)
+      ? await this.userModel.findOne({
+          where: { id: createdBy },
+          attributes: ['id', 'email', 'countryCode', 'mobile', 'status', 'role', 'isAppUser'] as any,
+          include: [
+            {
+              model: this.userProfileModel,
+              as: 'userProfile',
+              required: false,
+              attributes: ['firstName', 'lastName', 'profile', 'familyCode', 'gender'] as any,
+            },
+          ],
+        })
+      : null;
+
+    const creatorJson: any = creatorRaw && typeof (creatorRaw as any).toJSON === 'function' ? (creatorRaw as any).toJSON() : creatorRaw;
+    const creator = creatorJson
+      ? {
+          ...creatorJson,
+          userProfile: creatorJson?.userProfile
+            ? {
+                ...creatorJson.userProfile,
+                profile: creatorJson.userProfile.profile
+                  ? this.uploadService.getFileUrl(String(creatorJson.userProfile.profile), 'profile')
+                  : null,
+              }
+            : creatorJson?.userProfile,
+        }
+      : null;
+
     return {
       message: 'Gallery fetched successfully',
       data: {
@@ -278,6 +312,7 @@ export class AdminGalleriesService {
         likeCount,
         commentCount,
       },
+      creator,
     };
   }
 

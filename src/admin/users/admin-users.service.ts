@@ -10,7 +10,9 @@ import { PostComment } from '../../post/model/post-comment.model';
 import { Gallery } from '../../gallery/model/gallery.model';
 import { GalleryAlbum } from '../../gallery/model/gallery-album.model';
 import { Event } from '../../event/model/event.model';
+import { EventImage } from '../../event/model/event-image.model';
 import { FamilyMember } from '../../family/model/family-member.model';
+import { Family } from '../../family/model/family.model';
 import { UploadService } from '../../uploads/upload.service';
 
 @Injectable()
@@ -32,15 +34,31 @@ export class AdminUsersService {
     private readonly galleryAlbumModel: typeof GalleryAlbum,
     @InjectModel(Event)
     private readonly eventModel: typeof Event,
+    @InjectModel(EventImage)
+    private readonly eventImageModel: typeof EventImage,
     @InjectModel(FamilyMember)
     private readonly familyMemberModel: typeof FamilyMember,
+    @InjectModel(Family)
+    private readonly familyModel: typeof Family,
     private readonly uploadService: UploadService,
   ) {}
 
-  async getUsersStats(actor: any) {
+  private assertActor(actor: any) {
     if (!actor?.adminId) {
       throw new ForbiddenException('No admin data in request');
     }
+  }
+
+  private normalizeId(value: any, label: string) {
+    const id = Number(value);
+    if (!Number.isFinite(id) || Number.isNaN(id) || id <= 0) {
+      throw new NotFoundException(`${label} not found`);
+    }
+    return id;
+  }
+
+  async getUsersStats(actor: any) {
+    this.assertActor(actor);
 
     const now = new Date();
     const startOfToday = new Date(now);
@@ -147,6 +165,12 @@ export class AdminUsersService {
         })
       : null;
 
+    const topActiveUserJson: any =
+      topActiveUser && typeof (topActiveUser as any)?.toJSON === 'function' ? (topActiveUser as any).toJSON() : topActiveUser;
+    if (topActiveUserJson?.userProfile?.profile) {
+      topActiveUserJson.userProfile.profile = this.uploadService.getFileUrl(String(topActiveUserJson.userProfile.profile), 'profile');
+    }
+
     return {
       message: 'Users stats fetched successfully',
       data: {
@@ -164,7 +188,7 @@ export class AdminUsersService {
         avgPostsPerUser,
         topActiveUser: topActiveUser
           ? {
-              user: topActiveUser,
+              user: topActiveUserJson,
               postsLast7Days: topActiveUserPosts,
             }
           : null,
@@ -182,9 +206,7 @@ export class AdminUsersService {
       privacy?: string;
     },
   ) {
-    if (!actor?.adminId) {
-      throw new ForbiddenException('No admin data in request');
-    }
+    this.assertActor(actor);
 
     const targetUserId = Number(userId);
     if (!Number.isFinite(targetUserId) || Number.isNaN(targetUserId) || targetUserId <= 0) {
@@ -393,9 +415,7 @@ export class AdminUsersService {
   }
 
   async getAppUserById(actor: any, id: number) {
-    if (!actor?.adminId) {
-      throw new ForbiddenException('No admin data in request');
-    }
+    this.assertActor(actor);
 
     const userId = Number(id);
     if (!Number.isFinite(userId) || Number.isNaN(userId) || userId <= 0) {
@@ -450,6 +470,11 @@ export class AdminUsersService {
       throw new NotFoundException('User not found');
     }
 
+    const userJson: any = typeof (user as any)?.toJSON === 'function' ? (user as any).toJSON() : user;
+    if (userJson?.userProfile?.profile) {
+      userJson.userProfile.profile = this.uploadService.getFileUrl(String(userJson.userProfile.profile), 'profile');
+    }
+
     const postsCount = await this.postModel.count({
       where: {
         createdBy: userId,
@@ -483,7 +508,7 @@ export class AdminUsersService {
 
     return {
       message: 'User fetched successfully',
-      data: user,
+      data: userJson,
       stats: {
         postsCount,
         galleriesCount,
@@ -589,14 +614,216 @@ export class AdminUsersService {
       distinct: true,
     });
 
+    const normalizedRows = (rows || []).map((r: any) => {
+      const json = typeof r?.toJSON === 'function' ? r.toJSON() : r;
+      if (json?.userProfile?.profile) {
+        json.userProfile.profile = this.uploadService.getFileUrl(String(json.userProfile.profile), 'profile');
+      }
+      return json;
+    });
+
     return {
       message: 'Users fetched successfully',
-      data: rows,
+      data: normalizedRows,
       pagination: {
         page,
         limit,
         total: count,
         totalPages: Math.ceil(count / limit) || 1,
+      },
+    };
+  }
+
+  async listUserEvents(
+    actor: any,
+    userId: number,
+    params: {
+      page?: number;
+      limit?: number;
+      q?: string;
+      status?: number;
+      familyCode?: string;
+      from?: string;
+      to?: string;
+    },
+  ) {
+    this.assertActor(actor);
+
+    const targetUserId = this.normalizeId(userId, 'User');
+
+    const exists = await this.userModel.findOne({
+      where: { id: targetUserId, isAppUser: true } as any,
+      attributes: ['id'] as any,
+    });
+    if (!exists) {
+      throw new NotFoundException('User not found');
+    }
+
+    const page = Math.max(1, Number(params?.page || 1));
+    const limit = Math.min(100, Math.max(1, Number(params?.limit || 25)));
+    const offset = (page - 1) * limit;
+
+    const q = String(params?.q || '').trim();
+    const familyCode = String(params?.familyCode || '').trim();
+    const from = String(params?.from || '').trim();
+    const to = String(params?.to || '').trim();
+
+    const where: any = {
+      createdBy: targetUserId,
+    };
+
+    if (params?.status === 0 || params?.status === 1) {
+      where.status = params.status;
+    }
+
+    if (familyCode) {
+      where.familyCode = familyCode;
+    }
+
+    if (q) {
+      const numericId = Number(q);
+      const or: any[] = [{ eventTitle: { [Op.iLike]: `%${q}%` } }];
+      if (!Number.isNaN(numericId) && Number.isFinite(numericId)) {
+        or.unshift({ id: numericId });
+      }
+      where[Op.or] = or;
+    }
+
+    if (from || to) {
+      const createdAt: any = {};
+      if (from) {
+        const fromDate = new Date(from);
+        if (!Number.isNaN(fromDate.getTime())) {
+          createdAt[Op.gte] = fromDate;
+        }
+      }
+      if (to) {
+        const toDate = new Date(to);
+        if (!Number.isNaN(toDate.getTime())) {
+          createdAt[Op.lte] = toDate;
+        }
+      }
+      if (Object.keys(createdAt).length > 0) {
+        where.createdAt = createdAt;
+      }
+    }
+
+    const { rows, count } = await this.eventModel.findAndCountAll({
+      where,
+      attributes: [
+        'id',
+        'userId',
+        'eventTitle',
+        'eventDescription',
+        'eventDate',
+        'eventTime',
+        'location',
+        'familyCode',
+        'createdBy',
+        'status',
+        'createdAt',
+        'updatedAt',
+      ] as any,
+      order: [['createdAt', 'DESC']] as any,
+      limit,
+      offset,
+    });
+
+    const eventIds = rows
+      .map((r: any) => Number(typeof r?.get === 'function' ? r.get('id') : r?.id))
+      .filter((n) => Number.isFinite(n) && !Number.isNaN(n) && n > 0);
+
+    const images = eventIds.length
+      ? await this.eventImageModel.findAll({
+          where: { eventId: eventIds } as any,
+          attributes: ['id', 'eventId', 'imageUrl'] as any,
+          order: [['id', 'ASC']] as any,
+        })
+      : [];
+
+    const firstImageByEventId = new Map<number, any>();
+    const countByEventId = new Map<number, number>();
+
+    (images as any[]).forEach((img: any) => {
+      const json = typeof img?.toJSON === 'function' ? img.toJSON() : img;
+      const eid = Number(json.eventId);
+      if (!firstImageByEventId.has(eid)) {
+        firstImageByEventId.set(eid, json);
+      }
+      countByEventId.set(eid, (countByEventId.get(eid) || 0) + 1);
+    });
+
+    const data = (rows as any[]).map((r: any) => {
+      const json = typeof r?.toJSON === 'function' ? r.toJSON() : r;
+      const eid = Number(json.id);
+      const first = firstImageByEventId.get(eid);
+      const previewImage = first?.imageUrl ? this.uploadService.getFileUrl(String(first.imageUrl), 'events') : null;
+      return {
+        ...json,
+        previewImage,
+        imagesCount: countByEventId.get(eid) || 0,
+      };
+    });
+
+    return {
+      message: 'Events fetched successfully',
+      data,
+      pagination: {
+        page,
+        limit,
+        total: count,
+        totalPages: Math.ceil(count / limit) || 1,
+      },
+    };
+  }
+
+  async getUserFamily(actor: any, userId: number) {
+    this.assertActor(actor);
+
+    const targetUserId = this.normalizeId(userId, 'User');
+
+    const user = await this.userModel.findOne({
+      where: { id: targetUserId, isAppUser: true } as any,
+      include: [
+        {
+          model: this.userProfileModel,
+          as: 'userProfile',
+          required: false,
+          attributes: ['id', 'userId', 'familyCode'] as any,
+        },
+      ],
+      attributes: ['id'] as any,
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const userJson: any = typeof (user as any)?.toJSON === 'function' ? (user as any).toJSON() : user;
+    const familyCode = String(userJson?.userProfile?.familyCode || '').trim();
+
+    if (!familyCode) {
+      return { message: 'Family fetched successfully', data: null };
+    }
+
+    const family = await this.familyModel.findOne({
+      where: { familyCode } as any,
+      attributes: ['id', 'familyName', 'familyBio', 'familyPhoto', 'familyCode', 'status', 'createdBy', 'createdAt', 'updatedAt'] as any,
+    });
+
+    if (!family) {
+      return { message: 'Family fetched successfully', data: null };
+    }
+
+    const familyJson: any = typeof (family as any)?.toJSON === 'function' ? (family as any).toJSON() : family;
+    const membersCount = await this.familyMemberModel.count({ where: { familyCode } as any });
+
+    return {
+      message: 'Family fetched successfully',
+      data: {
+        ...familyJson,
+        familyPhoto: familyJson?.familyPhoto ? this.uploadService.getFileUrl(String(familyJson.familyPhoto), 'family') : null,
+        membersCount,
       },
     };
   }

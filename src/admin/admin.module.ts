@@ -22,13 +22,19 @@ import { GalleryAlbum } from '../gallery/model/gallery-album.model';
 import { GalleryLike } from '../gallery/model/gallery-like.model';
 import { GalleryComment } from '../gallery/model/gallery-comment.model';
 import { Event } from '../event/model/event.model';
+import { EventImage } from '../event/model/event-image.model';
 import { FamilyMember } from '../family/model/family-member.model';
+import { Family } from '../family/model/family.model';
 import { AdminUsersController } from './users/admin-users.controller';
 import { AdminUsersService } from './users/admin-users.service';
 import { AdminPostsController } from './posts/admin-posts.controller';
 import { AdminPostsService } from './posts/admin-posts.service';
 import { AdminGalleriesController } from './galleries/admin-galleries.controller';
 import { AdminGalleriesService } from './galleries/admin-galleries.service';
+import { AdminEventsController } from './events/admin-events.controller';
+import { AdminEventsService } from './events/admin-events.service';
+import { AdminFamiliesController } from './families/admin-families.controller';
+import { AdminFamiliesService } from './families/admin-families.service';
 import { UploadModule } from '../uploads/upload.module';
 
 @Module({
@@ -46,7 +52,9 @@ import { UploadModule } from '../uploads/upload.module';
       GalleryLike,
       GalleryComment,
       Event,
+      EventImage,
       FamilyMember,
+      Family,
     ]),
     UploadModule,
     PassportModule,
@@ -68,13 +76,15 @@ import { UploadModule } from '../uploads/upload.module';
       },
     }),
   ],
-  controllers: [AdminController, AdminUsersController, AdminPostsController, AdminGalleriesController],
+  controllers: [AdminController, AdminUsersController, AdminPostsController, AdminGalleriesController, AdminEventsController, AdminFamiliesController],
   providers: [
     AdminService,
     AdminAuditLogService,
     AdminUsersService,
     AdminPostsService,
     AdminGalleriesService,
+    AdminEventsService,
+    AdminFamiliesService,
     AdminJwtStrategy,
     AdminJwtAuthGuard,
     AdminRolesGuard,

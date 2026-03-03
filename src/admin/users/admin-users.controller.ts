@@ -88,6 +88,42 @@ export class AdminUsersController {
 
   @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
   @AdminRoles('admin', 'superadmin')
+  @Get(':id/events')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List events created by an app user (admin/superadmin)' })
+  userEvents(
+    @Req() req,
+    @Param('id') id: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('q') q?: string,
+    @Query('status') status?: string,
+    @Query('familyCode') familyCode?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.adminUsersService.listUserEvents(req.user, Number(id), {
+      page: page ? Number(page) : 1,
+      limit: limit ? Number(limit) : 25,
+      q,
+      status: status !== undefined && status !== null && status !== '' ? Number(status) : undefined,
+      familyCode,
+      from,
+      to,
+    });
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Get(':id/family')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: "Get an app user's family (by userProfile.familyCode) for admin panel (admin/superadmin)" })
+  userFamily(@Req() req, @Param('id') id: string) {
+    return this.adminUsersService.getUserFamily(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
   @Get(':id')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get app user details for admin panel (admin/superadmin)' })

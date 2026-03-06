@@ -8,6 +8,7 @@ import { PostComment } from '../../post/model/post-comment.model';
 import { User } from '../../user/model/user.model';
 import { UserProfile } from '../../user/model/user-profile.model';
 import { UploadService } from '../../uploads/upload.service';
+import { AdminAuditLogService } from '../admin-audit-log.service';
 
 @Injectable()
 export class AdminPostsService {
@@ -23,6 +24,7 @@ export class AdminPostsService {
     @InjectModel(UserProfile)
     private readonly userProfileModel: typeof UserProfile,
     private readonly uploadService: UploadService,
+    private readonly adminAuditLogService: AdminAuditLogService,
   ) {}
 
   private assertActor(actor: any) {
@@ -47,6 +49,7 @@ export class AdminPostsService {
       totalPosts,
       totalActivePosts,
       totalInactivePosts,
+      totalDeletedPosts,
       postsToday,
       totalLikes,
       totalComments,
@@ -59,6 +62,7 @@ export class AdminPostsService {
       this.postModel.count(),
       this.postModel.count({ where: { status: 1 } }),
       this.postModel.count({ where: { status: 0 } }),
+      this.postModel.count({ where: { deletedAt: { [Op.ne]: null } } }),
       this.postModel.count({ where: { createdAt: { [Op.between]: [startOfToday, endOfToday] } } }),
       this.postLikeModel.count(),
       this.postCommentModel.count(),
@@ -193,7 +197,7 @@ export class AdminPostsService {
         textOnlyPosts,
         activeUsersLast7Days,
         reportedPosts: 0,
-        deletedPosts: totalInactivePosts,
+        deletedPosts: totalDeletedPosts,
         topLikedPost: topLikedPost
           ? {
               post: topLikedPost,
@@ -226,6 +230,7 @@ export class AdminPostsService {
       page?: number;
       limit?: number;
       q?: string;
+      status?: string;
       privacy?: string;
       media?: string;
       userId?: number;
@@ -240,15 +245,25 @@ export class AdminPostsService {
     const offset = (page - 1) * limit;
 
     const q = String(params?.q || '').trim();
+    const statusFilter = String(params?.status || '').trim().toLowerCase();
     const privacy = String(params?.privacy || '').trim().toLowerCase();
     const media = String(params?.media || '').trim().toLowerCase();
     const userId = params?.userId;
     const from = String(params?.from || '').trim();
     const to = String(params?.to || '').trim();
 
-    const where: any = {
-      status: 1,
-    };
+    // Admin default: include both active + deleted posts.
+    // Filter:
+    // - status=active  => deletedAt IS NULL
+    // - status=deleted => deletedAt IS NOT NULL
+    // - status=all (or empty) => no deletedAt filter
+    const where: any = {};
+
+    if (statusFilter === 'active') {
+      where.deletedAt = null;
+    } else if (statusFilter === 'deleted') {
+      where.deletedAt = { [Op.ne]: null };
+    }
 
     if (Number.isFinite(Number(userId)) && Number(userId) > 0) {
       where.createdBy = Number(userId);
@@ -306,7 +321,7 @@ export class AdminPostsService {
 
     const { rows, count } = await this.postModel.findAndCountAll({
       where,
-      attributes: ['id', 'caption', 'postImage', 'postVideo', 'privacy', 'familyCode', 'status', 'createdBy', 'createdAt'] as any,
+      attributes: ['id', 'caption', 'postImage', 'postVideo', 'privacy', 'familyCode', 'status', 'createdBy', 'createdAt', 'deletedAt', 'deletedByUserId', 'deletedByAdminId'] as any,
       order: [['createdAt', 'DESC']] as any,
       limit,
       offset,
@@ -350,6 +365,9 @@ export class AdminPostsService {
         'createdBy',
         'createdAt',
         'updatedAt',
+        'deletedAt',
+        'deletedByUserId',
+        'deletedByAdminId',
       ] as any,
     });
 
@@ -410,6 +428,62 @@ export class AdminPostsService {
       },
       creator,
     };
+  }
+
+  async softDeletePost(actor: any, postId: number) {
+    this.assertActor(actor);
+    const id = this.normalizeId(postId, 'Post');
+
+    const post = await this.postModel.findOne({ where: { id } });
+    if (!post) {
+      throw new NotFoundException('Post not found');
+    }
+
+    if ((post as any).deletedAt) {
+      return { message: 'Post already deleted' };
+    }
+
+    await post.update({
+      deletedAt: new Date(),
+      deletedByAdminId: Number(actor?.adminId),
+      deletedByUserId: null,
+    } as any);
+
+    await this.adminAuditLogService.log(Number(actor?.adminId), 'post_soft_delete', {
+      targetType: 'post',
+      targetId: id,
+      metadata: {
+        postId: id,
+        createdBy: Number((post as any)?.createdBy),
+      },
+    });
+    return { message: 'Post deleted successfully' };
+  }
+
+  async restorePost(actor: any, postId: number) {
+    this.assertActor(actor);
+    const id = this.normalizeId(postId, 'Post');
+
+    const post = await this.postModel.findOne({ where: { id } });
+    if (!post) {
+      throw new NotFoundException('Post not found');
+    }
+
+    if (!(post as any).deletedAt) {
+      return { message: 'Post is not deleted' };
+    }
+
+    await post.update({ deletedAt: null, deletedByAdminId: null, deletedByUserId: null } as any);
+
+    await this.adminAuditLogService.log(Number(actor?.adminId), 'post_restore', {
+      targetType: 'post',
+      targetId: id,
+      metadata: {
+        postId: id,
+        createdBy: Number((post as any)?.createdBy),
+      },
+    });
+    return { message: 'Post restored successfully' };
   }
 
   async listPostLikes(

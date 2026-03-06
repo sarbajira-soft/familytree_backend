@@ -57,6 +57,14 @@ export class PostService {
     this.baseCommentService = new BaseCommentService();
   }
 
+  private async getActivePostOrThrow(postId: number): Promise<Post> {
+    const post = await this.postModel.findOne({ where: { id: postId, deletedAt: null } });
+    if (!post) {
+      throw new NotFoundException('Post not found');
+    }
+    return post;
+  }
+
   private async assertUserCanAccessFamilyContent(userId: number, familyCode: string): Promise<void> {
     if (!userId || !familyCode) {
       throw new ForbiddenException('Not allowed to access this family content');
@@ -428,7 +436,7 @@ export class PostService {
     newImage?: Express.Multer.File | string,
   ) {
     const post = await this.postModel.findOne({
-      where: { id: postId, createdBy: userId },
+      where: { id: postId, createdBy: userId, deletedAt: null },
     });
 
     if (!post) {
@@ -533,6 +541,9 @@ export class PostService {
     userId?: number,
   ) {
     const whereClause: any = {};
+
+    // Always hide soft-deleted posts from user feeds.
+    whereClause.deletedAt = null;
 
     if (postId) whereClause.id = postId;
 
@@ -675,7 +686,7 @@ export class PostService {
 
   async toggleLikePost(postId: number, userId: number) {
     const post = await this.postModel.findByPk(postId);
-    if (!post) return;
+    if (!post || (post as any).deletedAt) return;
 
     // Admin family-block: deny interactions on family/private posts if blocked
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
@@ -772,7 +783,7 @@ export class PostService {
 
   async addComment(postId: number, userId: number, comment: string) {
     const post = await this.postModel.findByPk(postId);
-    if (!post) return;
+    if (!post || (post as any).deletedAt) return;
 
     // Admin family-block: deny interactions on family/private posts if blocked
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
@@ -865,7 +876,7 @@ export class PostService {
 
   async getPost(postId: number, requestingUserId?: number) {
     const post = await this.postModel.findOne({
-      where: { id: postId },
+      where: { id: postId, deletedAt: null },
     });
 
     if (!post) {
@@ -919,7 +930,7 @@ export class PostService {
     limit = 10,
     requestingUserId?: number,
   ) {
-    const post = await this.postModel.findByPk(postId);
+    const post = await this.getActivePostOrThrow(postId);
     if (!post) {
       throw new NotFoundException('Post not found');
     }
@@ -1024,7 +1035,7 @@ export class PostService {
   }
 
   async getCommentCount(postId: number, requestingUserId?: number) {
-    const post = await this.postModel.findByPk(postId);
+    const post = await this.getActivePostOrThrow(postId);
     if (!post) {
       throw new NotFoundException('Post not found');
     }
@@ -1069,7 +1080,7 @@ export class PostService {
   }
 
   async getLikeCount(postId: number, requestingUserId?: number) {
-    const post = await this.postModel.findByPk(postId);
+    const post = await this.getActivePostOrThrow(postId);
     if (!post) {
       throw new NotFoundException('Post not found');
     }
@@ -1122,24 +1133,24 @@ export class PostService {
       throw new NotFoundException('Post not found or access denied.');
     }
 
-    // Delete related comments
-    await this.postCommentModel.destroy({ where: { postId } });
+    if ((post as any).deletedAt) {
+      return {
+        message: 'Post already deleted',
+      };
+    }
 
-    // Delete related likes
-    await this.postLikeModel.destroy({ where: { postId } });
-
-    await this.deletePostImageFile(post.postImage);
-    await this.deletePostVideoFile(post.postVideo);
-
-    // Delete the post
-    await post.destroy();
+    await post.update({
+      deletedAt: new Date(),
+      deletedByUserId: userId,
+      deletedByAdminId: null,
+    } as any);
 
     // Broadcast post deletion via WebSocket
     this.postGateway.broadcastPostDeleted(postId, post.familyCode);
 
     return {
       message:
-        'Post deleted successfully along with associated comments and likes',
+        'Post deleted successfully',
     };
   }
 
@@ -1155,10 +1166,7 @@ export class PostService {
     if (!comment) {
       throw new NotFoundException('Comment not found');
     }
-    const post = await this.postModel.findByPk(comment.postId);
-    if (!post) {
-      throw new NotFoundException('Post not found');
-    }
+    const post = await this.getActivePostOrThrow(Number((comment as any).postId));
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
       await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
     }
@@ -1215,10 +1223,7 @@ export class PostService {
     if (!comment) {
       throw new NotFoundException('Comment not found');
     }
-    const post = await this.postModel.findByPk(comment.postId);
-    if (!post) {
-      throw new NotFoundException('Post not found');
-    }
+    const post = await this.getActivePostOrThrow(Number((comment as any).postId));
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
       await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
     }
@@ -1268,10 +1273,7 @@ export class PostService {
     userId: number,
     replyText: string,
   ) {
-    const post = await this.postModel.findByPk(postId);
-    if (!post) {
-      throw new NotFoundException('Post not found');
-    }
+    const post = await this.getActivePostOrThrow(postId);
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
       await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
     }

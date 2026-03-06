@@ -50,4 +50,21 @@ export class Post extends Model<Post> {
   @Default(true)
   @Column(DataType.BOOLEAN)
   isVisibleToFamily: boolean;
+  @Column({
+    type: DataType.DATE,
+    allowNull: true,
+  })
+  deletedAt: Date;
+
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: true,
+  })
+  deletedByUserId: number;
+
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: true,
+  })
+  deletedByAdminId: number;
 } 

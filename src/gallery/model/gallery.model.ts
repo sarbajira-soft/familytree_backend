@@ -57,6 +57,10 @@ export class Gallery extends Model<Gallery> {
   @Column(DataType.INTEGER)
   status: number; // 1 = active, 0 = inactive
 
+  @Default(true)
+  @Column(DataType.BOOLEAN)
+  isVisibleToFamily: boolean;
+
   @Default(DataType.NOW)
   @Column(DataType.DATE)
   createdAt: Date;

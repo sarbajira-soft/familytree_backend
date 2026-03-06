@@ -7,6 +7,9 @@ import { UserProfile } from '../user/model/user-profile.model';
 import { Family } from './model/family.model';
 import { FamilyMember } from './model/family-member.model';
 import { FamilyTree } from './model/family-tree.model';
+import { Gallery } from '../gallery/model/gallery.model';
+import { Post } from '../post/model/post.model';
+import { Event } from '../event/model/event.model';
 import { MailService } from '../utils/mail.service';
 import { NotificationService } from '../notification/notification.service';
 import { UploadService } from '../uploads/upload.service';
@@ -35,6 +38,15 @@ export class FamilyMemberService {
     @InjectModel(FamilyTree)
     private readonly familyTreeModel: typeof FamilyTree,
 
+    @InjectModel(Gallery)
+    private readonly galleryModel: typeof Gallery,
+
+    @InjectModel(Post)
+    private readonly postModel: typeof Post,
+
+    @InjectModel(Event)
+    private readonly eventModel: typeof Event,
+
     private readonly mailService: MailService,
 
     @Inject(forwardRef(() => NotificationService))
@@ -59,12 +71,14 @@ export class FamilyMemberService {
     memberId: number,
     actingUserId: number,
     family: Family,
+    allowSelfRemoval = false,
+    allowOwnerRemoval = false,
   ) {
-    if (Number(memberId) === Number(actingUserId)) {
+    if (!allowSelfRemoval && Number(memberId) === Number(actingUserId)) {
       throw new BadRequestException('You cannot delete your own account');
     }
 
-    if (Number(memberId) === Number((family as any).createdBy)) {
+    if (!allowOwnerRemoval && Number(memberId) === Number((family as any).createdBy)) {
       throw new BadRequestException('Cannot delete the family owner');
     }
   }
@@ -111,9 +125,14 @@ export class FamilyMemberService {
     return actingMembership;
   }
 
-  private async cleanupRemovedMemberProfile(memberId: number, familyCode: string) {
+  private async cleanupRemovedMemberProfile(
+    memberId: number,
+    familyCode: string,
+    transaction?: any,
+  ) {
     const removedUserProfile = await this.userProfileModel.findOne({
       where: { userId: memberId },
+      transaction,
     });
 
     if (!removedUserProfile) return;
@@ -128,8 +147,113 @@ export class FamilyMemberService {
       await removedUserProfile.update({
         ...(shouldClearPrimary ? { familyCode: null } : {}),
         associatedFamilyCodes: nextAssociated,
-      } as any);
+      } as any, { transaction });
     }
+  }
+
+  private async createDummyUserFromMember(params: {
+    memberId: number;
+    familyCode: string;
+    actingUserId: number;
+    transaction: any;
+  }) {
+    const { memberId, familyCode, actingUserId, transaction } = params;
+
+    const sourceProfile = await this.userProfileModel.findOne({
+      where: { userId: memberId },
+      attributes: ['firstName', 'lastName', 'gender', 'age', 'profile'],
+      transaction,
+    });
+
+    const dummyUser = await this.userModel.create(
+      {
+        email: null,
+        countryCode: null,
+        mobile: null,
+        password: null,
+        status: 1,
+        role: 1,
+        isAppUser: false,
+        hasAcceptedTerms: false,
+        createdBy: actingUserId || 0,
+        lifecycleState: 'active',
+      } as any,
+      { transaction },
+    );
+
+    await this.userProfileModel.create(
+      {
+        userId: dummyUser.id,
+        firstName: sourceProfile?.firstName || 'Familyss',
+        lastName: sourceProfile?.lastName || 'User',
+        gender: sourceProfile?.gender || null,
+        age: sourceProfile?.age || null,
+        profile: sourceProfile?.profile || null,
+        familyCode: null,
+        associatedFamilyCodes: [],
+      } as any,
+      { transaction },
+    );
+
+    return dummyUser;
+  }
+
+  private async convertExistingUserToDummy(memberUser: User, transaction?: any) {
+    if (!memberUser) return;
+
+    if (!memberUser.isAppUser && Number(memberUser.role) === 1) {
+      return;
+    }
+
+    await memberUser.update(
+      {
+        isAppUser: false,
+        role: 1,
+      } as any,
+      { transaction },
+    );
+  }
+
+  private async hideFamilyContentForRemovedMember(
+    memberId: number,
+    familyCode: string,
+    transaction?: any,
+  ) {
+    await this.galleryModel.update(
+      { isVisibleToFamily: false } as any,
+      {
+        where: {
+          createdBy: memberId,
+          familyCode,
+          privacy: 'private',
+        } as any,
+        transaction,
+      },
+    );
+
+    await this.postModel.update(
+      { isVisibleToFamily: false } as any,
+      {
+        where: {
+          createdBy: memberId,
+          familyCode,
+          privacy: { [Op.in]: ['private', 'family'] },
+        } as any,
+        transaction,
+      },
+    );
+
+    await this.eventModel.update(
+      { isVisibleToFamily: false } as any,
+      {
+        where: {
+          createdBy: memberId,
+          familyCode,
+          status: 1,
+        } as any,
+        transaction,
+      },
+    );
   }
 
   private async notifyMemberRemoval(memberId: number, familyCode: string) {
@@ -672,102 +796,336 @@ export class FamilyMemberService {
     return { message: `Family member ${userName} rejected successfully` };
   }
 
-  // Delete family member from family (remove membership)
-  async deleteFamilyMember(memberId: number, familyCode: string, actingUserId?: number) {
+  private async removeMemberFromFamilyCore(params: {
+    memberId: number;
+    familyCode: string;
+    actingUserId: number;
+    allowSelfRemoval: boolean;
+    skipAdminGuard?: boolean;
+  }) {
+    const memberId = Number(params.memberId);
+    const actingUserId = Number(params.actingUserId);
+    const familyCode = String(params.familyCode || '').trim();
+
     if (!actingUserId) {
       throw new BadRequestException('Access denied');
     }
+    if (!familyCode) {
+      throw new BadRequestException('familyCode is required');
+    }
 
-    // Load family to determine owner/root user
     const family = await this.requireFamilyOrThrow(familyCode);
-    this.validateRemovalPermissions(memberId, actingUserId, family);
+    this.validateRemovalPermissions(
+      memberId,
+      actingUserId,
+      family,
+      params.allowSelfRemoval,
+      Boolean(params.skipAdminGuard),
+    );
+
+    const isSelfRemoval = Number(memberId) === Number(actingUserId);
+    if (!params.skipAdminGuard && !isSelfRemoval) {
+      await this.requireAdminMembership(actingUserId, familyCode);
+    }
+
+    if (!params.skipAdminGuard && isSelfRemoval) {
+      const selfMembership = await this.familyMemberModel.findOne({
+        where: {
+          memberId,
+          familyCode,
+          approveStatus: 'approved',
+        },
+      });
+      if (!selfMembership) {
+        throw new BadRequestException('You are not an active member of this family');
+      }
+    }
+
+    const transaction = await this.sequelize.transaction();
+    try {
+      const memberUser = await this.userModel.findByPk(memberId, {
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      const membership = await this.familyMemberModel.findOne({
+        where: { memberId, familyCode },
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      const treeEntries = await this.familyTreeModel.findAll({
+        where: { familyCode, userId: memberId },
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      if (!membership && treeEntries.length === 0) {
+        await transaction.commit();
+        return {
+          message: 'Family member already removed',
+          alreadyProcessed: true,
+          dummyUserId: null,
+        };
+      }
+
+      if (
+        membership &&
+        String((membership as any).approveStatus || '') !== 'approved' &&
+        treeEntries.length === 0
+      ) {
+        await transaction.commit();
+        return {
+          message: 'Family member already removed',
+          alreadyProcessed: true,
+          dummyUserId: null,
+        };
+      }
+
+      if (
+        membership &&
+        String((membership as any).approveStatus || '') !== 'approved' &&
+        treeEntries.length > 0 &&
+        !params.skipAdminGuard &&
+        memberUser &&
+        !memberUser.isAppUser
+      ) {
+        await transaction.commit();
+        return {
+          message: 'Family member already removed',
+          alreadyProcessed: true,
+          dummyUserId: Number(memberUser.id),
+        };
+      }
+
+      if (membership) {
+        await membership.update(
+          { approveStatus: 'rejected' } as any,
+          { transaction },
+        );
+      }
+
+      await this.cleanupRemovedMemberProfile(memberId, familyCode, transaction);
+      await this.hideFamilyContentForRemovedMember(memberId, familyCode, transaction);
+
+      let dummyUserId: number = null;
+      if (treeEntries.length > 0) {
+        if (params.skipAdminGuard) {
+          const dummyUser = await this.createDummyUserFromMember({
+            memberId,
+            familyCode,
+            actingUserId,
+            transaction,
+          });
+          dummyUserId = dummyUser.id;
+
+          await this.familyTreeModel.update(
+            { userId: dummyUser.id } as any,
+            {
+              where: {
+                familyCode,
+                userId: memberId,
+              } as any,
+              transaction,
+            },
+          );
+        } else {
+          await this.convertExistingUserToDummy(memberUser, transaction);
+          dummyUserId = Number(memberId);
+        }
+      }
+
+      await repairFamilyTreeIntegrity({
+        familyCode,
+        transaction,
+        lock: true,
+        fixExternalGenerations: true,
+      });
+
+      await transaction.commit();
+
+      if (!params.skipAdminGuard && !isSelfRemoval) {
+        await this.notifyMemberRemoval(memberId, familyCode);
+      }
+
+      return {
+        message: 'Family member removed successfully',
+        alreadyProcessed: false,
+        dummyUserId,
+      };
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+  }
+
+  // Delete family member from family (admin action or self-removal on same endpoint)
+  async deleteFamilyMember(memberId: number, familyCode: string, actingUserId?: number) {
+    return this.removeMemberFromFamilyCore({
+      memberId,
+      familyCode,
+      actingUserId,
+      allowSelfRemoval: true,
+    });
+  }
+
+  async selfRemoveFromFamily(familyCode: string, actingUserId: number) {
+    return this.removeMemberFromFamilyCore({
+      memberId: actingUserId,
+      familyCode,
+      actingUserId,
+      allowSelfRemoval: true,
+    });
+  }
+
+  async removeMemberForAccountDeletion(memberId: number, familyCode: string) {
+    return this.removeMemberFromFamilyCore({
+      memberId,
+      familyCode,
+      actingUserId: memberId,
+      allowSelfRemoval: true,
+      skipAdminGuard: true,
+    });
+  }
+
+  async getNonAppUsersByFamily(familyCode: string, actingUserId: number) {
     await this.requireAdminMembership(actingUserId, familyCode);
 
-    const membership = await this.familyMemberModel.findOne({
-      where: { memberId, familyCode },
+    const rows = await this.familyTreeModel.findAll({
+      where: { familyCode } as any,
+      include: [
+        {
+          model: this.userModel,
+          as: 'user',
+          required: true,
+          where: { isAppUser: false } as any,
+          attributes: ['id', 'status', 'isAppUser'],
+          include: [
+            {
+              model: this.userProfileModel,
+              as: 'userProfile',
+              attributes: ['firstName', 'lastName', 'gender', 'profile'],
+            },
+          ],
+        },
+      ],
+      order: [['generation', 'ASC'], ['personId', 'ASC']],
     });
-    if (!membership) {
-      throw new NotFoundException('Family member not found');
-    }
 
-    await membership.destroy();
-
-    // If the removed member's profile is still pointing to this family, clear it.
-    // Also remove this family from associated family codes.
-    await this.cleanupRemovedMemberProfile(memberId, familyCode);
-    await this.notifyMemberRemoval(memberId, familyCode);
-
-    // Bug 55: removing a user from the family must also clean up their tree nodes and relationships,
-    // otherwise the remaining sub-tree can drift into weird positions due to orphaned edges.
-    try {
-      await this.sequelize.transaction(async (transaction) => {
-        const cards = await this.familyTreeModel.findAll({
-          where: { familyCode, userId: memberId },
-          transaction,
-        });
-
-        const deletedPersonIds = cards
-          .map((c: any) => Number(c.personId))
-          .filter((id) => Number.isFinite(id));
-
-        if (cards.length > 0) {
-          await this.familyTreeModel.destroy({
-            where: { familyCode, userId: memberId },
-            transaction,
-          });
-        }
-
-        if (deletedPersonIds.length > 0) {
-          const remaining = await this.familyTreeModel.findAll({
-            where: { familyCode },
-            transaction,
-          });
-
-          const del = new Set<number>(deletedPersonIds);
-          const cleanArray = (arr: any) =>
-            (Array.isArray(arr) ? arr : [])
-              .map((x) => (typeof x === 'string' ? Number(x) : x))
-              .filter((x) => Number.isFinite(x) && !del.has(Number(x)));
-
-          for (const entry of remaining as any[]) {
-            const nextParents = cleanArray(entry.parents);
-            const nextChildren = cleanArray(entry.children);
-            const nextSpouses = cleanArray(entry.spouses);
-            const nextSiblings = cleanArray(entry.siblings);
-
-            const changed =
-              JSON.stringify(nextParents) !== JSON.stringify(entry.parents) ||
-              JSON.stringify(nextChildren) !== JSON.stringify(entry.children) ||
-              JSON.stringify(nextSpouses) !== JSON.stringify(entry.spouses) ||
-              JSON.stringify(nextSiblings) !== JSON.stringify(entry.siblings);
-
-            if (changed) {
-              await entry.update(
-                {
-                  parents: nextParents,
-                  children: nextChildren,
-                  spouses: nextSpouses,
-                  siblings: nextSiblings,
-                },
-                { transaction },
-              );
-            }
-          }
-        }
-
-        await repairFamilyTreeIntegrity({
-          familyCode,
-          transaction,
-          lock: true,
-          fixExternalGenerations: true,
-        });
+    const unique = new Map<number, any>();
+    for (const row of rows as any[]) {
+      const uid = Number(row?.userId);
+      if (!Number.isFinite(uid) || unique.has(uid)) continue;
+      unique.set(uid, {
+        dummyUserId: uid,
+        personId: row.personId,
+        nodeUid: row.nodeUid,
+        generation: row.generation,
+        familyCode: row.familyCode,
+        name: `${row?.user?.userProfile?.firstName || ''} ${row?.user?.userProfile?.lastName || ''}`.trim() || 'Familyss User',
+        gender: row?.user?.userProfile?.gender || null,
+        profile: row?.user?.userProfile?.profile || null,
       });
-    } catch (e) {
-      // Don’t block deletion if repair fails; log and proceed.
-      console.error('Failed to cleanup tree after member removal:', e);
     }
 
-    return { message: 'Family member removed successfully' };
+    return {
+      message: 'Non-app users fetched successfully',
+      data: Array.from(unique.values()),
+    };
+  }
+
+  async replaceDummyWithMember(
+    familyCode: string,
+    dummyUserId: number,
+    replacementUserId: number,
+    actingUserId: number,
+  ) {
+    await this.requireAdminMembership(actingUserId, familyCode);
+
+    if (Number(dummyUserId) === Number(replacementUserId)) {
+      throw new BadRequestException('Replacement user must be different from dummy user');
+    }
+
+    const transaction = await this.sequelize.transaction();
+    try {
+      const dummyUser = await this.userModel.findByPk(dummyUserId, {
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+      if (!dummyUser || dummyUser.isAppUser) {
+        throw new BadRequestException('Invalid dummy user');
+      }
+
+      const replacementMembership = await this.familyMemberModel.findOne({
+        where: {
+          memberId: replacementUserId,
+          familyCode,
+          approveStatus: 'approved',
+        } as any,
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+      if (!replacementMembership) {
+        throw new BadRequestException('Replacement member is not active in this family');
+      }
+
+      const replacementUser = await this.userModel.findByPk(replacementUserId, {
+        transaction,
+      });
+      if (!replacementUser || !replacementUser.isAppUser) {
+        throw new BadRequestException('Replacement must be an app user');
+      }
+
+      const existingTargetRows = await this.familyTreeModel.count({
+        where: { familyCode, userId: replacementUserId } as any,
+        transaction,
+      });
+      if (existingTargetRows > 0) {
+        throw new BadRequestException('Replacement user already exists in this family tree');
+      }
+
+      const [updatedCount] = await this.familyTreeModel.update(
+        { userId: replacementUserId } as any,
+        {
+          where: { familyCode, userId: dummyUserId } as any,
+          transaction,
+        },
+      );
+
+      if (!Number(updatedCount)) {
+        throw new NotFoundException('Dummy user not found in this family tree');
+      }
+
+      const isSyntheticDummy =
+        !dummyUser.email &&
+        !dummyUser.mobile &&
+        !dummyUser.password;
+      if (isSyntheticDummy) {
+        await dummyUser.update({ status: 2 } as any, { transaction });
+      }
+
+      await repairFamilyTreeIntegrity({
+        familyCode,
+        transaction,
+        lock: true,
+        fixExternalGenerations: true,
+      });
+
+      await transaction.commit();
+
+      return {
+        message: 'Dummy user replaced successfully',
+        data: {
+          familyCode,
+          dummyUserId,
+          replacementUserId,
+          updatedNodes: Number(updatedCount),
+        },
+      };
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
   }
 
   // BLOCK OVERRIDE: Removed legacy family-member block/unblock write flow in favor of user-level ft_user_block.

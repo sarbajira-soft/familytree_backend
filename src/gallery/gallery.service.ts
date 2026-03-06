@@ -12,6 +12,7 @@ import { Gallery } from './model/gallery.model';
 import { GalleryAlbum } from './model/gallery-album.model';
 import { GalleryLike } from './model/gallery-like.model';
 import { GalleryComment } from './model/gallery-comment.model';
+import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
  
 import { CreateGalleryDto, UpdateGalleryDto } from './dto/gallery.dto';
@@ -415,7 +416,7 @@ export class GalleryService {
   }
 
   async getGalleryByOptions(
-    privacy: 'public' | 'private',
+    privacy: 'public' | 'private' | 'family',
     familyCode?: string,
     createdBy?: number,
     galleryId?: number,
@@ -434,12 +435,23 @@ export class GalleryService {
 
     if (privacy) {
       if (privacy === 'private') {
-        if (!familyCode) {
-          throw new BadRequestException('familyCode is required for private privacy');
+        const isOwnerScope =
+          Number.isFinite(Number(createdBy)) &&
+          Number(createdBy) > 0 &&
+          Number(createdBy) === Number(userId);
+
+        if (!isOwnerScope) {
+          if (!familyCode) {
+            throw new BadRequestException('familyCode is required for private privacy');
+          }
+          await this.assertUserCanAccessFamilyOrLinked(userId, familyCode);
+          whereClause.isVisibleToFamily = true;
         }
-        await this.assertUserCanAccessFamilyOrLinked(userId, familyCode);
+
         whereClause.privacy = privacy;
-        whereClause.familyCode = familyCode;
+        if (familyCode) {
+          whereClause.familyCode = familyCode;
+        }
       } else if (privacy === 'public') {
         whereClause.privacy = 'public';
       } else {
@@ -954,11 +966,17 @@ export class GalleryService {
     }
 
     // Enforce access to private galleries
+    const isOwner = Number(requestingUserId) === Number(gallery.createdBy);
     if (gallery.familyCode && gallery.privacy === 'private') {
+      if (!isOwner && !gallery.isVisibleToFamily) {
+        throw new NotFoundException('Gallery not found');
+      }
       if (!requestingUserId) {
         throw new ForbiddenException('Not allowed to view this gallery');
       }
-      await this.assertUserCanAccessFamilyOrLinked(requestingUserId, gallery.familyCode);
+      if (!isOwner) {
+        await this.assertUserCanAccessFamilyOrLinked(requestingUserId, gallery.familyCode);
+      }
     }
 
     // Hard rule: blocked users cannot view each other's galleries/comments (even public).
@@ -990,6 +1008,11 @@ export class GalleryService {
       offset,
       include: [
         {
+          model: User,
+          as: 'user',
+          attributes: ['status', 'deletedAt'],
+        },
+        {
           model: this.userProfileModel,
           as: 'userProfile',
           attributes: ['firstName', 'lastName', 'profile'],
@@ -1002,20 +1025,34 @@ export class GalleryService {
       page,
       limit,
       comments: rows.map((comment: any) => ({
+        ...(Number(comment?.user?.status) === 3 || !!comment?.user?.deletedAt
+          ? {
+              user: {
+                userId: comment.userId,
+                firstName: 'Familyss',
+                lastName: 'User',
+                profile: null,
+              },
+            }
+          : {}),
         id: comment.id,
         comment: comment.comments,
         parentCommentId: comment.parentCommentId,
         createdAt: comment.createdAt,
         updatedAt: comment.updatedAt,
         userId: comment.userId,
-        user: comment.userProfile
+        ...(!(Number(comment?.user?.status) === 3 || !!comment?.user?.deletedAt)
           ? {
-              userId: comment.userId,
-              firstName: comment.userProfile.firstName,
-              lastName: comment.userProfile.lastName,
-              profile: this.constructGalleryImageUrl(comment.userProfile.profile, 'profile'),
+              user: comment.userProfile
+                ? {
+                    userId: comment.userId,
+                    firstName: comment.userProfile.firstName,
+                    lastName: comment.userProfile.lastName,
+                    profile: this.constructGalleryImageUrl(comment.userProfile.profile, 'profile'),
+                  }
+                : null,
             }
-          : null,
+          : {}),
       })),
     };
   }
@@ -1026,11 +1063,17 @@ export class GalleryService {
       throw new NotFoundException('Gallery not found');
     }
 
+    const isOwner = Number(requestingUserId) === Number(gallery.createdBy);
     if (gallery.familyCode && gallery.privacy === 'private') {
+      if (!isOwner && !gallery.isVisibleToFamily) {
+        throw new NotFoundException('Gallery not found');
+      }
       if (!requestingUserId) {
         throw new ForbiddenException('Not allowed');
       }
-      await this.assertUserCanAccessFamilyOrLinked(requestingUserId, gallery.familyCode);
+      if (!isOwner) {
+        await this.assertUserCanAccessFamilyOrLinked(requestingUserId, gallery.familyCode);
+      }
     }
 
     if (requestingUserId && gallery.createdBy && gallery.createdBy !== requestingUserId) {
@@ -1081,11 +1124,17 @@ export class GalleryService {
       throw new NotFoundException('Gallery not found');
     }
 
+    const isOwner = Number(userId) === Number(gallery.createdBy);
     if (gallery.familyCode && gallery.privacy === 'private') {
+      if (!isOwner && !gallery.isVisibleToFamily) {
+        throw new NotFoundException('Gallery not found');
+      }
       if (!userId) {
         throw new ForbiddenException('Not allowed to view this gallery');
       }
-      await this.assertUserCanAccessFamilyOrLinked(userId, gallery.familyCode);
+      if (!isOwner) {
+        await this.assertUserCanAccessFamilyOrLinked(userId, gallery.familyCode);
+      }
     }
 
     if (userId) {

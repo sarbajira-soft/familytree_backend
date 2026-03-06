@@ -12,6 +12,7 @@ import * as path from 'node:path';
 import { Post } from './model/post.model';
 import { PostLike } from './model/post-like.model';
 import { PostComment } from './model/post-comment.model';
+import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { CreatePostDto } from './dto/createpost.dto';
 import { EditPostDto } from './dto/edit-post.dto';
@@ -25,7 +26,7 @@ import { FamilyMember } from '../family/model/family-member.model';
 import { FamilyLink } from '../family/model/family-link.model';
 
 type PostWithProfile = Post & { userProfile?: UserProfile };
-type PostCommentWithProfile = PostComment & { userProfile?: UserProfile };
+type PostCommentWithProfile = PostComment & { userProfile?: UserProfile; user?: User };
 
 @Injectable()
 export class PostService {
@@ -536,21 +537,33 @@ export class PostService {
     if (postId) whereClause.id = postId;
 
     if (privacy === 'private' || privacy === 'family') {
+      const isOwnerScope =
+        Number.isFinite(Number(createdBy)) &&
+        Number(createdBy) > 0 &&
+        Number(createdBy) === Number(userId);
+
       // If familyCode is provided, scope to that family (and enforce access).
       // If familyCode is omitted, return the viewer’s "family feed" across all accessible family codes.
-      if (familyCode) {
-        await this.assertUserCanAccessFamilyOrLinked(userId, familyCode);
-        whereClause.familyCode = familyCode;
-      } else {
-        const accessible = userId
-          ? await this.getAccessibleFamilyCodesForUser(userId)
-          : [];
-
-        if (!accessible || accessible.length === 0) {
-          throw new ForbiddenException('Not allowed to access this family content');
+      if (isOwnerScope) {
+        if (familyCode) {
+          whereClause.familyCode = familyCode;
         }
+      } else {
+        if (familyCode) {
+          await this.assertUserCanAccessFamilyOrLinked(userId, familyCode);
+          whereClause.familyCode = familyCode;
+        } else {
+          const accessible = userId
+            ? await this.getAccessibleFamilyCodesForUser(userId)
+            : [];
 
-        whereClause.familyCode = { [Op.in]: accessible };
+          if (!accessible || accessible.length === 0) {
+            throw new ForbiddenException('Not allowed to access this family content');
+          }
+
+          whereClause.familyCode = { [Op.in]: accessible };
+        }
+        whereClause.isVisibleToFamily = true;
       }
 
       whereClause.privacy = privacy;
@@ -859,14 +872,20 @@ export class PostService {
       throw new NotFoundException(`Post with ID ${postId} not found`);
     }
 
+    const isOwner = Number(requestingUserId) === Number(post.createdBy);
     if (
       post.familyCode &&
       (post.privacy === 'private' || post.privacy === 'family')
     ) {
+      if (!isOwner && !post.isVisibleToFamily) {
+        throw new NotFoundException('Post not found');
+      }
       if (!requestingUserId) {
         throw new ForbiddenException('Not allowed to view this post');
       }
-      await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
+      if (!isOwner) {
+        await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
+      }
     }
 
     // Hard rule: blocked users cannot view each other's posts (even public).
@@ -905,15 +924,21 @@ export class PostService {
       throw new NotFoundException('Post not found');
     }
 
+    const isOwner = Number(requestingUserId) === Number(post.createdBy);
     if (
       requestingUserId &&
       post.familyCode &&
       (post.privacy === 'private' || post.privacy === 'family')
     ) {
-      await this.assertUserCanAccessFamilyOrLinked(
-        requestingUserId,
-        post.familyCode,
-      );
+      if (!isOwner && !post.isVisibleToFamily) {
+        throw new NotFoundException('Post not found');
+      }
+      if (!isOwner) {
+        await this.assertUserCanAccessFamilyOrLinked(
+          requestingUserId,
+          post.familyCode,
+        );
+      }
     }
 
     // Hard rule: blocked users cannot view each other's posts/comments.
@@ -945,6 +970,11 @@ export class PostService {
       offset,
       include: [
         {
+          model: User,
+          as: 'user',
+          attributes: ['status', 'deletedAt'],
+        },
+        {
           model: this.userProfileModel,
           as: 'userProfile',
           attributes: ['firstName', 'lastName', 'profile'],
@@ -963,16 +993,25 @@ export class PostService {
         createdAt: commentJson.createdAt,
         updatedAt: commentJson.updatedAt,
         userId: commentJson.userId,
-        user: commentJson.userProfile
-          ? {
-              userId: commentJson.userId,
-              firstName: commentJson.userProfile.firstName,
-              lastName: commentJson.userProfile.lastName,
-              profile: commentJson.userProfile.profile
-                ? `${process.env.S3_BUCKET_URL /* || 'https://familytreeupload.s3.eu-north-1.amazonaws.com' */}/profile/${commentJson.userProfile.profile}`
-                : null,
-            }
-          : null,
+        user:
+          Number((commentJson as any)?.user?.status) === 3 ||
+          Boolean((commentJson as any)?.user?.deletedAt)
+            ? {
+                userId: commentJson.userId,
+                firstName: 'Familyss',
+                lastName: 'User',
+                profile: null,
+              }
+            : commentJson.userProfile
+              ? {
+                  userId: commentJson.userId,
+                  firstName: commentJson.userProfile.firstName,
+                  lastName: commentJson.userProfile.lastName,
+                  profile: commentJson.userProfile.profile
+                    ? `${process.env.S3_BUCKET_URL /* || 'https://familytreeupload.s3.eu-north-1.amazonaws.com' */}/profile/${commentJson.userProfile.profile}`
+                    : null,
+                }
+              : null,
       };
     });
 
@@ -990,11 +1029,17 @@ export class PostService {
       throw new NotFoundException('Post not found');
     }
 
+    const isOwner = Number(requestingUserId) === Number(post.createdBy);
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
+      if (!isOwner && !post.isVisibleToFamily) {
+        throw new NotFoundException('Post not found');
+      }
       if (!requestingUserId) {
         throw new ForbiddenException('Not allowed');
       }
-      await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
+      if (!isOwner) {
+        await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
+      }
     }
 
     if (requestingUserId && post.createdBy && post.createdBy !== requestingUserId) {
@@ -1029,11 +1074,17 @@ export class PostService {
       throw new NotFoundException('Post not found');
     }
 
+    const isOwner = Number(requestingUserId) === Number(post.createdBy);
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
+      if (!isOwner && !post.isVisibleToFamily) {
+        throw new NotFoundException('Post not found');
+      }
       if (!requestingUserId) {
         throw new ForbiddenException('Not allowed');
       }
-      await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
+      if (!isOwner) {
+        await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
+      }
     }
 
     if (requestingUserId && post.createdBy && post.createdBy !== requestingUserId) {

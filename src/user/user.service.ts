@@ -4,12 +4,14 @@ import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
 import { User } from './model/user.model';
 import { FamilyMember } from '../family/model/family-member.model';
+import { FamilyTree } from '../family/model/family-tree.model';
 import { UserProfile } from './model/user-profile.model';
 import { Invite } from './model/invite.model';
 import { MailService } from '../utils/mail.service';
 import { UploadService } from '../uploads/upload.service';
 import * as bcrypt from 'bcrypt';
 import * as jwt from 'jsonwebtoken';
+import * as crypto from 'crypto';
 import { ForgetPasswordDto } from './dto/forget-password.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { LoginDto } from './dto/login.dto';
@@ -23,6 +25,11 @@ import { Language } from '../language/model/language.model';
 import { Gothram } from '../gothram/model/gothram.model';
 import { Notification } from '../notification/model/notification.model';
 import { MedusaCustomerSyncService } from '../medusa/medusa-customer-sync.service';
+import { Gallery } from '../gallery/model/gallery.model';
+import { Post } from '../post/model/post.model';
+import { Event } from '../event/model/event.model';
+import { AccountRecoveryToken } from './model/account-recovery-token.model';
+import { FamilyMemberService } from '../family/family-member.service';
 
 @Injectable()
 export class UserService {
@@ -39,6 +46,9 @@ export class UserService {
     @InjectModel(FamilyMember)
     private readonly familyMemberModel: typeof FamilyMember,
 
+    @InjectModel(FamilyTree)
+    private readonly familyTreeModel: typeof FamilyTree,
+
     @InjectModel(Invite)
     private readonly inviteModel: typeof Invite,
 
@@ -54,12 +64,26 @@ export class UserService {
     @InjectModel(Notification)
     private readonly notificationModel: typeof Notification,
 
+    @InjectModel(Gallery)
+    private readonly galleryModel: typeof Gallery,
+
+    @InjectModel(Post)
+    private readonly postModel: typeof Post,
+
+    @InjectModel(Event)
+    private readonly eventModel: typeof Event,
+
+    @InjectModel(AccountRecoveryToken)
+    private readonly accountRecoveryTokenModel: typeof AccountRecoveryToken,
+
     private readonly mailService: MailService,
     private readonly notificationService: NotificationService,
 
     @Inject(forwardRef(() => UploadService))
     private readonly uploadService: UploadService,
     private readonly medusaCustomerSyncService: MedusaCustomerSyncService,
+    @Inject(forwardRef(() => FamilyMemberService))
+    private readonly familyMemberService: FamilyMemberService,
 
   ) {}
 
@@ -94,6 +118,400 @@ export class UserService {
       process.env.JWT_SECRET,
       { expiresIn: '1d' },
     );
+  }
+
+  private hashRecoveryToken(token: string): string {
+    return crypto.createHash('sha256').update(String(token || '')).digest('hex');
+  }
+
+  private generateRecoveryToken(): string {
+    return crypto.randomInt(10_000_000, 99_999_999).toString();
+  }
+
+  private normalizeRecoveryIdentifier(identifier: string) {
+    const raw = String(identifier || '').trim();
+    if (!raw) {
+      throw new BadRequestException('Identifier is required');
+    }
+
+    const isEmail = raw.includes('@');
+    if (isEmail) {
+      return {
+        raw,
+        isEmail: true,
+        normalizedEmail: raw.toLowerCase(),
+        normalizedMobile: null,
+      };
+    }
+
+    const normalizedMobile = raw.replaceAll(/\D/g, '').slice(-14);
+    if (normalizedMobile.length < 8) {
+      throw new BadRequestException('Invalid identifier');
+    }
+
+    return {
+      raw,
+      isEmail: false,
+      normalizedEmail: null,
+      normalizedMobile,
+    };
+  }
+
+  private async findUserByRecoveryIdentifier(
+    identifier: string,
+    options?: { transaction?: any; lock?: boolean; attributes?: string[] },
+  ) {
+    const normalized = this.normalizeRecoveryIdentifier(identifier);
+    return this.userModel.findOne({
+      where: normalized.isEmail
+        ? { email: { [Op.iLike]: normalized.normalizedEmail } }
+        : { mobile: normalized.normalizedMobile },
+      ...(options?.attributes ? { attributes: options.attributes } : {}),
+      ...(options?.transaction ? { transaction: options.transaction } : {}),
+      ...(options?.lock && options?.transaction
+        ? { lock: (options.transaction as any).LOCK.UPDATE }
+        : {}),
+    });
+  }
+
+  private isPendingDeletion(user: any): boolean {
+    if (!user) return false;
+    return (
+      Number(user.status) === 3 ||
+      String(user.lifecycleState || '').toLowerCase() === 'pending_deletion'
+    );
+  }
+
+  private async hideFamilyContentForDeletedUser(userId: number) {
+    await this.galleryModel.update(
+      { isVisibleToFamily: false } as any,
+      {
+        where: {
+          createdBy: userId,
+          privacy: 'private',
+        } as any,
+      },
+    );
+
+    await this.postModel.update(
+      { isVisibleToFamily: false } as any,
+      {
+        where: {
+          createdBy: userId,
+          privacy: { [Op.in]: ['private', 'family'] },
+        } as any,
+      },
+    );
+
+    await this.eventModel.update(
+      { isVisibleToFamily: false } as any,
+      {
+        where: {
+          createdBy: userId,
+          status: 1,
+        } as any,
+      },
+    );
+  }
+
+  async purgeExpiredDeletedUsers(limit = 25) {
+    const now = new Date();
+    const candidates = await this.userModel.findAll({
+      where: {
+        status: 3,
+        purgeAfter: { [Op.lte]: now },
+      } as any,
+      attributes: ['id'],
+      order: [['purgeAfter', 'ASC']],
+      limit,
+    });
+
+    let purgedCount = 0;
+    for (const candidate of candidates) {
+      const transaction = await this.userModel.sequelize.transaction();
+      try {
+        const user = await this.userModel.findByPk(candidate.id, {
+          transaction,
+          lock: (transaction as any).LOCK.UPDATE,
+        });
+
+        if (!user || Number(user.status) !== 3) {
+          await transaction.commit();
+          continue;
+        }
+
+        const purgeAfter = user.purgeAfter ? new Date(user.purgeAfter) : null;
+        if (!purgeAfter || purgeAfter > now) {
+          await transaction.commit();
+          continue;
+        }
+
+        await this.accountRecoveryTokenModel.destroy({
+          where: { userId: user.id } as any,
+          transaction,
+        });
+
+        // Last line in purge: FK cascades remove owned rows.
+        await user.destroy({ transaction });
+        await transaction.commit();
+        purgedCount++;
+      } catch (error) {
+        await transaction.rollback();
+        console.error('Failed to purge deleted account:', error?.message || error);
+      }
+    }
+
+    return { purgedCount };
+  }
+
+  async requestAccountDeletion(userId: number) {
+    const now = new Date();
+    const purgeAfter = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+
+    const transaction = await this.userModel.sequelize.transaction();
+    try {
+      const user = await this.userModel.findByPk(userId, {
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
+
+      if (this.isPendingDeletion(user)) {
+        await transaction.commit();
+        return {
+          message: 'Account deletion already requested',
+          data: {
+            status: 'pending_deletion',
+            deletedAt: user.deletedAt,
+            purgeAfter: user.purgeAfter,
+          },
+        };
+      }
+
+      user.status = 3 as any;
+      user.lifecycleState = 'pending_deletion';
+      user.deletedAt = now;
+      user.purgeAfter = purgeAfter;
+      user.accessToken = null as any;
+      await user.save({ transaction });
+
+      await this.familyMemberModel.destroy({
+        where: {
+          memberId: userId,
+          approveStatus: 'pending',
+        } as any,
+        transaction,
+      });
+
+      await this.accountRecoveryTokenModel.destroy({
+        where: { userId } as any,
+        transaction,
+      });
+
+      await transaction.commit();
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+    const activeMemberships = await this.familyMemberModel.findAll({
+      where: {
+        memberId: userId,
+        approveStatus: 'approved',
+      } as any,
+      attributes: ['familyCode'],
+    });
+
+    for (const membership of activeMemberships) {
+      try {
+        await this.familyMemberService.removeMemberForAccountDeletion(
+          userId,
+          String((membership as any).familyCode || ''),
+        );
+      } catch (error) {
+        console.error(
+          `Failed family detachment during account deletion user=${userId}, family=${(membership as any).familyCode}:`,
+          error?.message || error,
+        );
+      }
+    }
+
+    await this.hideFamilyContentForDeletedUser(userId);
+
+    return {
+      message: 'Account deletion requested successfully',
+      data: {
+        status: 'pending_deletion',
+        deletedAt: now,
+        purgeAfter,
+      },
+    };
+  }
+
+  async requestAccountRecovery(identifier: string) {
+    this.normalizeRecoveryIdentifier(identifier);
+
+    await this.purgeExpiredDeletedUsers(10);
+
+    const transaction = await this.userModel.sequelize.transaction();
+    try {
+      const user = await this.findUserByRecoveryIdentifier(identifier, {
+        transaction,
+        lock: true,
+      });
+
+      if (!user || !this.isPendingDeletion(user)) {
+        await transaction.commit();
+        return { message: 'If this account is recoverable, a token has been sent.' };
+      }
+
+      if (!user.purgeAfter || new Date(user.purgeAfter) <= new Date()) {
+        throw new BadRequestException('Recovery window expired');
+      }
+
+      const token = this.generateRecoveryToken();
+      const tokenHash = this.hashRecoveryToken(token);
+      const expiresAt = new Date(
+        Math.min(new Date(user.purgeAfter).getTime(), Date.now() + 15 * 60 * 1000),
+      );
+
+      await this.accountRecoveryTokenModel.destroy({
+        where: {
+          userId: user.id,
+          usedAt: null,
+        } as any,
+        transaction,
+      });
+
+      await this.accountRecoveryTokenModel.create(
+        {
+          userId: user.id,
+          tokenHash,
+          expiresAt,
+        } as any,
+        { transaction },
+      );
+
+      await transaction.commit();
+
+      if (user.email) {
+        await this.mailService.sendPasswordResetOtp(user.email, token);
+        return { message: 'Recovery token sent to email' };
+      }
+
+      if (process.env.NODE_ENV !== 'production') {
+        return {
+          message: 'Recovery token generated',
+          token,
+        };
+      }
+
+      return {
+        message: 'If this account is recoverable, a token has been sent.',
+      };
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+  }
+
+  async getAccountRecoveryStatus(identifier: string) {
+    this.normalizeRecoveryIdentifier(identifier);
+
+    await this.purgeExpiredDeletedUsers(10);
+
+    const user = await this.findUserByRecoveryIdentifier(identifier, {
+      attributes: ['id', 'status', 'lifecycleState', 'deletedAt', 'purgeAfter'],
+    });
+
+    const now = new Date();
+    const canRecover =
+      !!user &&
+      this.isPendingDeletion(user) &&
+      !!user.purgeAfter &&
+      new Date(user.purgeAfter).getTime() > now.getTime();
+
+    return {
+      message: 'If this account is recoverable, recovery details are returned.',
+      data: {
+        recoveryWindowEndsAt: canRecover ? user.purgeAfter : null,
+        deletedAt: canRecover ? user.deletedAt : null,
+        recoverable: canRecover,
+      },
+    };
+  }
+
+  async confirmAccountRecovery(token: string, identifier: string) {
+    const rawToken = String(token || '').trim();
+    if (!rawToken) {
+      throw new BadRequestException('Token is required');
+    }
+
+    this.normalizeRecoveryIdentifier(identifier);
+    await this.purgeExpiredDeletedUsers(10);
+
+    const transaction = await this.userModel.sequelize.transaction();
+    try {
+      const user = await this.findUserByRecoveryIdentifier(identifier, {
+        transaction,
+        lock: true,
+      });
+      if (!user) {
+        throw new BadRequestException('Invalid or expired recovery token');
+      }
+
+      if (!this.isPendingDeletion(user)) {
+        throw new BadRequestException('Invalid or expired recovery token');
+      }
+
+      if (!user.purgeAfter || new Date(user.purgeAfter) <= new Date()) {
+        throw new BadRequestException('Recovery window expired');
+      }
+
+      const tokenHash = this.hashRecoveryToken(rawToken);
+      const recovery = await this.accountRecoveryTokenModel.findOne({
+        where: {
+          userId: user.id,
+          tokenHash,
+          usedAt: null,
+          expiresAt: { [Op.gt]: new Date() },
+        } as any,
+        order: [['id', 'DESC']],
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      if (!recovery) {
+        throw new BadRequestException('Invalid or expired recovery token');
+      }
+
+      await user.update(
+        {
+          status: 1,
+          lifecycleState: 'active',
+          deletedAt: null,
+          purgeAfter: null,
+          accessToken: null,
+        } as any,
+        { transaction },
+      );
+
+      await recovery.update(
+        { usedAt: new Date() } as any,
+        { transaction },
+      );
+
+      await transaction.commit();
+      return {
+        message: 'Account recovered successfully. Rejoin the family tree to regain family visibility.',
+      };
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
   }
 
   // eslint-disable-next-line sonarjs/cognitive-complexity
@@ -378,6 +796,10 @@ export class UserService {
       throw new BadRequestException({ message: 'Invalid credentials' });
     }
 
+    if (this.isPendingDeletion(user)) {
+      throw new ForbiddenException('Account scheduled for deletion. Use account recovery within 30 days.');
+    }
+
     if (user.status !== 1) {
       throw new ForbiddenException('Account not verified');
     }
@@ -564,6 +986,9 @@ export class UserService {
           'status',
           'role',
           'isAppUser',
+          'lifecycleState',
+          'deletedAt',
+          'purgeAfter',
           'hasAcceptedTerms',
           'termsVersion',
           'termsAcceptedAt',
@@ -1123,69 +1548,27 @@ export class UserService {
   }
 
   async deleteUser(userId: number, requesterId: number) {
-    const member = await this.familyMemberModel.findOne({
-      where: { memberId: userId },
-    });
-
-    // Only check creatorId if member exists
-    if (member && member.creatorId !== requesterId) {
-      throw new ForbiddenException(
-        'You are not authorized to delete this member.',
-      );
+    const requester = await this.userModel.findByPk(requesterId);
+    if (!requester) {
+      throw new ForbiddenException('Invalid requester');
     }
 
-    // Get user with profile using the correct association alias
-    const user = await this.userModel.findByPk(userId, {
-      include: [
-        {
-          model: UserProfile,
-          as: 'userProfile', // Specify the alias used in the association
-        },
-      ],
-    });
-
-    if (!user) throw new BadRequestException({ message: 'User not found' });
-
-    // Delete profile image from S3 if it exists
-    if (user.userProfile?.profile) {
-      try {
-        console.log(
-          `Deleting profile image for user ${userId}:`,
-          user.userProfile.profile,
-        );
-        await this.uploadService.deleteFile(
-          user.userProfile.profile,
-          'profile',
-        );
-        console.log(`Successfully deleted profile image for user ${userId}`);
-      } catch (error) {
-        console.error(
-          `Error deleting profile image for user ${userId}:`,
-          error,
-        );
-        // Continue with user deletion even if image deletion fails
-      }
+    const target = await this.userModel.findByPk(userId);
+    if (!target) {
+      throw new BadRequestException({ message: 'User not found' });
     }
 
-    // Soft delete user
-    user.status = 3;
-    await user.save();
-
-    // Remove from ft_family_members if the record exists
-    if (member) {
-      try {
-        await this.familyMemberModel.destroy({ where: { memberId: userId } });
-        console.log(`Removed user ${userId} from family members`);
-      } catch (error) {
-        console.error(
-          `Error removing user ${userId} from family members:`,
-          error,
-        );
-        // Continue even if this fails
-      }
+    const isSelf = Number(requesterId) === Number(userId);
+    const isAdmin = Number(requester.role) === 2 || Number(requester.role) === 3;
+    if (!isSelf && !isAdmin) {
+      throw new ForbiddenException('Only admins can delete other users');
     }
 
-    return { message: 'User deleted successfully' };
+    if (Number(target.role) === 3 && Number(requester.role) !== 3) {
+      throw new ForbiddenException('Only superadmin can delete a superadmin');
+    }
+
+    return this.requestAccountDeletion(userId);
   }
 
   async mergeUserData(

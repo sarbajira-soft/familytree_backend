@@ -46,4 +46,8 @@ export class Post extends Model<Post> {
   @Default(1)
   @Column(DataType.INTEGER)
   status: number; // 1 = active, 0 = inactive
+
+  @Default(true)
+  @Column(DataType.BOOLEAN)
+  isVisibleToFamily: boolean;
 } 

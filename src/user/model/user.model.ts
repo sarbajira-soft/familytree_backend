@@ -31,7 +31,7 @@ export class User extends Model<User> {
 
   @Default(0)
   @Column(DataType.INTEGER)
-  status: number; // 0=unverified, 1=active, 2=inactive
+  status: number; // 0=unverified, 1=active, 2=inactive, 3=pending_deletion
 
   @Default(1)
   @Column(DataType.INTEGER)
@@ -63,6 +63,16 @@ export class User extends Model<User> {
 
   @Column({ type: DataType.STRING, allowNull: true })
   medusaCustomerId: string;
+
+  @Column({ type: DataType.DATE, allowNull: true })
+  deletedAt: Date;
+
+  @Column({ type: DataType.DATE, allowNull: true })
+  purgeAfter: Date;
+
+  @Default('active')
+  @Column({ type: DataType.STRING, allowNull: false })
+  lifecycleState: string; // active | pending_deletion | purged
 
   userProfile?: UserProfile;
   familyMemberships?: FamilyMember[];

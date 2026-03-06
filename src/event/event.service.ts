@@ -54,6 +54,15 @@ export class EventService {
     return trimmed.length > 0 ? trimmed : null;
   }
 
+  private familyVisibilityWhereForUser(userId: number) {
+    return {
+      [Op.or]: [
+        { isVisibleToFamily: true } as any,
+        { createdBy: userId } as any,
+      ],
+    } as any;
+  }
+
   private async assertUserCanAccessFamilyContent(
     userId: number,
     familyCode: string,
@@ -262,6 +271,7 @@ export class EventService {
         events = await this.eventModel.findAll({
           where: {
             familyCode: { [Op.in]: accessibleFamilyCodes },
+            ...this.familyVisibilityWhereForUser(userId),
             ...(blockedUserIds.length > 0
               ? { createdBy: { [Op.notIn]: blockedUserIds } }
               : {}),
@@ -309,6 +319,7 @@ export class EventService {
       where: {
         familyCode,
         status: 1,
+        isVisibleToFamily: true,
       },
     });
   }
@@ -316,6 +327,11 @@ export class EventService {
   async getById(id: number, requestingUserId?: number) {
     const event = await this.eventModel.findByPk(id, { include: [EventImage] });
     if (!event) throw new NotFoundException('Event not found');
+
+    const isOwner = Number(event.createdBy) === Number(requestingUserId);
+    if (requestingUserId && !isOwner && !event.isVisibleToFamily) {
+      throw new NotFoundException('Event not found');
+    }
 
     if (requestingUserId && event.familyCode) {
       await this.assertUserCanAccessFamilyOrLinked(requestingUserId, event.familyCode);
@@ -611,6 +627,7 @@ export class EventService {
             eventDate: { [Op.gt]: today },
             status: 1,
             familyCode: { [Op.in]: accessibleFamilyCodes },
+            ...this.familyVisibilityWhereForUser(userId),
             ...(blockedUserIds.length > 0
               ? { createdBy: { [Op.notIn]: blockedUserIds } }
               : {}),
@@ -836,7 +853,11 @@ export class EventService {
     return allEvents;
   }
 
-  async getUpcomingByFamilyCode(familyCode: string) {
+  async getUpcomingByFamilyCode(familyCode: string, requestingUserId?: number) {
+    if (requestingUserId) {
+      await this.assertUserCanAccessFamilyOrLinked(requestingUserId, familyCode);
+    }
+
     const [customEvents, birthdays, anniversaries] = await Promise.all([
       this.getByFamilyCode(familyCode),
       this.getUpcomingBirthdaysByFamilyCode(familyCode),

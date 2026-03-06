@@ -74,6 +74,13 @@ export class Event extends Model<Event> {
   @Column(DataType.INTEGER)
   status: number; // 1 = active, 0 = inactive
 
+  @Default(true)
+  @Column({
+    type: DataType.BOOLEAN,
+    allowNull: false,
+  })
+  isVisibleToFamily: boolean;
+
   @HasMany(() => EventImage)
   images: EventImage[];
 }

@@ -122,6 +122,51 @@ export class FamilyMemberController {
     return this.familyMemberService.deleteFamilyMember(memberId, familyCode, actingUserId);
   }
 
+  @Delete('self/:familyCode')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Self-remove from family and convert tree card to dummy' })
+  @ApiResponse({ status: 200, description: 'Self removed from family successfully' })
+  async selfRemove(
+    @Param('familyCode') familyCode: string,
+    @Req() req,
+  ) {
+    const actingUserId = req.user?.userId;
+    return this.familyMemberService.selfRemoveFromFamily(familyCode, actingUserId);
+  }
+
+  @Get(':familyCode/non-app-users')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Get non-app (dummy) users from a family tree' })
+  @ApiResponse({ status: 200, description: 'Non-app users returned successfully' })
+  async getNonAppUsers(
+    @Param('familyCode') familyCode: string,
+    @Req() req,
+  ) {
+    const actingUserId = req.user?.userId;
+    return this.familyMemberService.getNonAppUsersByFamily(familyCode, actingUserId);
+  }
+
+  @Post(':familyCode/non-app-users/:dummyUserId/replace/:replacementUserId')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Replace dummy user with active app member in family tree' })
+  @ApiResponse({ status: 200, description: 'Dummy user replaced successfully' })
+  async replaceDummy(
+    @Param('familyCode') familyCode: string,
+    @Param('dummyUserId', ParseIntPipe) dummyUserId: number,
+    @Param('replacementUserId', ParseIntPipe) replacementUserId: number,
+    @Req() req,
+  ) {
+    const actingUserId = req.user?.userId;
+    return this.familyMemberService.replaceDummyWithMember(
+      familyCode,
+      dummyUserId,
+      replacementUserId,
+      actingUserId,
+    );
+  }
+
   // BLOCK OVERRIDE: Block/unblock moved to /blocking routes; family-member service does not implement these.
 
   // Get all approved family members by family code

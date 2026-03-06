@@ -20,6 +20,9 @@ import { UploadModule } from '../uploads/upload.module';
 import { RelationshipPathService } from './relationship-path.service';
 import { UserModule } from '../user/user.module';
 import { BlockingModule } from '../blocking/blocking.module';
+import { Gallery } from '../gallery/model/gallery.model';
+import { Post } from '../post/model/post.model';
+import { Event } from '../event/model/event.model';
 
 
 @Module({
@@ -33,6 +36,9 @@ import { BlockingModule } from '../blocking/blocking.module';
       FamilyLink,
       TreeLink,
       UserRelationship,
+      Gallery,
+      Post,
+      Event,
     ]),
     forwardRef(() => NotificationModule),
     forwardRef(() => UserModule),

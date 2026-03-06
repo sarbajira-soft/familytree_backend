@@ -137,8 +137,8 @@ export class EventController {
   @Get('upcoming/family/:familyCode')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get all upcoming events for a specific family code (admin only)' })
-  getUpcomingByFamilyCode(@Param('familyCode') familyCode: string) {
-    return this.eventService.getUpcomingByFamilyCode(familyCode);
+  getUpcomingByFamilyCode(@Req() req, @Param('familyCode') familyCode: string) {
+    return this.eventService.getUpcomingByFamilyCode(familyCode, req.user?.userId);
   }
 
   @UseGuards(JwtAuthGuard)

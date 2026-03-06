@@ -19,15 +19,20 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
   async validate(payload: any) {
     const user = await this.userModel.findByPk(payload.id);
-    //console.log(user);
-    
+
     if (!user) {
       throw new UnauthorizedException('Invalid access token or user not found');
     }
 
+    const isActive = Number((user as any).status) === 1;
+    const lifecycleState = String((user as any).lifecycleState || 'active');
+    if (!isActive || lifecycleState !== 'active') {
+      throw new UnauthorizedException('Account is not active');
+    }
+
     return {
       userId: user.id,
-      role: payload.role,
+      role: user.role,
       mobile: user.mobile,
       email: user.email,
       isAppUser: user.isAppUser,

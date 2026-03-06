@@ -31,6 +31,9 @@ import { ResendOtpDto } from './dto/resend-otp.dto';
 import { ForgetPasswordDto } from './dto/forget-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { TogglePrivacyDto } from './dto/toggle-privacy.dto';
+import { RequestAccountDeletionDto } from './dto/request-account-deletion.dto';
+import { RequestAccountRecoveryDto } from './dto/request-account-recovery.dto';
+import { ConfirmAccountRecoveryDto } from './dto/confirm-account-recovery.dto';
 import { ApiConsumes, ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiBody, ApiSecurity } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { generateFileName, imageFileFilter } from '../utils/upload.utils';
@@ -234,6 +237,43 @@ export class UserController {
   @ApiBody({ type: ResetPasswordDto })
   async resetPassword(@Body() resetPasswordDto: ResetPasswordDto) {
     return this.userService.resetPassword(resetPasswordDto);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('account/delete')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Request self account deletion (30-day recovery window)' })
+  @ApiBearerAuth()
+  @ApiSecurity('application-token')
+  async requestAccountDeletion(
+    @Req() req,
+    @Body() body: RequestAccountDeletionDto,
+  ) {
+    if (String(body?.confirmText || '').trim().toUpperCase() !== 'DELETE') {
+      throw new BadRequestException({ message: 'confirmText must be DELETE' });
+    }
+    return this.userService.requestAccountDeletion(Number(req.user.userId));
+  }
+
+  @Post('account/recover/request')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Request account recovery token' })
+  async requestAccountRecovery(@Body() body: RequestAccountRecoveryDto) {
+    return this.userService.requestAccountRecovery(body.identifier);
+  }
+
+  @Post('account/recover/status')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Get safe account recovery window status by identifier' })
+  async getAccountRecoveryStatus(@Body() body: RequestAccountRecoveryDto) {
+    return this.userService.getAccountRecoveryStatus(body.identifier);
+  }
+
+  @Post('account/recover/confirm')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Confirm account recovery token' })
+  async confirmAccountRecovery(@Body() body: ConfirmAccountRecoveryDto) {
+    return this.userService.confirmAccountRecovery(body.token, body.identifier);
   }
 
   @Post('merge')

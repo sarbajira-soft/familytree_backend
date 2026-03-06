@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
 import { SequelizeModule } from '@nestjs/sequelize';
+import { ScheduleModule } from '@nestjs/schedule';
 
 import { AdminController } from './admin.controller';
 import { AdminAuditLogService } from './admin-audit-log.service';
@@ -36,6 +37,7 @@ import { AdminEventsService } from './events/admin-events.service';
 import { AdminFamiliesController } from './families/admin-families.controller';
 import { AdminFamiliesService } from './families/admin-families.service';
 import { UploadModule } from '../uploads/upload.module';
+import { GalleryModule } from '../gallery/gallery.module';
 
 @Module({
   imports: [
@@ -56,7 +58,9 @@ import { UploadModule } from '../uploads/upload.module';
       FamilyMember,
       Family,
     ]),
+    ScheduleModule.forRoot(),
     UploadModule,
+    GalleryModule,
     PassportModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],

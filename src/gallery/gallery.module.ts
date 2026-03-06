@@ -6,6 +6,8 @@ import { Gallery } from './model/gallery.model';
 import { GalleryAlbum } from './model/gallery-album.model';
 import { GalleryLike } from './model/gallery-like.model';
 import { GalleryComment } from './model/gallery-comment.model';
+import { GalleryRetentionScheduler } from './gallery-retention.scheduler';
+import { GalleryRetentionService } from './gallery-retention.service';
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { NotificationModule } from '../notification/notification.module';
@@ -31,7 +33,7 @@ import { FamilyLink } from '../family/model/family-link.model';
     forwardRef(() => UploadModule)
   ],
   controllers: [GalleryController],
-  providers: [GalleryService],
-  exports: [GalleryService],
+  providers: [GalleryService, GalleryRetentionService, GalleryRetentionScheduler],
+  exports: [GalleryService, GalleryRetentionService],
 })
 export class GalleryModule {}

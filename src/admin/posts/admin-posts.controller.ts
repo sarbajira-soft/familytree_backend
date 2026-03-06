@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Patch, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Delete, Get, Param, Patch, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { AdminJwtAuthGuard } from '../auth/admin-jwt-auth.guard';
@@ -57,6 +57,15 @@ export class AdminPostsController {
   @ApiOperation({ summary: 'Restore a soft deleted post (admin/superadmin)' })
   restore(@Req() req, @Param('id') id: string) {
     return this.adminPostsService.restorePost(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Delete(':id/purge')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Permanently delete a soft deleted post (admin/superadmin)' })
+  purge(@Req() req, @Param('id') id: string) {
+    return this.adminPostsService.purgePost(req.user, Number(id));
   }
 
   @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)

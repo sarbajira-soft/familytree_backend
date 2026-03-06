@@ -7,6 +7,8 @@ import { PostGateway } from './post.gateway';
 import { Post } from './model/post.model';
 import { PostLike } from './model/post-like.model';
 import { PostComment } from './model/post-comment.model';
+import { PostRetentionScheduler } from './post-retention.scheduler';
+import { PostRetentionService } from './post-retention.service';
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 import { FamilyMember } from '../family/model/family-member.model';
@@ -35,7 +37,7 @@ import { BlockingModule } from '../blocking/blocking.module';
     }),
   ],
   controllers: [PostController],
-  providers: [PostService, PostGateway],
+  providers: [PostService, PostGateway, PostRetentionService, PostRetentionScheduler],
   exports: [PostService, PostGateway],
 })
 export class PostModule {} 

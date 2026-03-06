@@ -486,6 +486,37 @@ export class AdminPostsService {
     return { message: 'Post restored successfully' };
   }
 
+  async purgePost(actor: any, postId: number) {
+    this.assertActor(actor);
+    const id = this.normalizeId(postId, 'Post');
+
+    const post = await this.postModel.findOne({ where: { id } });
+    if (!post) {
+      throw new NotFoundException('Post not found');
+    }
+
+    if (!(post as any).deletedAt) {
+      throw new ForbiddenException('Post must be soft deleted before it can be purged');
+    }
+
+    const createdBy = Number((post as any)?.createdBy);
+
+    await this.postLikeModel.destroy({ where: { postId: id } });
+    await this.postCommentModel.destroy({ where: { postId: id } });
+    await (post as any).destroy();
+
+    await this.adminAuditLogService.log(Number(actor?.adminId), 'post_purge', {
+      targetType: 'post',
+      targetId: id,
+      metadata: {
+        postId: id,
+        createdBy,
+      },
+    });
+
+    return { message: 'Post permanently deleted' };
+  }
+
   async listPostLikes(
     actor: any,
     postId: number,

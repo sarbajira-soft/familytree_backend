@@ -1,15 +1,28 @@
-import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Delete, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { AdminJwtAuthGuard } from '../auth/admin-jwt-auth.guard';
 import { AdminRolesGuard } from '../auth/admin-roles.guard';
 import { AdminRoles } from '../auth/admin-roles.decorator';
 import { AdminGalleriesService } from './admin-galleries.service';
+import { GalleryRetentionService } from '../../gallery/gallery-retention.service';
 
 @ApiTags('Admin')
 @Controller('admin/galleries')
 export class AdminGalleriesController {
-  constructor(private readonly adminGalleriesService: AdminGalleriesService) {}
+  constructor(
+    private readonly adminGalleriesService: AdminGalleriesService,
+    private readonly galleryRetentionService: GalleryRetentionService,
+  ) {}
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Post('purge-retention')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Manually trigger retention purge for soft deleted galleries older than 60 days (admin/superadmin)' })
+  triggerPurgeRetention(@Req() req) {
+    return this.galleryRetentionService.purgeSoftDeletedGalleriesOlderThan(60);
+  }
 
   @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
   @AdminRoles('admin', 'superadmin')
@@ -34,6 +47,7 @@ export class AdminGalleriesController {
     @Query('userId') userId?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('status') status?: string,
   ) {
     return this.adminGalleriesService.listGalleries(req.user, {
       page: page ? Number(page) : 1,
@@ -43,7 +57,35 @@ export class AdminGalleriesController {
       userId: userId ? Number(userId) : undefined,
       from,
       to,
+      status,
     });
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Post(':id/soft-delete')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Soft delete gallery (admin/superadmin)' })
+  softDeleteGallery(@Req() req, @Param('id') id: string) {
+    return this.adminGalleriesService.softDeleteGallery(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Post(':id/restore')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Restore soft deleted gallery (admin/superadmin)' })
+  restoreGallery(@Req() req, @Param('id') id: string) {
+    return this.adminGalleriesService.restoreGallery(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Delete(':id/purge')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Permanently delete (purge) soft deleted gallery (admin/superadmin)' })
+  purgeGallery(@Req() req, @Param('id') id: string) {
+    return this.adminGalleriesService.purgeGallery(req.user, Number(id));
   }
 
   @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)

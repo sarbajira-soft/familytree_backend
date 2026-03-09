@@ -69,6 +69,24 @@ export class Gallery extends Model<Gallery> {
   @Column(DataType.DATE)
   updatedAt: Date;
 
+  @Column({
+    type: DataType.DATE,
+    allowNull: true,
+  })
+  deletedAt: Date;
+
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: true,
+  })
+  deletedByUserId: number;
+
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: true,
+  })
+  deletedByAdminId: number;
+
   @HasMany(() => GalleryAlbum, {
     foreignKey: 'galleryId',
     as: 'galleryAlbums',

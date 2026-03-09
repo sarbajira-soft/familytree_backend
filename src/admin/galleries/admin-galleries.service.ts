@@ -9,6 +9,7 @@ import { GalleryComment } from '../../gallery/model/gallery-comment.model';
 import { User } from '../../user/model/user.model';
 import { UserProfile } from '../../user/model/user-profile.model';
 import { UploadService } from '../../uploads/upload.service';
+import { AdminAuditLogService } from '../admin-audit-log.service';
 
 @Injectable()
 export class AdminGalleriesService {
@@ -26,6 +27,7 @@ export class AdminGalleriesService {
     @InjectModel(UserProfile)
     private readonly userProfileModel: typeof UserProfile,
     private readonly uploadService: UploadService,
+    private readonly adminAuditLogService: AdminAuditLogService,
   ) {}
 
   private assertActor(actor: any) {
@@ -40,6 +42,96 @@ export class AdminGalleriesService {
       throw new NotFoundException(`${label} not found`);
     }
     return id;
+  }
+
+  async softDeleteGallery(actor: any, galleryId: number) {
+    this.assertActor(actor);
+    const id = this.normalizeId(galleryId, 'Gallery');
+
+    const gallery = await this.galleryModel.findOne({ where: { id } });
+    if (!gallery) {
+      throw new NotFoundException('Gallery not found');
+    }
+
+    if ((gallery as any).deletedAt) {
+      return { message: 'Gallery already deleted' };
+    }
+
+    await gallery.update({
+      deletedAt: new Date(),
+      deletedByAdminId: Number(actor?.adminId),
+      deletedByUserId: null,
+    } as any);
+
+    await this.adminAuditLogService.log(Number(actor?.adminId), 'gallery_soft_delete', {
+      targetType: 'gallery',
+      targetId: id,
+      metadata: {
+        galleryId: id,
+        createdBy: Number((gallery as any)?.createdBy),
+      },
+    });
+
+    return { message: 'Gallery deleted successfully' };
+  }
+
+  async restoreGallery(actor: any, galleryId: number) {
+    this.assertActor(actor);
+    const id = this.normalizeId(galleryId, 'Gallery');
+
+    const gallery = await this.galleryModel.findOne({ where: { id } });
+    if (!gallery) {
+      throw new NotFoundException('Gallery not found');
+    }
+
+    if (!(gallery as any).deletedAt) {
+      return { message: 'Gallery is not deleted' };
+    }
+
+    await gallery.update({ deletedAt: null, deletedByAdminId: null, deletedByUserId: null } as any);
+
+    await this.adminAuditLogService.log(Number(actor?.adminId), 'gallery_restore', {
+      targetType: 'gallery',
+      targetId: id,
+      metadata: {
+        galleryId: id,
+        createdBy: Number((gallery as any)?.createdBy),
+      },
+    });
+
+    return { message: 'Gallery restored successfully' };
+  }
+
+  async purgeGallery(actor: any, galleryId: number) {
+    this.assertActor(actor);
+    const id = this.normalizeId(galleryId, 'Gallery');
+
+    const gallery = await this.galleryModel.findOne({ where: { id } });
+    if (!gallery) {
+      throw new NotFoundException('Gallery not found');
+    }
+
+    if (!(gallery as any).deletedAt) {
+      throw new ForbiddenException('Gallery must be soft deleted before it can be purged');
+    }
+
+    const createdBy = Number((gallery as any)?.createdBy);
+
+    await this.galleryLikeModel.destroy({ where: { galleryId: id } as any });
+    await this.galleryCommentModel.destroy({ where: { galleryId: id } as any });
+    await this.galleryAlbumModel.destroy({ where: { galleryId: id } as any });
+    await (gallery as any).destroy();
+
+    await this.adminAuditLogService.log(Number(actor?.adminId), 'gallery_purge', {
+      targetType: 'gallery',
+      targetId: id,
+      metadata: {
+        galleryId: id,
+        createdBy,
+      },
+    });
+
+    return { message: 'Gallery permanently deleted' };
   }
 
   async getGalleriesStats(actor: any) {
@@ -109,6 +201,7 @@ export class AdminGalleriesService {
       userId?: number;
       from?: string;
       to?: string;
+      status?: string;
     },
   ) {
     this.assertActor(actor);
@@ -122,10 +215,17 @@ export class AdminGalleriesService {
     const userId = params?.userId;
     const from = String(params?.from || '').trim();
     const to = String(params?.to || '').trim();
+    const status = String(params?.status || '').trim().toLowerCase();
 
-    const where: any = {
-      status: 1,
-    };
+    const where: any = {};
+
+    if (status === 'deleted') {
+      where.deletedAt = { [Op.ne]: null };
+    } else if (status === 'all') {
+      // no-op
+    } else {
+      where.deletedAt = null;
+    }
 
     if (Number.isFinite(Number(userId)) && Number(userId) > 0) {
       where.createdBy = Number(userId);
@@ -165,7 +265,20 @@ export class AdminGalleriesService {
 
     const { rows, count } = await this.galleryModel.findAndCountAll({
       where,
-      attributes: ['id', 'galleryTitle', 'galleryDescription', 'coverPhoto', 'privacy', 'familyCode', 'status', 'createdBy', 'createdAt'] as any,
+      attributes: [
+        'id',
+        'galleryTitle',
+        'galleryDescription',
+        'coverPhoto',
+        'privacy',
+        'familyCode',
+        'status',
+        'createdBy',
+        'createdAt',
+        'deletedAt',
+        'deletedByUserId',
+        'deletedByAdminId',
+      ] as any,
       order: [['createdAt', 'DESC']] as any,
       limit,
       offset,
@@ -240,6 +353,9 @@ export class AdminGalleriesService {
         'createdBy',
         'createdAt',
         'updatedAt',
+        'deletedAt',
+        'deletedByUserId',
+        'deletedByAdminId',
       ] as any,
     });
 

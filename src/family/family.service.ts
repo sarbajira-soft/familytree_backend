@@ -3814,4 +3814,184 @@ export class FamilyService {
       }
     }
   }
+
+  /**
+   * Delete a person from family tree
+   * - Admin can delete any non-root person
+   * - Users can delete themselves
+   * - Preserves tree integrity by cleaning up relationship references
+   * - Emits WebSocket event for real-time synchronization
+   */
+  async deleteTreePerson(params: {
+    actingUserId: number;
+    familyCode: string;
+    personId: number;
+  }) {
+    const { actingUserId, familyCode, personId } = params;
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+
+    if (!actingUserId || !normalizedFamilyCode || !personId) {
+      throw new BadRequestException('Missing required parameters');
+    }
+
+    const transaction = await this.sequelize.transaction();
+    try {
+      // Find the tree entry for this person
+      const treeEntry = await this.familyTreeModel.findOne({
+        where: {
+          familyCode: normalizedFamilyCode,
+          personId,
+        } as any,
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      if (!treeEntry) {
+        await transaction.rollback();
+        throw new NotFoundException('Person not found in family tree');
+      }
+
+      const entryData = treeEntry as any;
+      const userId = entryData.userId;
+
+      // Check permissions
+      const isSelfDeletion = Number(userId) === Number(actingUserId);
+      
+      // Get actor details for admin check
+      const actorUser = await this.userModel.findOne({
+        where: { id: actingUserId },
+        include: [
+          {
+            model: this.userProfileModel,
+            as: 'userProfile',
+            attributes: ['familyCode'],
+          },
+        ],
+        transaction,
+      });
+
+      if (!actorUser) {
+        await transaction.rollback();
+        throw new ForbiddenException('Unauthorized');
+      }
+
+      const actorRole = Number((actorUser as any).role);
+      const actorIsAdmin = actorRole === 2 || actorRole === 3;
+      const actorFamilyCode = String((actorUser as any)?.userProfile?.familyCode || '')
+        .trim()
+        .toUpperCase();
+
+      // Check if actor is admin of this family
+      const actorMembership = await this.familyMemberModel.findOne({
+        where: {
+          memberId: actingUserId,
+          familyCode: normalizedFamilyCode,
+          approveStatus: 'approved',
+        } as any,
+        transaction,
+      });
+      const isAdminOfThisFamily = actorIsAdmin && 
+        (actorFamilyCode === normalizedFamilyCode || !!actorMembership);
+
+      // Allow if self-deletion or admin deletion
+      if (!isSelfDeletion && !isAdminOfThisFamily) {
+        await transaction.rollback();
+        throw new ForbiddenException('Not authorized to delete this person');
+      }
+
+      // Prevent deletion of external linked cards
+      if (entryData.isExternalLinked) {
+        await transaction.rollback();
+        throw new BadRequestException('Cannot delete external linked cards directly. Use unlink instead.');
+      }
+
+      // Delete the tree entry
+      await treeEntry.destroy({ transaction });
+
+      // Clean up orphaned relationship references
+      await this.cleanupOrphanedRelationshipReferencesInTransaction(
+        normalizedFamilyCode,
+        transaction,
+      );
+
+      // Repair tree integrity
+      await repairFamilyTreeIntegrity({
+        familyCode: normalizedFamilyCode,
+        transaction,
+        lock: true,
+        fixExternalGenerations: true,
+      });
+
+      await transaction.commit();
+
+      // Emit WebSocket event for real-time synchronization
+      this.notificationService.emitFamilyEvent(normalizedFamilyCode, {
+        type: 'TREE_PERSON_DELETED',
+        personId,
+        userId,
+        deletedBy: actingUserId,
+        timestamp: new Date().toISOString(),
+      });
+
+      return {
+        success: true,
+        message: 'Person deleted from tree successfully',
+        deletedPersonId: personId,
+        deletedUserId: userId,
+      };
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+  }
+
+  /**
+   * Clean up orphaned relationship references within a transaction
+   */
+  private async cleanupOrphanedRelationshipReferencesInTransaction(
+    familyCode: string,
+    transaction: any,
+  ) {
+    const remainingEntries = await this.familyTreeModel.findAll({
+      where: { familyCode } as any,
+      transaction,
+    });
+
+    const remainingPersonIdSet = new Set<number>(
+      remainingEntries
+        .map((e: any) => Number(e.personId))
+        .filter((id) => Number.isFinite(id)),
+    );
+
+    const cleanArray = (arr: any) => {
+      if (!arr || !Array.isArray(arr)) return [];
+      return arr
+        .map((id) => (typeof id === 'string' ? Number.parseInt(id, 10) : id))
+        .filter((id) => !Number.isNaN(id) && remainingPersonIdSet.has(id));
+    };
+
+    for (const entry of remainingEntries as any[]) {
+      const cleanedParents = cleanArray(entry.parents);
+      const cleanedChildren = cleanArray(entry.children);
+      const cleanedSpouses = cleanArray(entry.spouses);
+      const cleanedSiblings = cleanArray(entry.siblings);
+
+      const parentsChanged = JSON.stringify(cleanedParents) !== JSON.stringify(entry.parents);
+      const childrenChanged = JSON.stringify(cleanedChildren) !== JSON.stringify(entry.children);
+      const spousesChanged = JSON.stringify(cleanedSpouses) !== JSON.stringify(entry.spouses);
+      const siblingsChanged = JSON.stringify(cleanedSiblings) !== JSON.stringify(entry.siblings);
+
+      if (parentsChanged || childrenChanged || spousesChanged || siblingsChanged) {
+        await entry.update(
+          {
+            parents: cleanedParents,
+            children: cleanedChildren,
+            spouses: cleanedSpouses,
+            siblings: cleanedSiblings,
+          },
+          { transaction },
+        );
+      }
+    }
+  }
 }

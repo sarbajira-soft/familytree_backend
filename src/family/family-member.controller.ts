@@ -169,6 +169,18 @@ export class FamilyMemberController {
 
   // BLOCK OVERRIDE: Block/unblock moved to /blocking routes; family-member service does not implement these.
 
+  @Get(':familyCode/members-not-in-tree')
+  @UseGuards(JwtAuthGuard)
+  @ApiOperation({ summary: 'Get approved family members who are not in the tree' })
+  @ApiResponse({ status: 200, description: 'List of members not in tree returned' })
+  async getMembersNotInTree(
+    @Param('familyCode') familyCode: string,
+    @Req() req,
+  ) {
+    const actingUserId = req.user?.userId;
+    return this.familyMemberService.getMembersNotInTree(familyCode, actingUserId);
+  }
+
   // Get all approved family members by family code
   @Get(':familyCode')
   @UseGuards(JwtAuthGuard)

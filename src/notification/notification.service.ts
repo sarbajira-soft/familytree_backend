@@ -1808,6 +1808,28 @@ export class NotificationService {
     return Boolean(notification);
   }
 
+  /**
+   * Emit a family-level event via WebSocket for real-time UI synchronization
+   * Used for: member removal, dummy user creation/replacement, account deletion/recovery
+   */
+  emitFamilyEvent(familyCode: string, eventData: {
+    type: string;
+    [key: string]: any;
+  }) {
+    if (!familyCode || !this.notificationGateway) return;
+
+    const normalizedFamilyCode = String(familyCode).trim().toUpperCase();
+    
+    // Emit to all clients subscribed to this family
+    this.notificationGateway.server.to(`family:${normalizedFamilyCode}`).emit('family_event', {
+      ...eventData,
+      familyCode: normalizedFamilyCode,
+      timestamp: new Date().toISOString(),
+    });
+
+    console.log(`📡 Family event emitted to family:${normalizedFamilyCode}`, eventData.type);
+  }
+
   // [EXTRACTED] Card creation methods moved to TreeMutationService
 }
 

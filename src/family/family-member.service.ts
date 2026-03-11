@@ -219,37 +219,40 @@ export class FamilyMemberService {
     familyCode: string,
     transaction?: any,
   ) {
+    // Hide ALL galleries created by the removed member (regardless of privacy level)
     await this.galleryModel.update(
       { isVisibleToFamily: false } as any,
       {
         where: {
           createdBy: memberId,
           familyCode,
-          privacy: 'private',
+          // Removed privacy filter - all content should be hidden
         } as any,
         transaction,
       },
     );
 
+    // Hide ALL posts created by the removed member (regardless of privacy level)
     await this.postModel.update(
       { isVisibleToFamily: false } as any,
       {
         where: {
           createdBy: memberId,
           familyCode,
-          privacy: { [Op.in]: ['private', 'family'] },
+          // Removed privacy filter - all content should be hidden
         } as any,
         transaction,
       },
     );
 
+    // Hide ALL events created by the removed member
     await this.eventModel.update(
       { isVisibleToFamily: false } as any,
       {
         where: {
           createdBy: memberId,
           familyCode,
-          status: 1,
+          // Removed status filter - all events should be hidden
         } as any,
         transaction,
       },
@@ -480,6 +483,7 @@ export class FamilyMemberService {
         password: await bcrypt.hash(dto.password, 12),
         status: dto.status ?? 1,
         role: dto.role ?? 1,
+        isAppUser: true,
         createdBy: creatorId,
       },
       { transaction }
@@ -772,7 +776,14 @@ export class FamilyMemberService {
       throw new BadRequestException('Access denied: Only family admins can reject members');
     }
 
-    await membership.destroy();
+    // Soft delete: Set status to rejected instead of hard delete
+    await membership.update(
+      {
+        approveStatus: 'rejected',
+        removedAt: new Date(),
+        removedBy: rejectorId,
+      } as any,
+    );
 
     // Find user profile of rejected member to get their name
     const userProfile = await this.userProfileModel.findOne({ where: { userId: memberId } });
@@ -843,22 +854,69 @@ export class FamilyMemberService {
 
     const transaction = await this.sequelize.transaction();
     try {
+      console.log('[DEBUG] Step 1: Finding member user (no lock)...');
       const memberUser = await this.userModel.findByPk(memberId, {
         transaction,
-        lock: (transaction as any).LOCK.UPDATE,
       });
+      console.log('[DEBUG] memberUser found:', memberUser?.id);
+      
+      // Validate transaction is still active
+      try {
+        await this.sequelize.query('SELECT 1', { transaction });
+        console.log('[DEBUG] Transaction valid after Step 1');
+      } catch (txErr) {
+        console.error('[DEBUG] Transaction FAILED after Step 1:', txErr.message);
+        throw txErr;
+      }
 
-      const membership = await this.familyMemberModel.findOne({
-        where: { memberId, familyCode },
-        transaction,
-        lock: (transaction as any).LOCK.UPDATE,
-      });
+      console.log('[DEBUG] Step 2: Finding membership (no lock)...');
+      let membership;
+      try {
+        membership = await this.familyMemberModel.findOne({
+          where: { memberId, familyCode },
+          transaction,
+        });
+        console.log('[DEBUG] membership found:', membership?.id, 'status:', (membership as any)?.approveStatus);
+      } catch (e) {
+        console.error('[DEBUG] Error finding membership:', e.message, e.stack);
+        throw e;
+      }
+      
+      // Validate transaction is still active
+      try {
+        await this.sequelize.query('SELECT 1', { transaction });
+        console.log('[DEBUG] Transaction valid after Step 2');
+      } catch (txErr) {
+        console.error('[DEBUG] Transaction FAILED after Step 2:', txErr.message);
+        throw txErr;
+      }
 
-      const treeEntries = await this.familyTreeModel.findAll({
-        where: { familyCode, userId: memberId },
-        transaction,
-        lock: (transaction as any).LOCK.UPDATE,
-      });
+      console.log('[DEBUG] Step 3: Finding tree entries...');
+      let treeEntries;
+      try {
+        treeEntries = await this.familyTreeModel.findAll({
+          where: { familyCode, userId: memberId },
+          transaction,
+        });
+        console.log('[DEBUG] treeEntries found:', treeEntries.length);
+      } catch (e) {
+        console.error('[DEBUG] Error finding tree entries:', e.message, e.stack);
+        throw e;
+      }
+      
+      // Validate transaction is still active
+      try {
+        await this.sequelize.query('SELECT 1', { transaction });
+        console.log('[DEBUG] Transaction valid after Step 3');
+      } catch (txErr) {
+        console.error('[DEBUG] Transaction FAILED after Step 3:', txErr.message);
+        throw txErr;
+      }
+      
+      console.log('[DEBUG] Step 3a: Checking early return conditions...');
+      console.log('[DEBUG] - membership exists:', !!membership);
+      console.log('[DEBUG] - treeEntries.length:', treeEntries.length);
+      console.log('[DEBUG] - approveStatus:', (membership as any)?.approveStatus);
 
       if (!membership && treeEntries.length === 0) {
         await transaction.commit();
@@ -899,14 +957,59 @@ export class FamilyMemberService {
       }
 
       if (membership) {
-        await membership.update(
-          { approveStatus: 'rejected' } as any,
-          { transaction },
-        );
+        console.log('[DEBUG] Step 4: Updating membership status...');
+        console.log('[DEBUG] - membership.id:', membership.id);
+        console.log('[DEBUG] - actingUserId:', actingUserId);
+        
+        // Validate transaction before update
+        try {
+          await this.sequelize.query('SELECT 1', { transaction });
+          console.log('[DEBUG] Transaction valid before Step 4 update');
+        } catch (txErr) {
+          console.error('[DEBUG] Transaction FAILED before Step 4 update:', txErr.message);
+          throw txErr;
+        }
+        
+        try {
+          // Try using update with explicit where instead of instance.update
+          const [updateCount] = await this.familyMemberModel.update(
+            { 
+              approveStatus: 'removed',
+              removedAt: new Date(),
+              removedBy: actingUserId,
+            } as any,
+            { 
+              where: { id: membership.id },
+              transaction 
+            },
+          );
+          console.log('[DEBUG] Membership updated successfully, rows affected:', updateCount);
+        } catch (updateError) {
+          console.error('[DEBUG] Membership update failed:', updateError.message);
+          console.error('[DEBUG] Full error:', updateError);
+          throw updateError;
+        }
+      } else {
+        console.log('[DEBUG] Step 4: Skipping membership update - no membership found');
       }
 
-      await this.cleanupRemovedMemberProfile(memberId, familyCode, transaction);
-      await this.hideFamilyContentForRemovedMember(memberId, familyCode, transaction);
+      console.log('[DEBUG] Step 5: Running cleanupRemovedMemberProfile...');
+      try {
+        await this.cleanupRemovedMemberProfile(memberId, familyCode, transaction);
+        console.log('[DEBUG] cleanupRemovedMemberProfile completed');
+      } catch (cleanupError) {
+        console.error('[DEBUG] cleanupRemovedMemberProfile failed:', cleanupError.message);
+        throw cleanupError;
+      }
+      
+      console.log('[DEBUG] Step 6: Running hideFamilyContentForRemovedMember...');
+      try {
+        await this.hideFamilyContentForRemovedMember(memberId, familyCode, transaction);
+        console.log('[DEBUG] hideFamilyContentForRemovedMember completed');
+      } catch (hideError) {
+        console.error('[DEBUG] hideFamilyContentForRemovedMember failed:', hideError.message);
+        throw hideError;
+      }
 
       let dummyUserId: number = null;
       if (treeEntries.length > 0) {
@@ -943,6 +1046,15 @@ export class FamilyMemberService {
       });
 
       await transaction.commit();
+
+      // NEW: Emit WebSocket event for real-time synchronization
+      this.notificationService.emitFamilyEvent(familyCode, {
+        type: 'MEMBER_REMOVED',
+        memberId,
+        dummyUserId,
+        isSelfRemoval,
+        removedBy: actingUserId,
+      });
 
       if (!params.skipAdminGuard && !isSelfRemoval) {
         await this.notifyMemberRemoval(memberId, familyCode);
@@ -1112,6 +1224,15 @@ export class FamilyMemberService {
       });
 
       await transaction.commit();
+
+      // NEW: Emit WebSocket event for real-time synchronization
+      this.notificationService.emitFamilyEvent(familyCode, {
+        type: 'DUMMY_USER_REPLACED',
+        dummyUserId,
+        replacementUserId,
+        replacedBy: actingUserId,
+        updatedNodes: Number(updatedCount),
+      });
 
       return {
         message: 'Dummy user replaced successfully',
@@ -1789,6 +1910,7 @@ async markLinkAsUsed(familyCode: string, memberId: number) {
       }
 
       // If user is already in this family, stop
+      // But allow if the existing membership is pending (treat as approval)
       const existingMemberSameFamily = await this.familyMemberModel.findOne({
         where: {
           memberId: userId,
@@ -1797,7 +1919,27 @@ async markLinkAsUsed(familyCode: string, memberId: number) {
         transaction,
       });
 
-      if (existingMemberSameFamily) {
+      // Delete pending requests by this user to OTHER families (preserve same-family pending for update)
+      await this.familyMemberModel.destroy({
+        where: {
+          memberId: userId,
+          approveStatus: 'pending',
+          familyCode: { [Op.ne]: familyCode },
+        } as any,
+        transaction,
+      });
+
+      // NEW: Also delete pending requests where deleted user is the admin/approver (creatorId)
+      await this.familyMemberModel.destroy({
+        where: {
+          creatorId: userId,
+          approveStatus: 'pending',
+        } as any,
+        transaction,
+      });
+
+      // If user is already an APPROVED member, block. If pending/rejected, allow (will update to approved)
+      if (existingMemberSameFamily && existingMemberSameFamily.approveStatus === 'approved') {
         throw new BadRequestException('User is already a member of this family');
       }
 
@@ -1878,5 +2020,88 @@ async markLinkAsUsed(familyCode: string, memberId: number) {
       throw new BadRequestException('Failed to add user to family');
     }
   }
-  
+
+  /**
+   * Get approved family members who are not in the family tree
+   * This is used for the "Members Not In Tree" section
+   */
+  async getMembersNotInTree(familyCode: string, actingUserId: number) {
+    await this.requireAdminMembership(actingUserId, familyCode);
+
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+
+    // Get all approved family members
+    const allMembers = await this.familyMemberModel.findAll({
+      where: {
+        familyCode: normalizedFamilyCode,
+        approveStatus: 'approved',
+      } as any,
+      include: [
+        {
+          model: this.userModel,
+          as: 'user',
+          attributes: ['id', 'email', 'mobile', 'status', 'role', 'isAppUser'],
+          include: [
+            {
+              model: this.userProfileModel,
+              as: 'userProfile',
+              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'familyCode'],
+            },
+          ],
+        },
+      ],
+    });
+
+    // Get all users currently in the tree
+    const treeEntries = await this.familyTreeModel.findAll({
+      where: { familyCode: normalizedFamilyCode } as any,
+      attributes: ['userId'],
+    });
+
+    const userIdsInTree = new Set(
+      (treeEntries as any[])
+        .map((e) => Number(e.userId))
+        .filter((id) => Number.isFinite(id) && id > 0),
+    );
+
+    // Filter members who are approved but not in tree
+    // Only include app users (not dummy users)
+    const membersNotInTree = (allMembers as any[]).filter((member) => {
+      const userId = Number(member?.memberId);
+      const isAppUser = member?.user?.isAppUser;
+      const isInTree = userIdsInTree.has(userId);
+      
+      // Include if: approved member, is app user, and NOT in tree
+      return isAppUser && !isInTree;
+    });
+
+    // Format the response
+    const result = membersNotInTree.map((member) => {
+      const user = member.user;
+      return {
+        id: member.id,
+        memberId: member.memberId,
+        familyCode: member.familyCode,
+        approveStatus: member.approveStatus,
+        user: {
+          id: user?.id,
+          email: user?.email,
+          mobile: user?.mobile,
+          isAppUser: user?.isAppUser,
+          role: user?.role,
+          fullName: user?.userProfile
+            ? `${user.userProfile.firstName || ''} ${user.userProfile.lastName || ''}`.trim()
+            : null,
+          profileImage: user?.userProfile?.profile || null,
+          gender: user?.userProfile?.gender || null,
+          familyCode: user?.userProfile?.familyCode || null,
+        },
+      };
+    });
+
+    return {
+      message: `${result.length} members not in tree found`,
+      data: result,
+    };
+  }
 }

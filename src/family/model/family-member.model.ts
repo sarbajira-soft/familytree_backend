@@ -24,10 +24,17 @@ export class FamilyMember extends Model<FamilyMember> {
 
   @Default('pending') // default status
   @Column({
-    type: DataType.ENUM('pending', 'approved', 'rejected'),
+    type: DataType.ENUM('pending', 'approved', 'rejected', 'removed'),
     allowNull: false,
   })
-  approveStatus: 'pending' | 'approved' | 'rejected';
+  approveStatus: 'pending' | 'approved' | 'rejected' | 'removed';
+
+  @Column({ type: DataType.DATE, allowNull: true })
+  removedAt: Date;
+
+  @ForeignKey(() => User)
+  @Column({ type: DataType.INTEGER, allowNull: true })
+  removedBy: number;
 
   @Default(false)
   @Column({ type: DataType.BOOLEAN, allowNull: false, field: 'isLinkedUsed' })

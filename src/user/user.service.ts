@@ -183,32 +183,71 @@ export class UserService {
   }
 
   private async hideFamilyContentForDeletedUser(userId: number) {
+    // Hide ALL galleries created by the deleted user (regardless of privacy level)
     await this.galleryModel.update(
       { isVisibleToFamily: false } as any,
       {
         where: {
           createdBy: userId,
-          privacy: 'private',
+          // Removed privacy filter - all content should be hidden
         } as any,
       },
     );
 
+    // Hide ALL posts created by the deleted user (regardless of privacy level)
     await this.postModel.update(
       { isVisibleToFamily: false } as any,
       {
         where: {
           createdBy: userId,
-          privacy: { [Op.in]: ['private', 'family'] },
+          // Removed privacy filter - all content should be hidden
         } as any,
       },
     );
 
+    // Hide ALL events created by the deleted user
     await this.eventModel.update(
       { isVisibleToFamily: false } as any,
       {
         where: {
           createdBy: userId,
-          status: 1,
+          // Removed status filter - all events should be hidden
+        } as any,
+      },
+    );
+  }
+
+  /**
+   * Restore content visibility for a recovered account
+   * This reverses the hideFamilyContentForDeletedUser operation
+   */
+  private async restoreFamilyContentForRecoveredUser(userId: number) {
+    // Restore visibility for ALL galleries
+    await this.galleryModel.update(
+      { isVisibleToFamily: true } as any,
+      {
+        where: {
+          createdBy: userId,
+        } as any,
+      },
+    );
+
+    // Restore visibility for ALL posts
+    await this.postModel.update(
+      { isVisibleToFamily: true } as any,
+      {
+        where: {
+          createdBy: userId,
+        } as any,
+      },
+    );
+
+    // Restore visibility for ALL events
+    await this.eventModel.update(
+      { isVisibleToFamily: true } as any,
+      {
+        where: {
+          createdBy: userId,
         } as any,
       },
     );
@@ -301,6 +340,15 @@ export class UserService {
       await this.familyMemberModel.destroy({
         where: {
           memberId: userId,
+          approveStatus: 'pending',
+        } as any,
+        transaction,
+      });
+
+      // NEW: Also delete pending requests where deleted user is the admin/approver (creatorId)
+      await this.familyMemberModel.destroy({
+        where: {
+          creatorId: userId,
           approveStatus: 'pending',
         } as any,
         transaction,
@@ -505,6 +553,10 @@ export class UserService {
       );
 
       await transaction.commit();
+
+      // Restore content visibility for recovered account
+      await this.restoreFamilyContentForRecoveredUser(user.id);
+
       return {
         message: 'Account recovered successfully. Rejoin the family tree to regain family visibility.',
       };

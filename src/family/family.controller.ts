@@ -725,6 +725,34 @@ export class FamilyController {
     });
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Delete('tree/:familyCode/person/:personId')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Delete a person from family tree (admin or self)' })
+  @ApiResponse({ status: 200, description: 'Person deleted from tree successfully' })
+  @ApiResponse({ status: 403, description: 'Not authorized to delete this person' })
+  @ApiResponse({ status: 404, description: 'Person not found in tree' })
+  @HttpCode(HttpStatus.OK)
+  async deleteTreePerson(
+    @Param('familyCode') familyCode: string,
+    @Param('personId', ParseIntPipe) personId: number,
+    @Req() req,
+  ) {
+    const actingUserId: number = req.user?.userId;
+    if (!actingUserId) {
+      throw new ForbiddenException('Unauthorized: missing user context');
+    }
+    if (!familyCode || !personId) {
+      throw new BadRequestException('familyCode and personId are required');
+    }
+
+    return this.familyService.deleteTreePerson({
+      actingUserId,
+      familyCode,
+      personId,
+    });
+  }
+
   // ==================== NEW ASSOCIATION ENDPOINTS (TODO: Implement service methods) ====================
 
   // TODO: Implement these endpoints after creating the service methods

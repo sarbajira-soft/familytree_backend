@@ -44,6 +44,37 @@ export class AdminUsersController {
 
   @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
   @AdminRoles('admin', 'superadmin')
+  @Get('non-app')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List non-app users for admin panel (admin/superadmin)' })
+  nonAppUsers(
+    @Req() req,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('q') q?: string,
+    @Query('status') status?: string,
+    @Query('role') role?: string,
+  ) {
+    return this.adminUsersService.listNonAppUsers(req.user, {
+      page: page ? Number(page) : 1,
+      limit: limit ? Number(limit) : 25,
+      q,
+      status: status !== undefined ? Number(status) : undefined,
+      role: role !== undefined ? Number(role) : undefined,
+    });
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Get('non-app/:id')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get non-app user details for admin panel (admin/superadmin)' })
+  nonAppUserById(@Req() req, @Param('id') id: string) {
+    return this.adminUsersService.getNonAppUserById(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
   @Get(':id/posts')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'List posts created by an app user (admin/superadmin)' })

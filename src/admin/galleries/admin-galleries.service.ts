@@ -117,6 +117,32 @@ export class AdminGalleriesService {
 
     const createdBy = Number((gallery as any)?.createdBy);
 
+    const galleryJson: any = typeof (gallery as any)?.toJSON === 'function' ? (gallery as any).toJSON() : gallery;
+
+    try {
+      if (galleryJson?.coverPhoto) {
+        await this.uploadService.deleteFile(String(galleryJson.coverPhoto), 'gallery/cover');
+      }
+    } catch (_) {
+      // ignore
+    }
+
+    try {
+      const albums = await this.galleryAlbumModel.findAll({
+        where: { galleryId: id } as any,
+        attributes: ['album'] as any,
+      });
+
+      for (const a of albums || []) {
+        const json: any = typeof (a as any)?.toJSON === 'function' ? (a as any).toJSON() : a;
+        if (!json?.album) continue;
+        // eslint-disable-next-line no-await-in-loop
+        await this.uploadService.deleteFile(String(json.album), 'gallery');
+      }
+    } catch (_) {
+      // ignore
+    }
+
     await this.galleryLikeModel.destroy({ where: { galleryId: id } as any });
     await this.galleryCommentModel.destroy({ where: { galleryId: id } as any });
     await this.galleryAlbumModel.destroy({ where: { galleryId: id } as any });

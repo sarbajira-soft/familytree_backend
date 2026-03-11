@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Delete, Get, Param, Patch, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { AdminJwtAuthGuard } from '../auth/admin-jwt-auth.guard';
@@ -35,6 +35,7 @@ export class AdminEventsController {
     @Query('familyCode') familyCode?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
+    @Query('deleted') deleted?: string,
   ) {
     return this.adminEventsService.listEvents(req.user, {
       page: page ? Number(page) : 1,
@@ -45,7 +46,35 @@ export class AdminEventsController {
       familyCode,
       from,
       to,
+      deleted: deleted === 'only' || deleted === 'exclude' || deleted === 'all' ? (deleted as any) : 'exclude',
     });
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Patch(':id/delete')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Soft delete an event (admin/superadmin)' })
+  softDelete(@Req() req, @Param('id') id: string) {
+    return this.adminEventsService.softDeleteEvent(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Patch(':id/restore')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Restore a soft deleted event (admin/superadmin)' })
+  restore(@Req() req, @Param('id') id: string) {
+    return this.adminEventsService.restoreEvent(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Delete(':id/purge')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Permanently delete a soft deleted event (admin/superadmin)' })
+  purge(@Req() req, @Param('id') id: string) {
+    return this.adminEventsService.purgeEvent(req.user, Number(id));
   }
 
   @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)

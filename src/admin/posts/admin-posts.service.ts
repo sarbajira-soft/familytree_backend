@@ -501,6 +501,24 @@ export class AdminPostsService {
 
     const createdBy = Number((post as any)?.createdBy);
 
+    const postJson: any = typeof (post as any)?.toJSON === 'function' ? (post as any).toJSON() : post;
+
+    try {
+      if (postJson?.postImage) {
+        await this.uploadService.deleteFile(String(postJson.postImage), 'posts');
+      }
+    } catch (_) {
+      // ignore
+    }
+
+    try {
+      if (postJson?.postVideo) {
+        await this.uploadService.deleteFile(String(postJson.postVideo), 'posts');
+      }
+    } catch (_) {
+      // ignore
+    }
+
     await this.postLikeModel.destroy({ where: { postId: id } });
     await this.postCommentModel.destroy({ where: { postId: id } });
     await (post as any).destroy();

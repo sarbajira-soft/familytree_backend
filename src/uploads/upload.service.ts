@@ -5,6 +5,7 @@ import {
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
+  ListObjectsV2Command,
   ListPartsCommand,
   S3Client,
   PutObjectCommand,
@@ -202,8 +203,15 @@ export class UploadService {
         key = url.pathname.substring(1).split('?')[0];
         console.log('Extracted key from URL:', { original: fileName, extractedKey: key });
       } else {
-        // If it's just a filename, add the folder prefix if not already present
-        key = fileName.includes('/') ? fileName : `${folder}/${fileName}`;
+        const cleaned = String(fileName || '').trim().replace(/^\//, '');
+        // If it's already a full key (contains '/'), use as-is.
+        // This supports admin tools passing a full key like "gallery/cover/x.jpg".
+        if (cleaned.includes('/')) {
+          key = cleaned;
+        } else {
+          // If it's just a filename, add the folder prefix
+          key = `${folder}/${cleaned}`;
+        }
         // Ensure we don't have double slashes
         key = key.replace(/\/\//g, '/');
       }
@@ -256,5 +264,69 @@ export class UploadService {
       });
       return false;
     }
+  }
+
+  async listFolders(prefix: string = ''): Promise<{ prefix: string; folders: string[] }> {
+    const cleanedPrefix = String(prefix || '').trim().replace(/^\//, '');
+    const res = await this.s3.send(
+      new ListObjectsV2Command({
+        Bucket: process.env.S3_BUCKET_NAME,
+        Prefix: cleanedPrefix,
+        Delimiter: '/',
+      }),
+    );
+
+    const folders = (res.CommonPrefixes || [])
+      .map((p) => String(p.Prefix || '').trim())
+      .filter(Boolean);
+
+    return { prefix: cleanedPrefix, folders };
+  }
+
+  async listObjects(params?: {
+    prefix?: string;
+    maxKeys?: number;
+    continuationToken?: string;
+  }): Promise<{
+    prefix: string;
+    items: { key: string; size: number; lastModified: string | null; url: string | null }[];
+    nextContinuationToken: string | null;
+  }> {
+    const prefix = String(params?.prefix || '').trim().replace(/^\//, '');
+    const maxKeys = Math.min(1000, Math.max(1, Number(params?.maxKeys || 100)));
+
+    const res = await this.s3.send(
+      new ListObjectsV2Command({
+        Bucket: process.env.S3_BUCKET_NAME,
+        Prefix: prefix,
+        MaxKeys: maxKeys,
+        ContinuationToken: params?.continuationToken || undefined,
+      }),
+    );
+
+    const items = (res.Contents || [])
+      .map((o) => {
+        const key = String(o.Key || '').trim();
+        if (!key) return null;
+        // Skip the "folder marker" objects
+        if (key.endsWith('/')) return null;
+
+        const folder = key.includes('/') ? key.split('/')[0] : '';
+        const filename = key.split('/').pop() || key;
+
+        return {
+          key,
+          size: Number(o.Size || 0),
+          lastModified: o.LastModified ? new Date(o.LastModified).toISOString() : null,
+          url: folder ? this.getFileUrl(filename, folder) : null,
+        };
+      })
+      .filter(Boolean) as any;
+
+    return {
+      prefix,
+      items,
+      nextContinuationToken: res.NextContinuationToken || null,
+    };
   }
 }

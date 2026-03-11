@@ -7,6 +7,7 @@ import { EventImage } from '../../event/model/event-image.model';
 import { User } from '../../user/model/user.model';
 import { UserProfile } from '../../user/model/user-profile.model';
 import { UploadService } from '../../uploads/upload.service';
+import { AdminAuditLogService } from '../admin-audit-log.service';
 
 @Injectable()
 export class AdminEventsService {
@@ -20,6 +21,7 @@ export class AdminEventsService {
     @InjectModel(UserProfile)
     private readonly userProfileModel: typeof UserProfile,
     private readonly uploadService: UploadService,
+    private readonly adminAuditLogService: AdminAuditLogService,
   ) {}
 
   private assertActor(actor: any) {
@@ -90,6 +92,7 @@ export class AdminEventsService {
       familyCode?: string;
       from?: string;
       to?: string;
+      deleted?: 'only' | 'exclude' | 'all';
     },
   ) {
     this.assertActor(actor);
@@ -104,6 +107,15 @@ export class AdminEventsService {
     const to = String(params?.to || '').trim();
 
     const where: any = {};
+
+    const deletedMode = params?.deleted || 'exclude';
+    if (deletedMode === 'only') {
+      where.deletedAt = { [Op.ne]: null };
+    } else if (deletedMode === 'exclude') {
+      where.deletedAt = null;
+    } else {
+      // all
+    }
 
     if (params?.status === 0 || params?.status === 1) {
       where.status = params.status;
@@ -160,6 +172,9 @@ export class AdminEventsService {
         'status',
         'createdAt',
         'updatedAt',
+        'deletedAt',
+        'deletedByUserId',
+        'deletedByAdminId',
       ] as any,
       order: [['createdAt', 'DESC']] as any,
       limit,
@@ -236,6 +251,9 @@ export class AdminEventsService {
         'status',
         'createdAt',
         'updatedAt',
+        'deletedAt',
+        'deletedByUserId',
+        'deletedByAdminId',
       ] as any,
     });
 
@@ -300,5 +318,104 @@ export class AdminEventsService {
       },
       creator,
     };
+  }
+
+  async softDeleteEvent(actor: any, eventId: number) {
+    this.assertActor(actor);
+    const id = this.normalizeId(eventId, 'Event');
+
+    const event = await this.eventModel.findOne({ where: { id } as any });
+    if (!event) throw new NotFoundException('Event not found');
+
+    if ((event as any).deletedAt) {
+      return { message: 'Event already deleted' };
+    }
+
+    await (event as any).update({
+      deletedAt: new Date(),
+      deletedByAdminId: Number(actor?.adminId),
+      deletedByUserId: null,
+    } as any);
+
+    await this.adminAuditLogService.log(Number(actor?.adminId), 'event_soft_delete', {
+      targetType: 'event',
+      targetId: id,
+      metadata: {
+        eventId: id,
+        createdBy: Number((event as any)?.createdBy),
+      },
+    });
+
+    return { message: 'Event deleted successfully' };
+  }
+
+  async restoreEvent(actor: any, eventId: number) {
+    this.assertActor(actor);
+    const id = this.normalizeId(eventId, 'Event');
+
+    const event = await this.eventModel.findOne({ where: { id } as any });
+    if (!event) throw new NotFoundException('Event not found');
+
+    if (!(event as any).deletedAt) {
+      return { message: 'Event is not deleted' };
+    }
+
+    await (event as any).update({ deletedAt: null, deletedByAdminId: null, deletedByUserId: null } as any);
+
+    await this.adminAuditLogService.log(Number(actor?.adminId), 'event_restore', {
+      targetType: 'event',
+      targetId: id,
+      metadata: {
+        eventId: id,
+        createdBy: Number((event as any)?.createdBy),
+      },
+    });
+
+    return { message: 'Event restored successfully' };
+  }
+
+  async purgeEvent(actor: any, eventId: number) {
+    this.assertActor(actor);
+    const id = this.normalizeId(eventId, 'Event');
+
+    const event = await this.eventModel.findOne({ where: { id } as any });
+    if (!event) throw new NotFoundException('Event not found');
+
+    if (!(event as any).deletedAt) {
+      throw new ForbiddenException('Event must be soft deleted before it can be purged');
+    }
+
+    const createdBy = Number((event as any)?.createdBy);
+
+    try {
+      const imgs = await this.eventImageModel.findAll({
+        where: { eventId: id } as any,
+        attributes: ['id', 'imageUrl'] as any,
+      });
+
+      for (const img of imgs || []) {
+        const json: any = typeof (img as any)?.toJSON === 'function' ? (img as any).toJSON() : img;
+        if (!json?.imageUrl) continue;
+        // eslint-disable-next-line no-await-in-loop
+        await this.uploadService.deleteFile(String(json.imageUrl), 'events');
+      }
+
+      await this.eventImageModel.destroy({ where: { eventId: id } as any });
+    } catch (_) {
+      // ignore
+    }
+
+    await (event as any).destroy();
+
+    await this.adminAuditLogService.log(Number(actor?.adminId), 'event_purge', {
+      targetType: 'event',
+      targetId: id,
+      metadata: {
+        eventId: id,
+        createdBy,
+      },
+    });
+
+    return { message: 'Event permanently deleted' };
   }
 }

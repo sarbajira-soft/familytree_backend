@@ -13,6 +13,7 @@ import { Event } from '../../event/model/event.model';
 import { EventImage } from '../../event/model/event-image.model';
 import { FamilyMember } from '../../family/model/family-member.model';
 import { Family } from '../../family/model/family.model';
+import { FamilyTree } from '../../family/model/family-tree.model';
 import { UploadService } from '../../uploads/upload.service';
 
 @Injectable()
@@ -40,6 +41,8 @@ export class AdminUsersService {
     private readonly familyMemberModel: typeof FamilyMember,
     @InjectModel(Family)
     private readonly familyModel: typeof Family,
+    @InjectModel(FamilyTree)
+    private readonly familyTreeModel: typeof FamilyTree,
     private readonly uploadService: UploadService,
   ) {}
 
@@ -249,7 +252,20 @@ export class AdminUsersService {
 
     const { rows, count } = await this.galleryModel.findAndCountAll({
       where,
-      attributes: ['id', 'galleryTitle', 'galleryDescription', 'coverPhoto', 'privacy', 'familyCode', 'status', 'createdBy', 'createdAt'] as any,
+      attributes: [
+        'id',
+        'galleryTitle',
+        'galleryDescription',
+        'coverPhoto',
+        'privacy',
+        'familyCode',
+        'status',
+        'createdBy',
+        'createdAt',
+        'deletedAt',
+        'deletedByUserId',
+        'deletedByAdminId',
+      ] as any,
       order: [['createdAt', 'DESC']] as any,
       limit,
       offset,
@@ -452,6 +468,7 @@ export class AdminUsersService {
         'email',
         'countryCode',
         'mobile',
+        'medusaCustomerId',
         'status',
         'role',
         'isAppUser',
@@ -519,6 +536,102 @@ export class AdminUsersService {
     };
   }
 
+  async getNonAppUserById(actor: any, id: number) {
+    this.assertActor(actor);
+
+    const userId = Number(id);
+    if (!Number.isFinite(userId) || Number.isNaN(userId) || userId <= 0) {
+      throw new NotFoundException('User not found');
+    }
+
+    const user = await this.userModel.findOne({
+      where: {
+        id: userId,
+        isAppUser: false,
+      } as any,
+      include: [
+        {
+          model: this.userProfileModel,
+          as: 'userProfile',
+          required: false,
+          attributes: [
+            'id',
+            'userId',
+            'firstName',
+            'lastName',
+            'profile',
+            'gender',
+            'contactNumber',
+            'familyCode',
+            'isPrivate',
+            'createdAt',
+            'updatedAt',
+          ] as any,
+        },
+      ],
+      attributes: [
+        'id',
+        'email',
+        'countryCode',
+        'mobile',
+        'medusaCustomerId',
+        'status',
+        'role',
+        'isAppUser',
+        'hasAcceptedTerms',
+        'termsVersion',
+        'termsAcceptedAt',
+        'lastLoginAt',
+        'verifiedAt',
+        'createdBy',
+        'createdAt',
+        'updatedAt',
+      ] as any,
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const userJson: any = typeof (user as any)?.toJSON === 'function' ? (user as any).toJSON() : user;
+    if (userJson?.userProfile?.profile) {
+      userJson.userProfile.profile = this.uploadService.getFileUrl(String(userJson.userProfile.profile), 'profile');
+    }
+
+    const [memberships, treeAsPersonCount, treeAsUserCount, postsCount, galleriesCount, eventsCount] = await Promise.all([
+      this.familyMemberModel.findAll({
+        where: { memberId: userId } as any,
+        attributes: ['id', 'familyCode', 'approveStatus', 'creatorId', 'createdAt', 'updatedAt'] as any,
+        order: [['id', 'DESC']] as any,
+      }),
+      this.familyTreeModel.count({ where: { personId: userId } as any }),
+      this.familyTreeModel.count({ where: { userId: userId } as any }),
+      this.postModel.count({ where: { createdBy: userId, status: 1 } as any }),
+      this.galleryModel.count({ where: { createdBy: userId, status: 1 } as any }),
+      this.eventModel.count({ where: { userId: userId, status: 1 } as any }),
+    ]);
+
+    const membershipFamilyCodes = Array.from(
+      new Set((memberships || []).map((m: any) => String(m?.familyCode || '').trim()).filter(Boolean)),
+    );
+    const familiesCount = membershipFamilyCodes.length;
+
+    return {
+      message: 'User fetched successfully',
+      data: userJson,
+      stats: {
+        postsCount,
+        galleriesCount,
+        eventsCount,
+        familiesCount,
+        membershipCount: Array.isArray(memberships) ? memberships.length : 0,
+        treeAsPersonCount,
+        treeAsUserCount,
+      },
+      memberships: (memberships || []).map((m: any) => (typeof m?.toJSON === 'function' ? m.toJSON() : m)),
+    };
+  }
+
   async listAppUsers(
     actor: any,
     params: {
@@ -543,6 +656,122 @@ export class AdminUsersService {
 
     const where: any = {
       isAppUser: true,
+    };
+
+    if (!Number.isNaN(status) && status !== undefined) {
+      where.status = status;
+    }
+
+    if (!Number.isNaN(role) && role !== undefined) {
+      where.role = role;
+    }
+
+    if (q) {
+      const numericId = Number(q);
+      const or: any[] = [
+        { email: { [Op.iLike]: `%${q}%` } },
+        { mobile: { [Op.iLike]: `%${q}%` } },
+        { '$userProfile.firstName$': { [Op.iLike]: `%${q}%` } },
+        { '$userProfile.lastName$': { [Op.iLike]: `%${q}%` } },
+      ];
+
+      if (!Number.isNaN(numericId) && Number.isFinite(numericId)) {
+        or.unshift({ id: numericId });
+      }
+
+      where[Op.or] = or;
+    }
+
+    const { rows, count } = await this.userModel.findAndCountAll({
+      where,
+      include: [
+        {
+          model: this.userProfileModel,
+          as: 'userProfile',
+          required: false,
+          attributes: [
+            'id',
+            'userId',
+            'firstName',
+            'lastName',
+            'profile',
+            'gender',
+            'contactNumber',
+            'familyCode',
+            'isPrivate',
+            'createdAt',
+            'updatedAt',
+          ],
+        },
+      ],
+      attributes: [
+        'id',
+        'email',
+        'countryCode',
+        'mobile',
+        'medusaCustomerId',
+        'status',
+        'role',
+        'isAppUser',
+        'hasAcceptedTerms',
+        'termsVersion',
+        'termsAcceptedAt',
+        'lastLoginAt',
+        'verifiedAt',
+        'createdBy',
+        'createdAt',
+        'updatedAt',
+      ],
+      order: [['id', 'DESC']],
+      limit,
+      offset,
+      distinct: true,
+    });
+
+    const normalizedRows = (rows || []).map((r: any) => {
+      const json = typeof r?.toJSON === 'function' ? r.toJSON() : r;
+      if (json?.userProfile?.profile) {
+        json.userProfile.profile = this.uploadService.getFileUrl(String(json.userProfile.profile), 'profile');
+      }
+      return json;
+    });
+
+    return {
+      message: 'Users fetched successfully',
+      data: normalizedRows,
+      pagination: {
+        page,
+        limit,
+        total: count,
+        totalPages: Math.ceil(count / limit) || 1,
+      },
+    };
+  }
+
+  async listNonAppUsers(
+    actor: any,
+    params: {
+      page?: number;
+      limit?: number;
+      q?: string;
+      status?: number;
+      role?: number;
+    },
+  ) {
+    if (!actor?.adminId) {
+      throw new ForbiddenException('No admin data in request');
+    }
+
+    const page = Math.max(1, Number(params.page || 1));
+    const limit = Math.min(100, Math.max(1, Number(params.limit || 25)));
+    const offset = (page - 1) * limit;
+
+    const q = (params.q || '').trim();
+    const status = params.status !== undefined ? Number(params.status) : undefined;
+    const role = params.role !== undefined ? Number(params.role) : undefined;
+
+    const where: any = {
+      isAppUser: false,
     };
 
     if (!Number.isNaN(status) && status !== undefined) {

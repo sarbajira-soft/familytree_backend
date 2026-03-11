@@ -81,6 +81,24 @@ export class Event extends Model<Event> {
   })
   isVisibleToFamily: boolean;
 
+  @Column({
+    type: DataType.DATE,
+    allowNull: true,
+  })
+  deletedAt: Date;
+
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: true,
+  })
+  deletedByUserId: number;
+
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: true,
+  })
+  deletedByAdminId: number;
+
   @HasMany(() => EventImage)
   images: EventImage[];
 }

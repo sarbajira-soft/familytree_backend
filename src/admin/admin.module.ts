@@ -26,6 +26,7 @@ import { Event } from '../event/model/event.model';
 import { EventImage } from '../event/model/event-image.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { Family } from '../family/model/family.model';
+import { FamilyTree } from '../family/model/family-tree.model';
 import { AdminUsersController } from './users/admin-users.controller';
 import { AdminUsersService } from './users/admin-users.service';
 import { AdminPostsController } from './posts/admin-posts.controller';
@@ -36,6 +37,8 @@ import { AdminEventsController } from './events/admin-events.controller';
 import { AdminEventsService } from './events/admin-events.service';
 import { AdminFamiliesController } from './families/admin-families.controller';
 import { AdminFamiliesService } from './families/admin-families.service';
+import { AdminS3Controller } from './s3/admin-s3.controller';
+import { AdminS3Service } from './s3/admin-s3.service';
 import { UploadModule } from '../uploads/upload.module';
 import { GalleryModule } from '../gallery/gallery.module';
 
@@ -57,6 +60,7 @@ import { GalleryModule } from '../gallery/gallery.module';
       EventImage,
       FamilyMember,
       Family,
+      FamilyTree,
     ]),
     ScheduleModule.forRoot(),
     UploadModule,
@@ -80,7 +84,7 @@ import { GalleryModule } from '../gallery/gallery.module';
       },
     }),
   ],
-  controllers: [AdminController, AdminUsersController, AdminPostsController, AdminGalleriesController, AdminEventsController, AdminFamiliesController],
+  controllers: [AdminController, AdminUsersController, AdminPostsController, AdminGalleriesController, AdminEventsController, AdminFamiliesController, AdminS3Controller],
   providers: [
     AdminService,
     AdminAuditLogService,
@@ -89,6 +93,7 @@ import { GalleryModule } from '../gallery/gallery.module';
     AdminGalleriesService,
     AdminEventsService,
     AdminFamiliesService,
+    AdminS3Service,
     AdminJwtStrategy,
     AdminJwtAuthGuard,
     AdminRolesGuard,

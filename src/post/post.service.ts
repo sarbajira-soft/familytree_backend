@@ -577,9 +577,11 @@ export class PostService {
         whereClause.isVisibleToFamily = true;
       }
 
+      whereClause.isVisibleToFamily = true;
       whereClause.privacy = privacy;
     } else if (privacy === 'public') {
       whereClause.privacy = 'public';
+      whereClause.isVisibleToPublic = true;
     }
 
     if (createdBy) whereClause.createdBy = createdBy;
@@ -627,7 +629,11 @@ export class PostService {
 
     const formatted = await Promise.all(
       posts.map(async (post) => {
-        const postJson: PostWithProfile = post.get({ plain: true }) as PostWithProfile;
+        if (post.privacy === 'public' && !post.isVisibleToPublic) {
+      throw new NotFoundException('Post not found');
+    }
+
+    const postJson: PostWithProfile = post.get({ plain: true }) as PostWithProfile;
 
         // Get full image URL from filename
         const postImageUrl = this.getPostImageUrl(postJson.postImage);
@@ -888,7 +894,7 @@ export class PostService {
       post.familyCode &&
       (post.privacy === 'private' || post.privacy === 'family')
     ) {
-      if (!isOwner && !post.isVisibleToFamily) {
+      if (!post.isVisibleToFamily) {
         throw new NotFoundException('Post not found');
       }
       if (!requestingUserId) {
@@ -908,6 +914,10 @@ export class PostService {
       if (blockedEitherWay) {
         throw new NotFoundException('Post not found');
       }
+    }
+
+    if (post.privacy === 'public' && !post.isVisibleToPublic) {
+      throw new NotFoundException('Post not found');
     }
 
     const postJson: PostWithProfile = post.get({ plain: true }) as PostWithProfile;
@@ -941,7 +951,7 @@ export class PostService {
       post.familyCode &&
       (post.privacy === 'private' || post.privacy === 'family')
     ) {
-      if (!isOwner && !post.isVisibleToFamily) {
+      if (!post.isVisibleToFamily) {
         throw new NotFoundException('Post not found');
       }
       if (!isOwner) {
@@ -1042,7 +1052,7 @@ export class PostService {
 
     const isOwner = Number(requestingUserId) === Number(post.createdBy);
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
-      if (!isOwner && !post.isVisibleToFamily) {
+      if (!post.isVisibleToFamily) {
         throw new NotFoundException('Post not found');
       }
       if (!requestingUserId) {
@@ -1087,7 +1097,7 @@ export class PostService {
 
     const isOwner = Number(requestingUserId) === Number(post.createdBy);
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
-      if (!isOwner && !post.isVisibleToFamily) {
+      if (!post.isVisibleToFamily) {
         throw new NotFoundException('Post not found');
       }
       if (!requestingUserId) {

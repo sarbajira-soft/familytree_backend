@@ -19,6 +19,7 @@ import { repairFamilyTreeIntegrity } from './tree-integrity';
  
 import { CreateFamilyMemberDto } from './dto/create-family-member.dto';
 import { CreateUserAndJoinFamilyDto } from './dto/create-user-and-join-family.dto';
+import { ContentVisibilityService } from '../user/content-visibility.service';
 
 @Injectable()
 export class FamilyMemberService {
@@ -55,6 +56,7 @@ export class FamilyMemberService {
     private readonly uploadService: UploadService,
 
     private readonly blockingService: BlockingService,
+    private readonly contentVisibilityService: ContentVisibilityService,
 
     private readonly sequelize: Sequelize,
   ) {}
@@ -219,43 +221,11 @@ export class FamilyMemberService {
     familyCode: string,
     transaction?: any,
   ) {
-    // Hide ALL galleries created by the removed member (regardless of privacy level)
-    await this.galleryModel.update(
-      { isVisibleToFamily: false } as any,
-      {
-        where: {
-          createdBy: memberId,
-          familyCode,
-          // Removed privacy filter - all content should be hidden
-        } as any,
-        transaction,
-      },
-    );
-
-    // Hide ALL posts created by the removed member (regardless of privacy level)
-    await this.postModel.update(
-      { isVisibleToFamily: false } as any,
-      {
-        where: {
-          createdBy: memberId,
-          familyCode,
-          // Removed privacy filter - all content should be hidden
-        } as any,
-        transaction,
-      },
-    );
-
-    // Hide ALL events created by the removed member
-    await this.eventModel.update(
-      { isVisibleToFamily: false } as any,
-      {
-        where: {
-          createdBy: memberId,
-          familyCode,
-          // Removed status filter - all events should be hidden
-        } as any,
-        transaction,
-      },
+    await this.contentVisibilityService.hideFamilyContentForRemovedMember(
+      memberId,
+      familyCode,
+      'member_removed',
+      transaction,
     );
   }
 
@@ -566,6 +536,7 @@ export class FamilyMemberService {
       );
     }
 
+    await this.contentVisibilityService.reconcileRecoveredFamilyContent(user.id, dto.familyCode, transaction);
     await transaction.commit();
 
     return {
@@ -581,11 +552,17 @@ export class FamilyMemberService {
 
   // User requests to join family
   async requestToJoinFamily(dto: CreateFamilyMemberDto, createdBy: number) {
-    // First validate if familyCode exists in family table
+    const memberId = Number(createdBy || dto.memberId);
+    const familyCode = String(dto.familyCode || '').trim().toUpperCase();
+
+    if (!memberId) {
+      throw new BadRequestException('Member ID is required');
+    }
+
     const family = await this.familyModel.findOne({
       where: {
-        familyCode: dto.familyCode,
-        status: 1, // Only active families
+        familyCode,
+        status: 1,
       },
     });
 
@@ -593,157 +570,252 @@ export class FamilyMemberService {
       throw new BadRequestException('Invalid family code. Family not found or inactive.');
     }
 
-    // Check if user is already in family (to prevent duplicates)
-    const existingMember = await this.familyMemberModel.findOne({
-      where: {
-        memberId: dto.memberId,
-      },
-    });
+    const transaction = await this.sequelize.transaction();
+    let membership: any = null;
+    let replacedPreviousRequest = false;
+    let alreadyPending = false;
 
-    if (existingMember) {
-      // If member already exists, update the familyCode and set approveStatus to pending
-      existingMember.familyCode = dto.familyCode;
-      existingMember.approveStatus = 'pending';
-      if (dto.creatorId) {
-        existingMember.creatorId = dto.creatorId;
+    try {
+      const user = await this.userModel.findByPk(memberId, {
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+      if (!user) {
+        throw new NotFoundException('User not found');
       }
-      await existingMember.save();
 
-      // Notify all family admins about updated join request
-      const adminUserIds = await this.notificationService.getAdminsForFamily(dto.familyCode);
-      if (adminUserIds.length > 0) {
-        const user = await this.userProfileModel.findOne({ where: { userId: dto.memberId } });
-        const requesterName = user ? `${user.firstName || ''} ${user.lastName || ''}`.trim() : 'A user';
-        await this.notificationService.createNotification(
-          {
-            type: 'FAMILY_JOIN_REQUEST_UPDATED',
-            title: 'Family Join Request Updated',
-            message: `User ${requesterName} has updated their request to join your family.`,
-            familyCode: dto.familyCode,
-            referenceId: dto.memberId,
-            data: {
-              requesterId: dto.memberId,
-              requesterName: requesterName,
-              requesterFamilyCode: dto.familyCode,
-              targetUserId: createdBy,
-              targetName: 'you',
-              targetFamilyCode: dto.familyCode
+      const profile = await this.userProfileModel.findOne({
+        where: { userId: memberId },
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      const memberships = await this.familyMemberModel.findAll({
+        where: { memberId } as any,
+        order: [['id', 'DESC']],
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      const approvedMembership = memberships.find(
+        (row: any) => String(row.approveStatus || '') === 'approved',
+      );
+
+      if (approvedMembership) {
+        const approvedFamilyCode = String((approvedMembership as any).familyCode || '').trim().toUpperCase();
+        if (approvedFamilyCode === familyCode) {
+          throw new BadRequestException('User is already a member of this family');
+        }
+
+        throw new BadRequestException('Leave your current family before requesting to join another one');
+      }
+
+      const sameFamilyMembership = memberships.find(
+        (row: any) => String((row as any).familyCode || '').trim().toUpperCase() == familyCode,
+      );
+      const pendingMemberships = memberships.filter(
+        (row: any) => String((row as any).approveStatus || '') === 'pending',
+      );
+      const sameFamilyPending = pendingMemberships.find(
+        (row: any) => String((row as any).familyCode || '').trim().toUpperCase() === familyCode,
+      );
+
+      if (sameFamilyPending) {
+        membership = sameFamilyPending;
+        alreadyPending = true;
+      } else {
+        const otherPendingIds = pendingMemberships
+          .filter((row: any) => String((row as any).familyCode || '').trim().toUpperCase() !== familyCode)
+          .map((row: any) => Number(row.id))
+          .filter((id: number) => Number.isFinite(id));
+
+        if (otherPendingIds.length > 0) {
+          replacedPreviousRequest = true;
+          await this.familyMemberModel.update(
+            {
+              approveStatus: 'cancelled',
+              removedAt: new Date(),
+              removedBy: memberId,
+            } as any,
+            {
+              where: { id: otherPendingIds } as any,
+              transaction,
             },
-            userIds: adminUserIds,
-          },
-          createdBy,
+          );
+        }
+
+        if (sameFamilyMembership) {
+          await (sameFamilyMembership as any).update(
+            {
+              familyCode,
+              creatorId: dto.creatorId || memberId,
+              approveStatus: 'pending',
+              removedAt: null,
+              removedBy: null,
+            } as any,
+            { transaction },
+          );
+          membership = sameFamilyMembership;
+        } else {
+          membership = await this.familyMemberModel.create(
+            {
+              memberId,
+              familyCode,
+              creatorId: dto.creatorId || memberId,
+              approveStatus: 'pending',
+            } as any,
+            { transaction },
+          );
+        }
+      }
+
+      if (profile) {
+        await profile.update(
+          { familyCode } as any,
+          { transaction },
         );
       }
 
-      return {
-        message: 'Family join request updated successfully',
-        data: existingMember,
-      };
+      await transaction.commit();
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
     }
 
-    // Create new family member request with status pending
-    const membership = await this.familyMemberModel.create({
-      memberId: dto.memberId,
-      familyCode: dto.familyCode,
-      creatorId: dto.creatorId || createdBy,
-      approveStatus: dto.approveStatus || 'pending',
-    });
-
-    // Get the target user's family code (the one being requested to associate with)
-    const targetUserProfile = await this.userProfileModel.findOne({ 
-      where: { userId: createdBy },
-      include: [{
-        model: this.userModel,
-        as: 'user',
-        include: [{
-          model: UserProfile,
-          as: 'userProfile'
-        }]
-      }]
-    });
-
-    if (!targetUserProfile?.familyCode) {
-      throw new BadRequestException('Target user must belong to a family');
-    }
-
-    // Get requester's info
-    const requesterProfile = await this.userProfileModel.findOne({ 
-      where: { userId: dto.memberId },
-      include: [{
-        model: this.userModel,
-        as: 'user',
-        include: [{
-          model: UserProfile,
-          as: 'userProfile'
-        }]
-      }]
-    });
-
-    if (!requesterProfile?.familyCode) {
-      throw new BadRequestException('Requester must belong to a family');
-    }
-
-    const requesterName = requesterProfile.user?.userProfile?.firstName 
-      ? `${requesterProfile.user.userProfile.firstName} ${requesterProfile.user.userProfile.lastName || ''}`.trim() 
-      : 'A user';
-
-    // Send notification to the target user (the one who will accept/reject)
-    await this.notificationService.createNotification(
-      {
-        type: 'FAMILY_ASSOCIATION_REQUEST',
-        title: 'Family Association Request',
-        message: `${requesterName} wants to connect their family with yours`,
-        familyCode: targetUserProfile.familyCode, // Target user's family code
-        referenceId: dto.memberId, // Requester's user ID
-        data: {
-          senderId: dto.memberId, // Who sent the request
-          senderName: requesterName,
-          senderFamilyCode: requesterProfile.familyCode,
-          targetUserId: createdBy, // Who needs to accept
-          targetFamilyCode: targetUserProfile.familyCode,
-          requestType: 'family_association'
-        },
-        userIds: [createdBy], // Send to the target user
-      },
-      dto.memberId, // Triggered by the requester
+    await this.notificationService.setFamilyJoinRequestNotificationsStatusForUser(
+      memberId,
+      'expired',
+      { excludeFamilyCode: familyCode },
     );
 
+    const adminUserIds = await this.notificationService.getAdminsForFamily(familyCode);
+    if (!alreadyPending && adminUserIds.length > 0) {
+      const user = await this.userProfileModel.findOne({ where: { userId: memberId } });
+      const requesterName = user
+        ? `${user.firstName || ''} ${user.lastName || ''}`.trim() || 'A user'
+        : 'A user';
+
+      await this.notificationService.createNotification(
+        {
+          type: 'FAMILY_JOIN_REQUEST',
+          title: replacedPreviousRequest ? 'Family Join Request Replaced' : 'Family Join Request',
+          message: replacedPreviousRequest
+            ? `${requesterName} replaced their previous family request and wants to join your family.`
+            : `${requesterName} requested to join your family.`,
+          familyCode,
+          referenceId: memberId,
+          data: {
+            requesterId: memberId,
+            requesterName,
+            requestedFamilyCode: familyCode,
+            state: 'PENDING',
+            replacedPreviousRequest,
+          },
+          userIds: adminUserIds,
+        } as any,
+        memberId,
+      );
+    }
+
     return {
-      message: 'Family join request submitted successfully',
-      data: membership,
+      message: alreadyPending
+        ? 'Family join request is already pending for this family'
+        : replacedPreviousRequest
+          ? 'Previous pending request cancelled and new family join request submitted successfully'
+          : 'Family join request submitted successfully',
+      data: {
+        ...(membership?.toJSON ? membership.toJSON() : membership),
+        requestState: 'PENDING',
+        replacedPreviousRequest,
+        alreadyPending,
+      },
     };
   }
 
   // Approve family member request
   async approveFamilyMember(memberId: number, familyCode: string, actingUserId: number) {
-    const family = await this.familyModel.findOne({ where: { familyCode } });
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    const family = await this.familyModel.findOne({ where: { familyCode: normalizedFamilyCode } });
     if (!family) {
       throw new NotFoundException('Family not found');
     }
 
     const isOwner = Number((family as any).createdBy) === Number(actingUserId);
-    const isAdmin = await this.isAdminOfFamily(actingUserId, familyCode);
+    const isAdmin = await this.isAdminOfFamily(actingUserId, normalizedFamilyCode);
     if (!isOwner && !isAdmin) {
       throw new BadRequestException('Access denied: Only family admins can approve members');
     }
 
-    const membership = await this.familyMemberModel.findOne({
-      where: { memberId, familyCode, approveStatus: 'pending' },
-    });
-    if (!membership) {
-      throw new NotFoundException('Pending family member request not found');
+    const transaction = await this.sequelize.transaction();
+    let membership: any;
+    try {
+      membership = await this.familyMemberModel.findOne({
+        where: { memberId, familyCode: normalizedFamilyCode, approveStatus: 'pending' } as any,
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+      if (!membership) {
+        throw new NotFoundException('Pending family member request not found');
+      }
+
+      await membership.update(
+        {
+          approveStatus: 'approved',
+          removedAt: null,
+          removedBy: null,
+        } as any,
+        { transaction },
+      );
+
+      await this.familyMemberModel.update(
+        {
+          approveStatus: 'cancelled',
+          removedAt: new Date(),
+          removedBy: actingUserId,
+        } as any,
+        {
+          where: {
+            memberId,
+            approveStatus: 'pending',
+            familyCode: { [Op.ne]: normalizedFamilyCode },
+          } as any,
+          transaction,
+        },
+      );
+
+      const profile = await this.userProfileModel.findOne({
+        where: { userId: memberId },
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+      if (profile) {
+        await profile.update({ familyCode: normalizedFamilyCode } as any, { transaction });
+      }
+
+      await this.contentVisibilityService.reconcileRecoveredFamilyContent(memberId, normalizedFamilyCode, transaction);
+      await transaction.commit();
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
     }
 
-    membership.approveStatus = 'approved';
-    await membership.save();
+    await this.notificationService.setFamilyJoinRequestNotificationsStatusForUser(
+      memberId,
+      'accepted',
+      { familyCode: normalizedFamilyCode },
+    );
+    await this.notificationService.setFamilyJoinRequestNotificationsStatusForUser(
+      memberId,
+      'expired',
+      { excludeFamilyCode: normalizedFamilyCode },
+    );
 
-    // Notify the member about approval with a welcome message
     await this.notificationService.createNotification(
       {
         type: 'FAMILY_MEMBER_APPROVED',
         title: 'Welcome to the Family!',
-        message: `Your request to join the family (${familyCode}) has been approved. Welcome!`,
-        familyCode,
+        message: `Your request to join the family (${normalizedFamilyCode}) has been approved. Welcome!`,
+        familyCode: normalizedFamilyCode,
         referenceId: memberId,
         userIds: [memberId],
       },
@@ -758,46 +830,79 @@ export class FamilyMemberService {
 
   // Reject family member request (optional, no notification example here)
   async rejectFamilyMember(memberId: number, rejectorId: number, familyCode: string) {
-    const membership = await this.familyMemberModel.findOne({
-      where: { memberId, familyCode },
-    });
-    if (!membership) {
-      throw new NotFoundException('Family member not found');
-    }
-
-    const family = await this.familyModel.findOne({ where: { familyCode } });
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    const family = await this.familyModel.findOne({ where: { familyCode: normalizedFamilyCode } });
     if (!family) {
       throw new NotFoundException('Family not found');
     }
 
     const isOwner = Number((family as any).createdBy) === Number(rejectorId);
-    const isAdmin = await this.isAdminOfFamily(rejectorId, familyCode);
+    const isAdmin = await this.isAdminOfFamily(rejectorId, normalizedFamilyCode);
     if (!isOwner && !isAdmin) {
       throw new BadRequestException('Access denied: Only family admins can reject members');
     }
 
-    // Soft delete: Set status to rejected instead of hard delete
-    await membership.update(
-      {
-        approveStatus: 'rejected',
-        removedAt: new Date(),
-        removedBy: rejectorId,
-      } as any,
+    const transaction = await this.sequelize.transaction();
+    let membership: any;
+    try {
+      membership = await this.familyMemberModel.findOne({
+        where: { memberId, familyCode: normalizedFamilyCode, approveStatus: 'pending' } as any,
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+      if (!membership) {
+        throw new NotFoundException('Pending family member request not found');
+      }
+
+      await membership.update(
+        {
+          approveStatus: 'rejected',
+          removedAt: new Date(),
+          removedBy: rejectorId,
+        } as any,
+        { transaction },
+      );
+
+      const hasApprovedMembership = await this.familyMemberModel.findOne({
+        where: { memberId, approveStatus: 'approved' } as any,
+        transaction,
+      });
+      const profile = await this.userProfileModel.findOne({
+        where: { userId: memberId },
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+      if (
+        profile &&
+        !hasApprovedMembership &&
+        String(profile.familyCode || '').trim().toUpperCase() === normalizedFamilyCode
+      ) {
+        await profile.update({ familyCode: null } as any, { transaction });
+      }
+
+      await transaction.commit();
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+    await this.notificationService.setFamilyJoinRequestNotificationsStatusForUser(
+      memberId,
+      'rejected',
+      { familyCode: normalizedFamilyCode },
     );
 
-    // Find user profile of rejected member to get their name
     const userProfile = await this.userProfileModel.findOne({ where: { userId: memberId } });
     const userName = userProfile
       ? `${userProfile.firstName || ''} ${userProfile.lastName || ''}`.trim()
       : 'User';
 
-    // Create notification for rejected member
     await this.notificationService.createNotification(
       {
         type: 'FAMILY_JOIN_REJECTED',
         title: 'Family Join Request Rejected',
-        message: `Your request to join the family (${familyCode}) has been rejected.`,
-        familyCode,
+        message: `Your request to join the family (${normalizedFamilyCode}) has been rejected.`,
+        familyCode: normalizedFamilyCode,
         referenceId: memberId,
         userIds: [memberId],
       },
@@ -805,6 +910,89 @@ export class FamilyMemberService {
     );
 
     return { message: `Family member ${userName} rejected successfully` };
+  }
+
+  async cancelPendingJoinRequest(familyCode: string, actingUserId: number) {
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    const transaction = await this.sequelize.transaction();
+    let membership: any;
+    let cancelledFamilyCode = normalizedFamilyCode;
+
+    try {
+      membership = await this.familyMemberModel.findOne({
+        where: {
+          memberId: actingUserId,
+          familyCode: normalizedFamilyCode,
+          approveStatus: 'pending',
+        } as any,
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      if (!membership) {
+        membership = await this.familyMemberModel.findOne({
+          where: {
+            memberId: actingUserId,
+            approveStatus: 'pending',
+          } as any,
+          transaction,
+          lock: (transaction as any).LOCK.UPDATE,
+          order: [['updatedAt', 'DESC'], ['id', 'DESC']],
+        });
+      }
+
+      if (!membership) {
+        throw new NotFoundException('Pending family join request not found');
+      }
+
+      cancelledFamilyCode = String(membership.familyCode || '').trim().toUpperCase();
+
+      await membership.update(
+        {
+          approveStatus: 'cancelled',
+          removedAt: new Date(),
+          removedBy: actingUserId,
+        } as any,
+        { transaction },
+      );
+
+      const hasApprovedMembership = await this.familyMemberModel.findOne({
+        where: { memberId: actingUserId, approveStatus: 'approved' } as any,
+        transaction,
+      });
+      const profile = await this.userProfileModel.findOne({
+        where: { userId: actingUserId },
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+      if (
+        profile &&
+        !hasApprovedMembership &&
+        String(profile.familyCode || '').trim().toUpperCase() === cancelledFamilyCode
+      ) {
+        await profile.update({ familyCode: null } as any, { transaction });
+      }
+
+      await transaction.commit();
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+    await this.notificationService.setFamilyJoinRequestNotificationsStatusForUser(
+      actingUserId,
+      'expired',
+      { familyCode: cancelledFamilyCode },
+    );
+
+    return {
+      message: 'Pending family join request cancelled successfully',
+      data: {
+        ...(membership?.toJSON ? membership.toJSON() : membership),
+        requestState: 'CANCELLED',
+        familyCode: cancelledFamilyCode,
+      },
+    };
   }
 
   private async removeMemberFromFamilyCore(params: {
@@ -956,63 +1144,58 @@ export class FamilyMemberService {
         };
       }
 
-      if (membership) {
-        console.log('[DEBUG] Step 4: Updating membership status...');
-        console.log('[DEBUG] - membership.id:', membership.id);
-        console.log('[DEBUG] - actingUserId:', actingUserId);
-        
-        // Validate transaction before update
-        try {
-          await this.sequelize.query('SELECT 1', { transaction });
-          console.log('[DEBUG] Transaction valid before Step 4 update');
-        } catch (txErr) {
-          console.error('[DEBUG] Transaction FAILED before Step 4 update:', txErr.message);
-          throw txErr;
-        }
-        
-        try {
-          // Try using update with explicit where instead of instance.update
-          const [updateCount] = await this.familyMemberModel.update(
-            { 
-              approveStatus: 'removed',
-              removedAt: new Date(),
-              removedBy: actingUserId,
-            } as any,
-            { 
-              where: { id: membership.id },
-              transaction 
-            },
-          );
-          console.log('[DEBUG] Membership updated successfully, rows affected:', updateCount);
-        } catch (updateError) {
-          console.error('[DEBUG] Membership update failed:', updateError.message);
-          console.error('[DEBUG] Full error:', updateError);
-          throw updateError;
-        }
-      } else {
-        console.log('[DEBUG] Step 4: Skipping membership update - no membership found');
+      const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+      const memberPrimaryFamilyCode = String((await this.userProfileModel.findOne({ where: { userId: memberId }, transaction }))?.familyCode || '').trim().toUpperCase();
+      const isPrimaryMemberOfFamily = Boolean(memberPrimaryFamilyCode && memberPrimaryFamilyCode === normalizedFamilyCode);
+      const hasTreeEntries = treeEntries.length > 0;
+      const isDummyUser = memberUser ? !memberUser.isAppUser : false;
+
+      if (!params.skipAdminGuard && !isSelfRemoval && hasTreeEntries && isPrimaryMemberOfFamily && memberUser?.isAppUser) {
+        await this.familyTreeModel.destroy({
+          where: { familyCode, userId: memberId } as any,
+          transaction,
+        });
+
+        await repairFamilyTreeIntegrity({
+          familyCode,
+          transaction,
+          lock: true,
+          fixExternalGenerations: true,
+        });
+
+        await transaction.commit();
+
+        this.notificationService.emitFamilyEvent(familyCode, {
+          type: 'MEMBER_MOVED_TO_NOT_IN_TREE',
+          memberId,
+          removedBy: actingUserId,
+        });
+
+        return {
+          message: 'Member moved to Members Not in Tree successfully',
+          alreadyProcessed: false,
+          dummyUserId: null,
+          action: 'moved_to_members_not_in_tree',
+        };
       }
 
-      console.log('[DEBUG] Step 5: Running cleanupRemovedMemberProfile...');
-      try {
-        await this.cleanupRemovedMemberProfile(memberId, familyCode, transaction);
-        console.log('[DEBUG] cleanupRemovedMemberProfile completed');
-      } catch (cleanupError) {
-        console.error('[DEBUG] cleanupRemovedMemberProfile failed:', cleanupError.message);
-        throw cleanupError;
+      if (membership) {
+        await this.familyMemberModel.update(
+          {
+            approveStatus: 'removed',
+            removedAt: new Date(),
+            removedBy: actingUserId,
+          } as any,
+          { where: { id: membership.id }, transaction },
+        );
       }
-      
-      console.log('[DEBUG] Step 6: Running hideFamilyContentForRemovedMember...');
-      try {
-        await this.hideFamilyContentForRemovedMember(memberId, familyCode, transaction);
-        console.log('[DEBUG] hideFamilyContentForRemovedMember completed');
-      } catch (hideError) {
-        console.error('[DEBUG] hideFamilyContentForRemovedMember failed:', hideError.message);
-        throw hideError;
-      }
+
+      await this.cleanupRemovedMemberProfile(memberId, familyCode, transaction);
+      await this.hideFamilyContentForRemovedMember(memberId, familyCode, transaction);
 
       let dummyUserId: number = null;
-      if (treeEntries.length > 0) {
+      let action = 'removed_from_family';
+      if (hasTreeEntries) {
         if (params.skipAdminGuard) {
           const dummyUser = await this.createDummyUserFromMember({
             memberId,
@@ -1021,6 +1204,7 @@ export class FamilyMemberService {
             transaction,
           });
           dummyUserId = dummyUser.id;
+          action = 'account_deleted_dummy_created';
 
           await this.familyTreeModel.update(
             { userId: dummyUser.id } as any,
@@ -1032,9 +1216,16 @@ export class FamilyMemberService {
               transaction,
             },
           );
+        } else if (isDummyUser) {
+          await this.familyTreeModel.destroy({
+            where: { familyCode, userId: memberId } as any,
+            transaction,
+          });
+          action = 'deleted_non_app_user';
         } else {
           await this.convertExistingUserToDummy(memberUser, transaction);
           dummyUserId = Number(memberId);
+          action = 'converted_to_dummy';
         }
       }
 
@@ -1047,13 +1238,13 @@ export class FamilyMemberService {
 
       await transaction.commit();
 
-      // NEW: Emit WebSocket event for real-time synchronization
       this.notificationService.emitFamilyEvent(familyCode, {
         type: 'MEMBER_REMOVED',
         memberId,
         dummyUserId,
         isSelfRemoval,
         removedBy: actingUserId,
+        action,
       });
 
       if (!params.skipAdminGuard && !isSelfRemoval) {
@@ -1061,9 +1252,14 @@ export class FamilyMemberService {
       }
 
       return {
-        message: 'Family member removed successfully',
+        message: action === 'converted_to_dummy'
+          ? 'Member removed from family and converted to a Non-App user'
+          : action === 'deleted_non_app_user'
+            ? 'Non-App user removed successfully'
+            : 'Family member removed successfully',
         alreadyProcessed: false,
         dummyUserId,
+        action,
       };
     } catch (error) {
       await transaction.rollback();

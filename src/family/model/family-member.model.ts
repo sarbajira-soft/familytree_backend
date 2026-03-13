@@ -24,10 +24,10 @@ export class FamilyMember extends Model<FamilyMember> {
 
   @Default('pending') // default status
   @Column({
-    type: DataType.ENUM('pending', 'approved', 'rejected', 'removed'),
+    type: DataType.ENUM('pending', 'approved', 'rejected', 'removed', 'cancelled'),
     allowNull: false,
   })
-  approveStatus: 'pending' | 'approved' | 'rejected' | 'removed';
+  approveStatus: 'pending' | 'approved' | 'rejected' | 'removed' | 'cancelled';
 
   @Column({ type: DataType.DATE, allowNull: true })
   removedAt: Date;

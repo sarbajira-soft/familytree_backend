@@ -61,6 +61,16 @@ export class Gallery extends Model<Gallery> {
   @Column(DataType.BOOLEAN)
   isVisibleToFamily: boolean;
 
+  @Default(true)
+  @Column(DataType.BOOLEAN)
+  isVisibleToPublic: boolean;
+
+  @Column({ type: DataType.STRING, allowNull: true })
+  hiddenReason: string;
+
+  @Column({ type: DataType.STRING, allowNull: true })
+  recoveryFamilyCode: string;
+
   @Default(DataType.NOW)
   @Column(DataType.DATE)
   createdAt: Date;

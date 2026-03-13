@@ -81,6 +81,12 @@ export class Event extends Model<Event> {
   })
   isVisibleToFamily: boolean;
 
+  @Column({ type: DataType.STRING, allowNull: true })
+  hiddenReason: string;
+
+  @Column({ type: DataType.STRING, allowNull: true })
+  recoveryFamilyCode: string;
+
   @Column({
     type: DataType.DATE,
     allowNull: true,

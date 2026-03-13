@@ -29,9 +29,9 @@ export class CreateFamilyMemberDto {
   @ApiPropertyOptional({
     example: 'pending',
     description: 'Approval status of the membership request (optional, defaults to pending)',
-    enum: ['pending', 'approved', 'rejected'],
+    enum: ['pending', 'approved', 'rejected', 'cancelled'],
   })
-  @IsIn(['pending', 'approved', 'rejected'])
+  @IsIn(['pending', 'approved', 'rejected', 'cancelled'])
   @IsOptional()
-  approveStatus?: 'pending' | 'approved' | 'rejected';
+  approveStatus?: 'pending' | 'approved' | 'rejected' | 'cancelled';
 }

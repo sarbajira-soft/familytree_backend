@@ -28,6 +28,7 @@ import { BlockingModule } from '../blocking/blocking.module';
 import { AccountRecoveryToken } from './model/account-recovery-token.model';
 import { UserAccountCleanupService } from './user-account-cleanup.service';
 import { FamilyModule } from '../family/family.module';
+import { ContentVisibilityService } from './content-visibility.service';
 
 @Module({
   imports: [
@@ -55,7 +56,7 @@ import { FamilyModule } from '../family/family.module';
     UploadModule,
   ],
   controllers: [UserController, UserLookupController, UserConsentController],
-  providers: [UserService, MailService, MedusaCustomerSyncService, UserAccountCleanupService],
-  exports: [UserService],
+  providers: [UserService, MailService, MedusaCustomerSyncService, UserAccountCleanupService, ContentVisibilityService],
+  exports: [UserService, ContentVisibilityService],
 })
 export class UserModule {}

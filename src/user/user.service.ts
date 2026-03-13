@@ -30,6 +30,7 @@ import { Post } from '../post/model/post.model';
 import { Event } from '../event/model/event.model';
 import { AccountRecoveryToken } from './model/account-recovery-token.model';
 import { FamilyMemberService } from '../family/family-member.service';
+import { ContentVisibilityService } from './content-visibility.service';
 
 @Injectable()
 export class UserService {
@@ -84,6 +85,7 @@ export class UserService {
     private readonly medusaCustomerSyncService: MedusaCustomerSyncService,
     @Inject(forwardRef(() => FamilyMemberService))
     private readonly familyMemberService: FamilyMemberService,
+    private readonly contentVisibilityService: ContentVisibilityService,
 
   ) {}
 
@@ -183,74 +185,11 @@ export class UserService {
   }
 
   private async hideFamilyContentForDeletedUser(userId: number) {
-    // Hide ALL galleries created by the deleted user (regardless of privacy level)
-    await this.galleryModel.update(
-      { isVisibleToFamily: false } as any,
-      {
-        where: {
-          createdBy: userId,
-          // Removed privacy filter - all content should be hidden
-        } as any,
-      },
-    );
-
-    // Hide ALL posts created by the deleted user (regardless of privacy level)
-    await this.postModel.update(
-      { isVisibleToFamily: false } as any,
-      {
-        where: {
-          createdBy: userId,
-          // Removed privacy filter - all content should be hidden
-        } as any,
-      },
-    );
-
-    // Hide ALL events created by the deleted user
-    await this.eventModel.update(
-      { isVisibleToFamily: false } as any,
-      {
-        where: {
-          createdBy: userId,
-          // Removed status filter - all events should be hidden
-        } as any,
-      },
-    );
+    await this.contentVisibilityService.hideContentForDeletedAccount(userId);
   }
 
-  /**
-   * Restore content visibility for a recovered account
-   * This reverses the hideFamilyContentForDeletedUser operation
-   */
   private async restoreFamilyContentForRecoveredUser(userId: number) {
-    // Restore visibility for ALL galleries
-    await this.galleryModel.update(
-      { isVisibleToFamily: true } as any,
-      {
-        where: {
-          createdBy: userId,
-        } as any,
-      },
-    );
-
-    // Restore visibility for ALL posts
-    await this.postModel.update(
-      { isVisibleToFamily: true } as any,
-      {
-        where: {
-          createdBy: userId,
-        } as any,
-      },
-    );
-
-    // Restore visibility for ALL events
-    await this.eventModel.update(
-      { isVisibleToFamily: true } as any,
-      {
-        where: {
-          createdBy: userId,
-        } as any,
-      },
-    );
+    await this.contentVisibilityService.restorePublicContentForRecoveredAccount(userId);
   }
 
   async purgeExpiredDeletedUsers(limit = 25) {
@@ -1456,57 +1395,14 @@ export class UserService {
           // Store the requested familyCode so the app can show "pending approval" UX.
           targetProfile.familyCode = requestedFamilyCode;
 
-          const existingMembership = await this.familyMemberModel.findOne({
-            where: { memberId: userId, familyCode: requestedFamilyCode } as any,
-            order: [['id', 'DESC']],
-          });
-
-          if (!existingMembership) {
-            await this.familyMemberModel.create({
+          await this.familyMemberService.requestToJoinFamily(
+            {
               memberId: userId,
               familyCode: requestedFamilyCode,
-              creatorId: null,
               approveStatus: 'pending',
-            } as any);
-          } else if ((existingMembership as any).approveStatus !== 'approved') {
-            await existingMembership.update({ approveStatus: 'pending' } as any);
-          }
-
-          // Notify target family admins (once per requester/family while pending)
-          const adminUserIds = await this.notificationService.getAdminsForFamily(
-            requestedFamilyCode,
+            } as any,
+            userId,
           );
-
-          if (adminUserIds?.length > 0) {
-            const alreadyPending =
-              await this.notificationService.hasPendingFamilyJoinRequest(
-                requestedFamilyCode,
-                userId,
-              );
-
-            if (!alreadyPending) {
-              const requesterName = `${targetProfile.firstName || ''} ${
-                targetProfile.lastName || ''
-              }`.trim() || 'A user';
-
-              await this.notificationService.createNotification(
-                {
-                  type: 'FAMILY_JOIN_REQUEST',
-                  title: 'Family Join Request',
-                  message: `${requesterName} requested to join your family.`,
-                  familyCode: requestedFamilyCode,
-                  referenceId: userId,
-                  data: {
-                    requesterId: userId,
-                    requesterName,
-                    requestedFamilyCode,
-                  },
-                  userIds: adminUserIds,
-                } as any,
-                userId,
-              );
-            }
-          }
         }
       }
 

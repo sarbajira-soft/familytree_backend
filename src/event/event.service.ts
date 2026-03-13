@@ -299,7 +299,8 @@ export class EventService {
     const events = await this.eventModel.findAll({
       where: { 
         createdBy: userId,
-        status: 1 
+        status: 1,
+        isVisibleToFamily: true,
       },
       include: [EventImage]
     });
@@ -329,7 +330,7 @@ export class EventService {
     if (!event) throw new NotFoundException('Event not found');
 
     const isOwner = Number(event.createdBy) === Number(requestingUserId);
-    if (requestingUserId && !isOwner && !event.isVisibleToFamily) {
+    if (!event.isVisibleToFamily) {
       throw new NotFoundException('Event not found');
     }
 

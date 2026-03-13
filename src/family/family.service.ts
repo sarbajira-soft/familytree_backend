@@ -2417,64 +2417,32 @@ export class FamilyService {
         .filter((id) => Number.isFinite(id));
 
       if (normalizedUserIds.length > 0) {
-        try {
-          const memberships = await this.sequelize.query<
-            { userId: number; familyCode: string }[]
-          >(
-            `
-            SELECT
-              "memberId" as "userId",
-              "familyCode" as "familyCode"
-            FROM ft_family_members
-            WHERE "memberId" IN (:userIds)
-              AND "approveStatus" IN ('approved','associated')
-            ORDER BY
-              CASE WHEN "membershipType" = 'primary' THEN 0 ELSE 1 END,
-              id ASC
-          `,
-            {
-              replacements: { userIds: normalizedUserIds },
-              type: QueryTypes.SELECT,
-            },
-          );
+        const memberships = await this.sequelize.query<
+          { userId: number; familyCode: string }[]
+        >(
+          `
+          SELECT
+            "memberId" as "userId",
+            "familyCode" as "familyCode"
+          FROM ft_family_members
+          WHERE "memberId" IN (:userIds)
+            AND "approveStatus" IN ('approved','associated')
+          ORDER BY id ASC
+        `,
+          {
+            replacements: { userIds: normalizedUserIds },
+            type: QueryTypes.SELECT,
+          },
+        );
 
-          memberships.forEach((row: any) => {
-            const uid = Number(row?.userId);
-            const fc = row?.familyCode ? String(row.familyCode) : '';
-            if (!Number.isFinite(uid) || !fc) return;
-            if (!inferredPrimaryFamilyCodeByUserId.has(uid)) {
-              inferredPrimaryFamilyCodeByUserId.set(uid, fc);
-            }
-          });
-        } catch (error_) {
-          console.error('Error inferring primary family codes (preferred order); falling back:', error_);
-          const memberships = await this.sequelize.query<
-            { userId: number; familyCode: string }[]
-          >(
-            `
-            SELECT
-              "memberId" as "userId",
-              "familyCode" as "familyCode"
-            FROM ft_family_members
-            WHERE "memberId" IN (:userIds)
-              AND "approveStatus" IN ('approved','associated')
-            ORDER BY id ASC
-          `,
-            {
-              replacements: { userIds: normalizedUserIds },
-              type: QueryTypes.SELECT,
-            },
-          );
-
-          memberships.forEach((row: any) => {
-            const uid = Number(row?.userId);
-            const fc = row?.familyCode ? String(row.familyCode) : '';
-            if (!Number.isFinite(uid) || !fc) return;
-            if (!inferredPrimaryFamilyCodeByUserId.has(uid)) {
-              inferredPrimaryFamilyCodeByUserId.set(uid, fc);
-            }
-          });
-        }
+        memberships.forEach((row: any) => {
+          const uid = Number(row?.userId);
+          const fc = row?.familyCode ? String(row.familyCode) : '';
+          if (!Number.isFinite(uid) || !fc) return;
+          if (!inferredPrimaryFamilyCodeByUserId.has(uid)) {
+            inferredPrimaryFamilyCodeByUserId.set(uid, fc);
+          }
+        });
 
         const remainingUserIds = normalizedUserIds.filter(
           (uid) => !inferredPrimaryFamilyCodeByUserId.has(uid),

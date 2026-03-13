@@ -1808,6 +1808,33 @@ export class NotificationService {
     return Boolean(notification);
   }
 
+  async setFamilyJoinRequestNotificationsStatusForUser(
+    requesterUserId: number,
+    nextStatus: 'accepted' | 'rejected' | 'expired',
+    options?: { familyCode?: string; excludeFamilyCode?: string },
+  ) {
+    const whereClause: any = {
+      type: 'FAMILY_JOIN_REQUEST',
+      triggeredBy: Number(requesterUserId),
+      status: 'pending',
+    };
+
+    if (options?.familyCode) {
+      whereClause.familyCode = String(options.familyCode).trim().toUpperCase();
+    }
+
+    if (options?.excludeFamilyCode) {
+      whereClause.familyCode = {
+        [Op.ne]: String(options.excludeFamilyCode).trim().toUpperCase(),
+      };
+    }
+
+    await this.notificationModel.update(
+      { status: nextStatus, updatedAt: new Date() } as any,
+      { where: whereClause },
+    );
+  }
+
   /**
    * Emit a family-level event via WebSocket for real-time UI synchronization
    * Used for: member removal, dummy user creation/replacement, account deletion/recovery

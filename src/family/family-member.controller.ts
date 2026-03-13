@@ -79,6 +79,16 @@ export class FamilyMemberController {
     return this.familyMemberService.requestToJoinFamily(body, loggedInUserId);
   }
 
+  @Delete('request-join/:familyCode')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: "Cancel the logged-in user's pending family join request" })
+  @ApiResponse({ status: 200, description: 'Pending family join request cancelled successfully' })
+  async cancelRequestToJoinFamily(@Param('familyCode') familyCode: string, @Req() req) {
+    const loggedInUserId = req.user?.userId;
+    return this.familyMemberService.cancelPendingJoinRequest(familyCode, loggedInUserId);
+  }
+
   // Approve member (admin action)
   @Put('approve/:memberId/:familyCode')
   @UseGuards(JwtAuthGuard)

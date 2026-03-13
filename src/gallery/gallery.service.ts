@@ -448,12 +448,14 @@ export class GalleryService {
           whereClause.isVisibleToFamily = true;
         }
 
+        whereClause.isVisibleToFamily = true;
         whereClause.privacy = privacy;
         if (familyCode) {
           whereClause.familyCode = familyCode;
         }
       } else if (privacy === 'public') {
         whereClause.privacy = 'public';
+        whereClause.isVisibleToPublic = true;
       } else {
         throw new BadRequestException('Invalid privacy value');
       }
@@ -968,7 +970,7 @@ export class GalleryService {
     // Enforce access to private galleries
     const isOwner = Number(requestingUserId) === Number(gallery.createdBy);
     if (gallery.familyCode && gallery.privacy === 'private') {
-      if (!isOwner && !gallery.isVisibleToFamily) {
+      if (!gallery.isVisibleToFamily) {
         throw new NotFoundException('Gallery not found');
       }
       if (!requestingUserId) {
@@ -977,6 +979,10 @@ export class GalleryService {
       if (!isOwner) {
         await this.assertUserCanAccessFamilyOrLinked(requestingUserId, gallery.familyCode);
       }
+    }
+
+    if (gallery.privacy === 'public' && !gallery.isVisibleToPublic) {
+      throw new NotFoundException('Gallery not found');
     }
 
     // Hard rule: blocked users cannot view each other's galleries/comments (even public).
@@ -1065,7 +1071,7 @@ export class GalleryService {
 
     const isOwner = Number(requestingUserId) === Number(gallery.createdBy);
     if (gallery.familyCode && gallery.privacy === 'private') {
-      if (!isOwner && !gallery.isVisibleToFamily) {
+      if (!gallery.isVisibleToFamily) {
         throw new NotFoundException('Gallery not found');
       }
       if (!requestingUserId) {
@@ -1126,7 +1132,7 @@ export class GalleryService {
 
     const isOwner = Number(userId) === Number(gallery.createdBy);
     if (gallery.familyCode && gallery.privacy === 'private') {
-      if (!isOwner && !gallery.isVisibleToFamily) {
+      if (!gallery.isVisibleToFamily) {
         throw new NotFoundException('Gallery not found');
       }
       if (!userId) {

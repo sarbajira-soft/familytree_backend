@@ -190,7 +190,7 @@ export class AdminGalleriesService {
       this.galleryModel.count({ where: { status: 1, privacy: 'public' } as any }),
       this.galleryModel.count({ where: { status: 1, privacy: 'private' } as any }),
       this.galleryLikeModel.count(),
-      this.galleryCommentModel.count(),
+      this.galleryCommentModel.count({ where: { deletedAt: null } as any }),
       this.galleryModel.count({ where: { status: 1, createdAt: { [Op.gte]: last7Days } } as any, distinct: true, col: 'createdBy' as any } as any),
     ]);
 
@@ -555,7 +555,7 @@ export class AdminGalleriesService {
     const offset = (page - 1) * limit;
 
     const { rows: comments, count: total } = await this.galleryCommentModel.findAndCountAll({
-      where: { galleryId: id } as any,
+      where: { galleryId: id, deletedAt: null } as any,
       order: [['createdAt', 'DESC']] as any,
       attributes: ['id', 'galleryId', 'userId', 'comments', 'parentCommentId', 'createdAt', 'updatedAt'] as any,
       limit,
@@ -616,5 +616,186 @@ export class AdminGalleriesService {
         totalPages: Math.ceil(total / limit) || 1,
       },
     };
+  }
+
+  async softDeleteGalleryComment(actor: any, commentId: number) {
+    this.assertActor(actor);
+
+    const id = this.normalizeId(commentId, 'Comment');
+
+    const comment = await this.galleryCommentModel.findOne({ where: { id } as any });
+    if (!comment) {
+      throw new NotFoundException('Comment not found');
+    }
+
+    if ((comment as any).deletedAt) {
+      return { message: 'Comment already deleted' };
+    }
+
+    const now = new Date();
+
+    await this.galleryCommentModel.update(
+      { deletedAt: now, deletedByAdminId: Number(actor?.adminId), deletedByUserId: null },
+      { where: { parentCommentId: id, deletedAt: null } as any },
+    );
+
+    await (comment as any).update({
+      deletedAt: now,
+      deletedByAdminId: Number(actor?.adminId),
+      deletedByUserId: null,
+    } as any);
+
+    await this.adminAuditLogService.log(Number(actor?.adminId), 'gallery_comment_soft_delete', {
+      targetType: 'gallery_comment',
+      targetId: id,
+      metadata: {
+        commentId: id,
+        galleryId: Number((comment as any)?.galleryId),
+        userId: Number((comment as any)?.userId),
+      },
+    });
+
+    return { message: 'Comment deleted successfully' };
+  }
+
+  async listDeletedGalleryComments(
+    actor: any,
+    params?: {
+      page?: number;
+      limit?: number;
+    },
+  ) {
+    this.assertActor(actor);
+
+    const page = Math.max(1, Number(params?.page || 1));
+    const limit = Math.min(100, Math.max(1, Number(params?.limit || 25)));
+    const offset = (page - 1) * limit;
+
+    const { rows: comments, count: total } = await this.galleryCommentModel.findAndCountAll({
+      where: { deletedAt: { [Op.ne]: null } } as any,
+      order: [['deletedAt', 'DESC']] as any,
+      attributes: ['id', 'galleryId', 'userId', 'comments', 'parentCommentId', 'deletedAt', 'deletedByAdminId', 'deletedByUserId', 'createdAt', 'updatedAt'] as any,
+      limit,
+      offset,
+      distinct: true,
+    });
+
+    const userIds = Array.from(
+      new Set(
+        comments
+          .map((c: any) => Number(typeof c?.get === 'function' ? c.get('userId') : c?.userId))
+          .filter((v) => Number.isFinite(v) && !Number.isNaN(v)),
+      ),
+    );
+
+    const profiles = await this.userProfileModel.findAll({
+      where: { userId: userIds } as any,
+      attributes: ['userId', 'firstName', 'lastName', 'profile'] as any,
+    });
+
+    const byUserId = new Map<number, any>();
+    profiles.forEach((p: any) => {
+      const json = typeof p?.toJSON === 'function' ? p.toJSON() : p;
+      byUserId.set(Number(json.userId), json);
+    });
+
+    const data = comments.map((c: any) => {
+      const json = typeof c?.toJSON === 'function' ? c.toJSON() : c;
+      const uid = Number(json.userId);
+      const p = byUserId.get(uid);
+      return {
+        id: json.id,
+        galleryId: json.galleryId,
+        userId: uid,
+        content: json.comments,
+        parentCommentId: json.parentCommentId,
+        deletedAt: json.deletedAt,
+        deletedByAdminId: json.deletedByAdminId,
+        deletedByUserId: json.deletedByUserId,
+        createdAt: json.createdAt,
+        updatedAt: json.updatedAt,
+        user: p
+          ? {
+              userId: uid,
+              firstName: p.firstName,
+              lastName: p.lastName,
+              profile: p.profile ? this.uploadService.getFileUrl(String(p.profile), 'profile') : null,
+            }
+          : null,
+      };
+    });
+
+    return {
+      message: 'Deleted gallery comments fetched successfully',
+      total,
+      comments: data,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit) || 1,
+      },
+    };
+  }
+
+  async restoreGalleryComment(actor: any, commentId: number) {
+    this.assertActor(actor);
+    const id = this.normalizeId(commentId, 'Comment');
+
+    const comment = await this.galleryCommentModel.findOne({ where: { id } as any });
+    if (!comment) throw new NotFoundException('Comment not found');
+
+    if (!(comment as any).deletedAt) {
+      return { message: 'Comment is not deleted' };
+    }
+
+    await this.galleryCommentModel.update(
+      { deletedAt: null, deletedByAdminId: null, deletedByUserId: null },
+      { where: { parentCommentId: id } as any },
+    );
+
+    await (comment as any).update({ deletedAt: null, deletedByAdminId: null, deletedByUserId: null } as any);
+
+    await this.adminAuditLogService.log(Number(actor?.adminId), 'gallery_comment_restore', {
+      targetType: 'gallery_comment',
+      targetId: id,
+      metadata: {
+        commentId: id,
+        galleryId: Number((comment as any)?.galleryId),
+        userId: Number((comment as any)?.userId),
+      },
+    });
+
+    return { message: 'Comment restored successfully' };
+  }
+
+  async purgeGalleryComment(actor: any, commentId: number) {
+    this.assertActor(actor);
+    const id = this.normalizeId(commentId, 'Comment');
+
+    const comment = await this.galleryCommentModel.findOne({ where: { id } as any });
+    if (!comment) throw new NotFoundException('Comment not found');
+
+    if (!(comment as any).deletedAt) {
+      throw new ForbiddenException('Comment must be soft deleted before it can be purged');
+    }
+
+    await this.galleryCommentModel.destroy({
+      where: {
+        [Op.or]: [{ id }, { parentCommentId: id }],
+      } as any,
+    });
+
+    await this.adminAuditLogService.log(Number(actor?.adminId), 'gallery_comment_purge', {
+      targetType: 'gallery_comment',
+      targetId: id,
+      metadata: {
+        commentId: id,
+        galleryId: Number((comment as any)?.galleryId),
+        userId: Number((comment as any)?.userId),
+      },
+    });
+
+    return { message: 'Comment deleted permanently' };
   }
 }

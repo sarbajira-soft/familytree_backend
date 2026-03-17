@@ -999,6 +999,7 @@ export class GalleryService {
     const { rows, count } = await this.galleryCommentModel.findAndCountAll({
       where: {
         galleryId,
+        deletedAt: null,
         ...(blockedUserIds.length > 0
           ? { userId: { [Op.notIn]: blockedUserIds } }
           : {}),
@@ -1093,6 +1094,7 @@ export class GalleryService {
     const count = await this.galleryCommentModel.count({
       where: {
         galleryId,
+        deletedAt: null,
         ...(blockedUserIds.length > 0
           ? { userId: { [Op.notIn]: blockedUserIds } }
           : {}),
@@ -1165,8 +1167,8 @@ export class GalleryService {
 
     // Get like and comment counts
     const [likeCount, commentCount] = await Promise.all([
-      this.galleryLikeModel.count({ where: { galleryId } }),
-      this.galleryCommentModel.count({ where: { galleryId } }),
+      this.galleryLikeModel.count({ where: { galleryId: galleryId } as any }),
+      this.galleryCommentModel.count({ where: { galleryId: galleryId, deletedAt: null } as any }),
     ]);
 
     // Check if user liked this gallery

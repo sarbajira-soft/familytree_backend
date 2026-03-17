@@ -26,6 +26,10 @@ export class BaseCommentService {
       throw new NotFoundException('Comment not found');
     }
 
+    if (comment['deletedAt']) {
+      throw new NotFoundException('Comment not found');
+    }
+
     // Check if user is the owner of the comment
     if (comment['userId'] !== userId) {
       throw new ForbiddenException('You can only edit your own comments');
@@ -58,18 +62,28 @@ export class BaseCommentService {
       throw new NotFoundException('Comment not found');
     }
 
+    if (comment['deletedAt']) {
+      return {
+        success: true,
+        message: 'Comment already deleted',
+      };
+    }
+
     // Check if user is the owner of the comment
     if (comment['userId'] !== userId) {
       throw new ForbiddenException('You can only delete your own comments');
     }
 
-    // Delete all replies first (cascade delete)
-    await commentModel.destroy({
-      where: { parentCommentId: commentId },
-    });
+    const now = new Date();
 
-    // Delete the comment
-    await comment.destroy();
+    // Soft delete all replies first
+    await commentModel.update(
+      { deletedAt: now, deletedByUserId: userId, deletedByAdminId: null },
+      { where: { parentCommentId: commentId, deletedAt: null } },
+    );
+
+    // Soft delete the comment
+    await comment.update({ deletedAt: now, deletedByUserId: userId, deletedByAdminId: null });
 
     return {
       success: true,
@@ -98,6 +112,10 @@ export class BaseCommentService {
     const parentComment = await commentModel.findByPk(parentCommentId);
 
     if (!parentComment) {
+      throw new NotFoundException('Parent comment not found');
+    }
+
+    if (parentComment['deletedAt']) {
       throw new NotFoundException('Parent comment not found');
     }
 

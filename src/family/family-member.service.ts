@@ -1456,6 +1456,10 @@ export class FamilyMemberService {
     const members = await this.familyMemberModel.findAll({
       where: {
         familyCode,
+        // Exclude removed members
+        approveStatus: {
+          [Op.ne]: 'removed'
+        },
         // Include both primary family members and approved additional members
         [Op.or]: [
           { approveStatus: 'approved' },
@@ -1559,13 +1563,16 @@ export class FamilyMemberService {
         SELECT "userId"
         FROM public.ft_user_profile
         WHERE "associatedFamilyCodes"::jsonb @> :needle::jsonb
+          AND COALESCE(UPPER(TRIM("familyCode")), '') <> :familyCode
       `,
       {
-        replacements: { needle: JSON.stringify([normalizedFamilyCode]) },
+        replacements: {
+          needle: JSON.stringify([normalizedFamilyCode]),
+          familyCode: normalizedFamilyCode,
+        },
         type: QueryTypes.SELECT,
       },
     );
-
     const associatedUserIds = Array.from(
       new Set(
         (associatedRows || [])
@@ -1751,6 +1758,9 @@ export class FamilyMemberService {
     const members = await this.familyMemberModel.findAll({
       where: {
         familyCode,
+        approveStatus: {
+          [Op.ne]: 'removed'
+        },
         [Op.or]: [
           { approveStatus: 'approved' },
           { '$user.userProfile.familyCode$': familyCode }
@@ -1803,6 +1813,9 @@ export class FamilyMemberService {
     const members = await this.familyMemberModel.findAll({
       where: { 
         familyCode,
+        approveStatus: {
+          [Op.ne]: 'removed'
+        },
         [Op.or]: [
           { approveStatus: 'approved' },
           { '$user.userProfile.familyCode$': familyCode }

@@ -39,8 +39,11 @@ import { AdminFamiliesController } from './families/admin-families.controller';
 import { AdminFamiliesService } from './families/admin-families.service';
 import { AdminS3Controller } from './s3/admin-s3.controller';
 import { AdminS3Service } from './s3/admin-s3.service';
+import { AdminRetailController } from './retail/admin-retail.controller';
+import { AdminRetailService } from './retail/admin-retail.service';
 import { UploadModule } from '../uploads/upload.module';
 import { GalleryModule } from '../gallery/gallery.module';
+import { MedusaCustomerSyncService } from '../medusa/medusa-customer-sync.service';
 
 @Module({
   imports: [
@@ -84,7 +87,7 @@ import { GalleryModule } from '../gallery/gallery.module';
       },
     }),
   ],
-  controllers: [AdminController, AdminUsersController, AdminPostsController, AdminGalleriesController, AdminEventsController, AdminFamiliesController, AdminS3Controller],
+  controllers: [AdminController, AdminUsersController, AdminPostsController, AdminGalleriesController, AdminEventsController, AdminFamiliesController, AdminS3Controller, AdminRetailController],
   providers: [
     AdminService,
     AdminAuditLogService,
@@ -94,6 +97,8 @@ import { GalleryModule } from '../gallery/gallery.module';
     AdminEventsService,
     AdminFamiliesService,
     AdminS3Service,
+    AdminRetailService,
+    MedusaCustomerSyncService,
     AdminJwtStrategy,
     AdminJwtAuthGuard,
     AdminRolesGuard,

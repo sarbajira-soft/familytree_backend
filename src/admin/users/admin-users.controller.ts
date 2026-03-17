@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { AdminJwtAuthGuard } from '../auth/admin-jwt-auth.guard';
@@ -151,6 +151,54 @@ export class AdminUsersController {
   @ApiOperation({ summary: "Get an app user's family (by userProfile.familyCode) for admin panel (admin/superadmin)" })
   userFamily(@Req() req, @Param('id') id: string) {
     return this.adminUsersService.getUserFamily(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Get(':id/medusa-customer')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get Medusa customer details for an app user (admin/superadmin)' })
+  medusaCustomer(@Req() req, @Param('id') id: string) {
+    return this.adminUsersService.getUserMedusaCustomer(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Post(':id/medusa-resync')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Resync / create Medusa customer for an app user (admin/superadmin)' })
+  resyncMedusaCustomer(@Req() req, @Param('id') id: string) {
+    return this.adminUsersService.resyncUserMedusaCustomer(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Get(':id/medusa-orders')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List Medusa orders for an app user (admin/superadmin)' })
+  medusaOrders(
+    @Req() req,
+    @Param('id') id: string,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.adminUsersService.listUserMedusaOrders(req.user, Number(id), {
+      page: page ? Number(page) : 1,
+      limit: limit ? Number(limit) : 25,
+    });
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Get(':id/medusa-orders/:orderId')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get Medusa order details for an app user (admin/superadmin)' })
+  medusaOrderById(
+    @Req() req,
+    @Param('id') id: string,
+    @Param('orderId') orderId: string,
+  ) {
+    return this.adminUsersService.getUserMedusaOrder(req.user, Number(id), orderId);
   }
 
   @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)

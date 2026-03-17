@@ -119,4 +119,43 @@ export class AdminPostsController {
       limit: limit ? Number(limit) : 25,
     });
   }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Patch('comments/:commentId/delete')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Soft delete a post comment (admin/superadmin)' })
+  softDeletePostComment(@Req() req, @Param('commentId') commentId: string) {
+    return this.adminPostsService.softDeletePostComment(req.user, Number(commentId));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Get('comments/deleted')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List deleted post comments for trash bin (admin/superadmin)' })
+  listDeletedPostComments(@Req() req, @Query('page') page?: string, @Query('limit') limit?: string) {
+    return this.adminPostsService.listDeletedPostComments(req.user, {
+      page: page ? Number(page) : 1,
+      limit: limit ? Number(limit) : 25,
+    });
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Patch('comments/:commentId/restore')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Restore a deleted post comment (admin/superadmin)' })
+  restorePostComment(@Req() req, @Param('commentId') commentId: string) {
+    return this.adminPostsService.restorePostComment(req.user, Number(commentId));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Delete('comments/:commentId/purge')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Permanently delete (purge) a deleted post comment (admin/superadmin)' })
+  purgePostComment(@Req() req, @Param('commentId') commentId: string) {
+    return this.adminPostsService.purgePostComment(req.user, Number(commentId));
+  }
 }

@@ -982,6 +982,7 @@ export class PostService {
     const { rows, count } = await this.postCommentModel.findAndCountAll({
       where: {
         postId,
+        deletedAt: null,
         ...(blockedUserIds.length > 0
           ? { userId: { [Op.notIn]: blockedUserIds } }
           : {}),
@@ -1080,6 +1081,7 @@ export class PostService {
     const count = await this.postCommentModel.count({
       where: {
         postId,
+        deletedAt: null,
         ...(blockedUserIds.length > 0
           ? { userId: { [Op.notIn]: blockedUserIds } }
           : {}),
@@ -1233,6 +1235,13 @@ export class PostService {
     if (!comment) {
       throw new NotFoundException('Comment not found');
     }
+
+    if ((comment as any).deletedAt) {
+      return {
+        success: true,
+        message: 'Comment already deleted',
+      };
+    }
     const post = await this.getActivePostOrThrow(Number((comment as any).postId));
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
       await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
@@ -1263,10 +1272,12 @@ export class PostService {
     }
 
     // Post owner deleting someone else's comment: cascade delete replies + comment.
-    await this.postCommentModel.destroy({
-      where: { parentCommentId: commentId },
-    });
-    await (comment as any).destroy();
+    const now = new Date();
+    await this.postCommentModel.update(
+      { deletedAt: now, deletedByUserId: null, deletedByAdminId: null },
+      { where: { parentCommentId: commentId, deletedAt: null } },
+    );
+    await (comment as any).update({ deletedAt: now, deletedByUserId: null, deletedByAdminId: null });
 
     return {
       success: true,

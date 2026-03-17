@@ -15,6 +15,7 @@ import { FamilyMember } from '../../family/model/family-member.model';
 import { Family } from '../../family/model/family.model';
 import { FamilyTree } from '../../family/model/family-tree.model';
 import { UploadService } from '../../uploads/upload.service';
+import { MedusaCustomerSyncService } from '../../medusa/medusa-customer-sync.service';
 
 @Injectable()
 export class AdminUsersService {
@@ -44,6 +45,7 @@ export class AdminUsersService {
     @InjectModel(FamilyTree)
     private readonly familyTreeModel: typeof FamilyTree,
     private readonly uploadService: UploadService,
+    private readonly medusaCustomerSyncService: MedusaCustomerSyncService,
   ) {}
 
   private assertActor(actor: any) {
@@ -492,26 +494,26 @@ export class AdminUsersService {
       userJson.userProfile.profile = this.uploadService.getFileUrl(String(userJson.userProfile.profile), 'profile');
     }
 
-    const postsCount = await this.postModel.count({
-      where: {
-        createdBy: userId,
-        status: 1,
-      },
-    });
-
-    const galleriesCount = await this.galleryModel.count({
-      where: {
-        createdBy: userId,
-        status: 1,
-      },
-    });
-
-    const eventsCount = await this.eventModel.count({
-      where: {
-        userId: userId,
-        status: 1,
-      },
-    });
+    const [postsCount, galleriesCount, eventsCount] = await Promise.all([
+      this.postModel.count({
+        where: {
+          createdBy: userId,
+          status: 1,
+        },
+      }),
+      this.galleryModel.count({
+        where: {
+          createdBy: userId,
+          status: 1,
+        },
+      }),
+      this.eventModel.count({
+        where: {
+          userId: userId,
+          status: 1,
+        },
+      }),
+    ]);
 
     const familyCode = String((user as any)?.userProfile?.familyCode || '').trim() || null;
     const familyMembersCount = familyCode
@@ -523,6 +525,23 @@ export class AdminUsersService {
         })
       : 0;
 
+    const medusaCustomerId = String((user as any)?.medusaCustomerId || '').trim();
+    let ordersCount: number | null = null;
+
+    if (medusaCustomerId) {
+      try {
+        const res = await this.medusaCustomerSyncService.listOrdersByCustomerId(medusaCustomerId, {
+          page: 1,
+          limit: 1,
+        });
+        if (typeof (res as any)?.count === 'number') {
+          ordersCount = Number((res as any).count);
+        }
+      } catch {
+        ordersCount = null;
+      }
+    }
+
     return {
       message: 'User fetched successfully',
       data: userJson,
@@ -530,8 +549,245 @@ export class AdminUsersService {
         postsCount,
         galleriesCount,
         eventsCount,
+        ordersCount,
         familyCode,
         familyMembersCount,
+      },
+    };
+  }
+
+  async listUserMedusaOrders(
+    actor: any,
+    id: number,
+    params: { page?: number; limit?: number },
+  ) {
+    this.assertActor(actor);
+
+    const userId = this.normalizeId(id, 'User');
+
+    const user = await this.userModel.findOne({
+      where: { id: userId, isAppUser: true } as any,
+      attributes: ['id', 'medusaCustomerId'] as any,
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const customerId = String((user as any).medusaCustomerId || '').trim();
+
+    if (!customerId) {
+      return {
+        message: 'User has no Medusa customer id',
+        data: [],
+        pagination: {
+          page: Math.max(1, Number(params?.page || 1)),
+          limit: Math.min(100, Math.max(1, Number(params?.limit || 25))),
+          total: 0,
+          totalPages: 1,
+        },
+      };
+    }
+
+    const page = Math.max(1, Number(params?.page || 1));
+    const limit = Math.min(100, Math.max(1, Number(params?.limit || 25)));
+
+    try {
+      const res = await this.medusaCustomerSyncService.listOrdersByCustomerId(customerId, { page, limit });
+      const total = typeof (res as any)?.count === 'number' ? Number((res as any).count) : (res?.orders || []).length;
+      return {
+        message: 'Medusa orders fetched successfully',
+        data: Array.isArray(res?.orders) ? res.orders : [],
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.max(1, Math.ceil(total / limit)),
+        },
+      };
+    } catch (e: any) {
+      const msg = String(e?.message || '').trim();
+      return {
+        message: msg || 'Failed to fetch Medusa orders',
+        data: [],
+        pagination: {
+          page,
+          limit,
+          total: 0,
+          totalPages: 1,
+        },
+      };
+    }
+  }
+
+  async getUserMedusaOrder(actor: any, id: number, orderId: string) {
+    this.assertActor(actor);
+
+    const userId = this.normalizeId(id, 'User');
+
+    const user = await this.userModel.findOne({
+      where: { id: userId, isAppUser: true } as any,
+      attributes: ['id', 'medusaCustomerId'] as any,
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const customerId = String((user as any).medusaCustomerId || '').trim();
+    if (!customerId) {
+      return {
+        message: 'User has no Medusa customer id',
+        data: null,
+      };
+    }
+
+    const oid = String(orderId || '').trim();
+    if (!oid) {
+      throw new NotFoundException('Order not found');
+    }
+
+    try {
+      const res = await this.medusaCustomerSyncService.retrieveOrder(oid);
+      const order = (res as any)?.order || null;
+
+      if (order && String(order.customer_id || '').trim() && String(order.customer_id).trim() !== customerId) {
+        return {
+          message: 'Order does not belong to this user',
+          data: null,
+          forbidden: true,
+        } as any;
+      }
+
+      return {
+        message: 'Medusa order fetched successfully',
+        data: order,
+      };
+    } catch (e: any) {
+      const status = Number(e?.statusCode || e?.status || 0);
+      const msg = String(e?.message || '').trim();
+
+      if (status === 404 || msg.toLowerCase().includes('not found')) {
+        return {
+          message: 'Medusa order not found',
+          data: null,
+          notFound: true,
+        } as any;
+      }
+
+      return {
+        message: msg || 'Failed to fetch Medusa order',
+        data: null,
+      };
+    }
+  }
+
+  async getUserMedusaCustomer(actor: any, id: number) {
+    this.assertActor(actor);
+
+    const userId = this.normalizeId(id, 'User');
+
+    const user = await this.userModel.findOne({
+      where: { id: userId, isAppUser: true } as any,
+      attributes: ['id', 'medusaCustomerId', 'email'] as any,
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const customerId = String((user as any).medusaCustomerId || '').trim();
+
+    if (!customerId) {
+      return {
+        message: 'User has no Medusa customer id',
+        data: null,
+      };
+    }
+
+    try {
+      const res = await this.medusaCustomerSyncService.retrieveCustomer(customerId);
+
+      return {
+        message: 'Medusa customer fetched successfully',
+        data: res?.customer || null,
+      };
+    } catch (e: any) {
+      const status = Number(e?.statusCode || e?.status || 0);
+      const msg = String(e?.message || '').trim();
+
+      if (status === 404 || msg.toLowerCase().includes('was not found')) {
+        return {
+          message: 'Medusa customer not found',
+          data: null,
+          notFound: true,
+        } as any;
+      }
+
+      return {
+        message: msg || 'Failed to fetch Medusa customer',
+        data: null,
+      };
+    }
+  }
+
+  async resyncUserMedusaCustomer(actor: any, id: number) {
+    this.assertActor(actor);
+
+    const userId = this.normalizeId(id, 'User');
+
+    const user = await this.userModel.findOne({
+      where: { id: userId, isAppUser: true } as any,
+      include: [
+        {
+          model: this.userProfileModel,
+          as: 'userProfile',
+          required: false,
+          attributes: ['firstName', 'lastName', 'familyCode'] as any,
+        },
+      ],
+      attributes: ['id', 'email', 'countryCode', 'mobile', 'medusaCustomerId'] as any,
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const email = String((user as any)?.email || '').trim();
+    if (!email) {
+      return {
+        message: 'User has no email',
+        data: null,
+      };
+    }
+
+    const profile = (user as any)?.userProfile || null;
+    const firstName = String(profile?.firstName || '').trim();
+    const lastName = String(profile?.lastName || '').trim();
+    const phone = `${String((user as any)?.countryCode || '').trim()}${String((user as any)?.mobile || '').trim()}`;
+
+    const syncRes = await this.medusaCustomerSyncService.upsertCustomer({
+      customer_id: (user as any)?.medusaCustomerId,
+      email,
+      first_name: firstName,
+      last_name: lastName,
+      phone,
+      metadata: {
+        app_user_id: (user as any)?.id,
+        family_code: String(profile?.familyCode || '').trim() || undefined,
+      },
+    });
+
+    const nextCustomerId = String((syncRes as any)?.customer_id || '').trim();
+    if (nextCustomerId && String((user as any)?.medusaCustomerId || '').trim() !== nextCustomerId) {
+      await user.update({ medusaCustomerId: nextCustomerId } as any);
+    }
+
+    return {
+      message: 'Medusa customer resynced successfully',
+      data: {
+        customer_id: nextCustomerId || null,
+        customer: (syncRes as any)?.customer || null,
       },
     };
   }

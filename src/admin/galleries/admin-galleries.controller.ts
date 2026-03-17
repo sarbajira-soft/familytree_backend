@@ -130,4 +130,43 @@ export class AdminGalleriesController {
       limit: limit ? Number(limit) : 25,
     });
   }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Post('comments/:commentId/delete')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Soft delete a gallery comment (admin/superadmin)' })
+  softDeleteGalleryComment(@Req() req, @Param('commentId') commentId: string) {
+    return this.adminGalleriesService.softDeleteGalleryComment(req.user, Number(commentId));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Get('comments/deleted')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List deleted gallery comments for trash bin (admin/superadmin)' })
+  listDeletedGalleryComments(@Req() req, @Query('page') page?: string, @Query('limit') limit?: string) {
+    return this.adminGalleriesService.listDeletedGalleryComments(req.user, {
+      page: page ? Number(page) : 1,
+      limit: limit ? Number(limit) : 25,
+    });
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Post('comments/:commentId/restore')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Restore a deleted gallery comment (admin/superadmin)' })
+  restoreGalleryComment(@Req() req, @Param('commentId') commentId: string) {
+    return this.adminGalleriesService.restoreGalleryComment(req.user, Number(commentId));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Delete('comments/:commentId/purge')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Permanently delete (purge) a deleted gallery comment (admin/superadmin)' })
+  purgeGalleryComment(@Req() req, @Param('commentId') commentId: string) {
+    return this.adminGalleriesService.purgeGalleryComment(req.user, Number(commentId));
+  }
 }

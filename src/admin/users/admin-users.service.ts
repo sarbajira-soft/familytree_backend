@@ -16,6 +16,8 @@ import { Family } from '../../family/model/family.model';
 import { FamilyTree } from '../../family/model/family-tree.model';
 import { UploadService } from '../../uploads/upload.service';
 import { MedusaCustomerSyncService } from '../../medusa/medusa-customer-sync.service';
+import { UserService } from '../../user/user.service';
+import { AdminAuditLogService } from '../admin-audit-log.service';
 
 @Injectable()
 export class AdminUsersService {
@@ -46,7 +48,178 @@ export class AdminUsersService {
     private readonly familyTreeModel: typeof FamilyTree,
     private readonly uploadService: UploadService,
     private readonly medusaCustomerSyncService: MedusaCustomerSyncService,
+    private readonly userService: UserService,
+    private readonly adminAuditLogService: AdminAuditLogService,
   ) {}
+
+  async requestUserDeletion(actor: any, id: number) {
+    this.assertActor(actor);
+
+    const userId = this.normalizeId(id, 'User');
+
+    const target = await this.userModel.findOne({
+      where: { id: userId, isAppUser: true } as any,
+      attributes: ['id', 'role', 'status', 'lifecycleState', 'deletedAt', 'purgeAfter'] as any,
+    });
+
+    if (!target) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (String((target as any).role) === '3' || Number((target as any).role) === 3) {
+      if (actor?.role !== 'superadmin') {
+        throw new ForbiddenException('Only superadmin can delete a superadmin');
+      }
+    }
+
+    const res = await this.userService.requestAccountDeletionWithInitiator(userId, {
+      type: 'admin',
+      id: Number(actor?.adminId),
+    });
+
+    await this.adminAuditLogService.log(actor.adminId, 'ADMIN_USER_DELETE_REQUESTED', {
+      targetType: 'user_account',
+      targetId: userId,
+      metadata: {
+        purgeAfter: (res as any)?.data?.purgeAfter,
+        deletedAt: (res as any)?.data?.deletedAt,
+      },
+    });
+
+    return res;
+  }
+
+  async listDeletedAppUsers(
+    actor: any,
+    params?: {
+      page?: number;
+      limit?: number;
+      eligible?: boolean;
+    },
+  ) {
+    this.assertActor(actor);
+
+    const page = Math.max(1, Number(params?.page || 1));
+    const limit = Math.min(100, Math.max(1, Number(params?.limit || 25)));
+    const offset = (page - 1) * limit;
+
+    const where: any = {
+      isAppUser: true,
+      deletedAt: { [Op.ne]: null },
+    };
+
+    if (params?.eligible) {
+      where.purgeAfter = { [Op.lte]: new Date() };
+    }
+
+    const { rows, count } = await this.userModel.findAndCountAll({
+      where,
+      include: [
+        {
+          model: this.userProfileModel,
+          as: 'userProfile',
+          required: false,
+          attributes: ['userId', 'firstName', 'lastName', 'profile'] as any,
+        },
+      ],
+      attributes: [
+        'id',
+        'email',
+        'countryCode',
+        'mobile',
+        'status',
+        'role',
+        'deletedAt',
+        'purgeAfter',
+        'deletedByAdminId',
+        'deletedByUserId',
+        'lifecycleState',
+        'createdAt',
+      ] as any,
+      order: [['deletedAt', 'DESC']] as any,
+      limit,
+      offset,
+      distinct: true,
+    });
+
+    const data = (rows || []).map((u: any) => {
+      const json: any = typeof u?.toJSON === 'function' ? u.toJSON() : u;
+      if (json?.userProfile?.profile) {
+        json.userProfile.profile = this.uploadService.getFileUrl(String(json.userProfile.profile), 'profile');
+      }
+      return json;
+    });
+
+    return {
+      message: 'Deleted users fetched successfully',
+      total: count,
+      data,
+      pagination: {
+        page,
+        limit,
+        total: count,
+        totalPages: Math.ceil(count / limit) || 1,
+      },
+    };
+  }
+
+  async restoreDeletedUser(actor: any, id: number) {
+    this.assertActor(actor);
+    const userId = this.normalizeId(id, 'User');
+
+    const target = await this.userModel.findOne({
+      where: { id: userId, isAppUser: true } as any,
+      attributes: ['id', 'role', 'status', 'lifecycleState', 'deletedAt', 'purgeAfter'] as any,
+    });
+
+    if (!target) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (String((target as any).role) === '3' || Number((target as any).role) === 3) {
+      if (actor?.role !== 'superadmin') {
+        throw new ForbiddenException('Only superadmin can restore a superadmin');
+      }
+    }
+
+    const res = await this.userService.adminRestoreDeletedUser(userId);
+
+    await this.adminAuditLogService.log(actor.adminId, 'ADMIN_USER_RESTORE', {
+      targetType: 'user_account',
+      targetId: userId,
+    });
+
+    return res;
+  }
+
+  async purgeDeletedUser(actor: any, id: number) {
+    this.assertActor(actor);
+    const userId = this.normalizeId(id, 'User');
+
+    const target = await this.userModel.findOne({
+      where: { id: userId, isAppUser: true } as any,
+      attributes: ['id', 'role', 'status', 'lifecycleState', 'deletedAt', 'purgeAfter'] as any,
+    });
+
+    if (!target) {
+      throw new NotFoundException('User not found');
+    }
+
+    if (String((target as any).role) === '3' || Number((target as any).role) === 3) {
+      if (actor?.role !== 'superadmin') {
+        throw new ForbiddenException('Only superadmin can purge a superadmin');
+      }
+    }
+
+    const res = await this.userService.adminPurgeDeletedUserNow(userId);
+
+    await this.adminAuditLogService.log(actor.adminId, 'ADMIN_USER_PURGE', {
+      targetType: 'user_account',
+      targetId: userId,
+    });
+
+    return res;
+  }
 
   private assertActor(actor: any) {
     if (!actor?.adminId) {
@@ -464,6 +637,12 @@ export class AdminUsersService {
             'updatedAt',
           ],
         },
+        {
+          model: FamilyMember,
+          as: 'familyMemberships',
+          required: false,
+          attributes: ['familyCode', 'approveStatus'] as any,
+        },
       ],
       attributes: [
         'id',
@@ -474,6 +653,11 @@ export class AdminUsersService {
         'status',
         'role',
         'isAppUser',
+        'lifecycleState',
+        'deletedAt',
+        'purgeAfter',
+        'deletedByAdminId',
+        'deletedByUserId',
         'hasAcceptedTerms',
         'termsVersion',
         'termsAcceptedAt',
@@ -482,7 +666,7 @@ export class AdminUsersService {
         'createdBy',
         'createdAt',
         'updatedAt',
-      ],
+      ] as any,
     });
 
     if (!user) {
@@ -969,6 +1153,11 @@ export class AdminUsersService {
         'status',
         'role',
         'isAppUser',
+        'lifecycleState',
+        'deletedAt',
+        'purgeAfter',
+        'deletedByAdminId',
+        'deletedByUserId',
         'hasAcceptedTerms',
         'termsVersion',
         'termsAcceptedAt',
@@ -1084,6 +1273,11 @@ export class AdminUsersService {
         'status',
         'role',
         'isAppUser',
+        'lifecycleState',
+        'deletedAt',
+        'purgeAfter',
+        'deletedByAdminId',
+        'deletedByUserId',
         'hasAcceptedTerms',
         'termsVersion',
         'termsAcceptedAt',

@@ -115,6 +115,15 @@ export class MedusaCustomerSyncService {
     return await this.get(url);
   }
 
+  async deleteCustomer(customerId: string): Promise<SyncResponse> {
+    const id = String(customerId || '').trim();
+    if (!id) {
+      throw new Error('Missing customerId');
+    }
+
+    return await this.post({ type: 'delete_customer', customer_id: id });
+  }
+
   async listAllOrders(params?: {
     page?: number;
     limit?: number;

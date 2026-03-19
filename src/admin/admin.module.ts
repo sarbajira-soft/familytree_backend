@@ -44,6 +44,9 @@ import { AdminRetailService } from './retail/admin-retail.service';
 import { UploadModule } from '../uploads/upload.module';
 import { GalleryModule } from '../gallery/gallery.module';
 import { MedusaCustomerSyncService } from '../medusa/medusa-customer-sync.service';
+import { CommentRetentionService } from './retention/comment-retention.service';
+import { CommentRetentionScheduler } from './retention/comment-retention.scheduler';
+import { UserModule } from '../user/user.module';
 
 @Module({
   imports: [
@@ -68,6 +71,7 @@ import { MedusaCustomerSyncService } from '../medusa/medusa-customer-sync.servic
     ScheduleModule.forRoot(),
     UploadModule,
     GalleryModule,
+    UserModule,
     PassportModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
@@ -99,6 +103,8 @@ import { MedusaCustomerSyncService } from '../medusa/medusa-customer-sync.servic
     AdminS3Service,
     AdminRetailService,
     MedusaCustomerSyncService,
+    CommentRetentionService,
+    CommentRetentionScheduler,
     AdminJwtStrategy,
     AdminJwtAuthGuard,
     AdminRolesGuard,

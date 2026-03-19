@@ -12,7 +12,9 @@ import { EventImage } from './model/event-image.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { BlockingModule } from '../blocking/blocking.module';
 import { FamilyLink } from '../family/model/family-link.model';
- 
+import { EventRetentionScheduler } from './event-retention.scheduler';
+import { EventRetentionService } from './event-retention.service';
+
 @Module({
   imports: [
     SequelizeModule.forFeature([Event, User, UserProfile, EventImage, FamilyMember, FamilyLink]),
@@ -24,7 +26,7 @@ import { FamilyLink } from '../family/model/family-link.model';
     }),
   ],
   controllers: [EventController],
-  providers: [EventService, EventGateway],
+  providers: [EventService, EventGateway, EventRetentionService, EventRetentionScheduler],
   exports: [EventService, EventGateway],
 })
 export class EventModule {}

@@ -199,7 +199,7 @@ export class UserService {
         status: 3,
         purgeAfter: { [Op.lte]: now },
       } as any,
-      attributes: ['id'],
+      attributes: ['id', 'medusaCustomerId'],
       order: [['purgeAfter', 'ASC']],
       limit,
     });
@@ -229,6 +229,15 @@ export class UserService {
           transaction,
         });
 
+        const medusaCustomerId = String((user as any)?.medusaCustomerId || '').trim();
+        if (medusaCustomerId) {
+          try {
+            await this.medusaCustomerSyncService.deleteCustomer(medusaCustomerId);
+          } catch (e) {
+            console.error('Failed to delete Medusa customer during user purge:', e?.message || e);
+          }
+        }
+
         // Last line in purge: FK cascades remove owned rows.
         await user.destroy({ transaction });
         await transaction.commit();
@@ -244,7 +253,7 @@ export class UserService {
 
   async requestAccountDeletion(userId: number) {
     const now = new Date();
-    const purgeAfter = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    const purgeAfter = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
 
     const transaction = await this.userModel.sequelize.transaction();
     try {
@@ -338,6 +347,116 @@ export class UserService {
     };
   }
 
+  async requestAccountDeletionWithInitiator(userId: number, initiator?: { type: 'user' | 'admin'; id: number }) {
+    const now = new Date();
+    const purgeAfter = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
+
+    const transaction = await this.userModel.sequelize.transaction();
+    try {
+      const user = await this.userModel.findByPk(userId, {
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
+
+      if (this.isPendingDeletion(user)) {
+        const initiatorId = Number(initiator?.id);
+        if (initiator?.type === 'admin' && Number.isFinite(initiatorId) && initiatorId > 0) {
+          await user.update({ deletedByAdminId: initiatorId, deletedByUserId: null } as any, { transaction });
+        } else if (initiator?.type === 'user' && Number.isFinite(initiatorId) && initiatorId > 0) {
+          await user.update({ deletedByUserId: initiatorId, deletedByAdminId: null } as any, { transaction });
+        }
+
+        await transaction.commit();
+        return {
+          message: 'Account deletion already requested',
+          data: {
+            status: 'pending_deletion',
+            deletedAt: user.deletedAt,
+            purgeAfter: user.purgeAfter,
+          },
+        };
+      }
+
+      const initiatorId = Number(initiator?.id);
+      const deletedByAdminId =
+        initiator?.type === 'admin' && Number.isFinite(initiatorId) && initiatorId > 0 ? initiatorId : null;
+      const deletedByUserId =
+        initiator?.type === 'user' && Number.isFinite(initiatorId) && initiatorId > 0 ? initiatorId : null;
+
+      user.status = 3 as any;
+      user.lifecycleState = 'pending_deletion';
+      user.deletedAt = now;
+      user.purgeAfter = purgeAfter;
+      (user as any).deletedByAdminId = deletedByAdminId;
+      (user as any).deletedByUserId = deletedByUserId;
+      user.accessToken = null as any;
+      await user.save({ transaction });
+
+      await this.familyMemberModel.destroy({
+        where: {
+          memberId: userId,
+          approveStatus: 'pending',
+        } as any,
+        transaction,
+      });
+
+      await this.familyMemberModel.destroy({
+        where: {
+          creatorId: userId,
+          approveStatus: 'pending',
+        } as any,
+        transaction,
+      });
+
+      await this.accountRecoveryTokenModel.destroy({
+        where: { userId } as any,
+        transaction,
+      });
+
+      await transaction.commit();
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+    const activeMemberships = await this.familyMemberModel.findAll({
+      where: {
+        memberId: userId,
+        approveStatus: 'approved',
+      } as any,
+      attributes: ['familyCode'],
+    });
+
+    for (const membership of activeMemberships) {
+      try {
+        await this.familyMemberService.removeMemberForAccountDeletion(
+          userId,
+          String((membership as any).familyCode || ''),
+        );
+      } catch (error) {
+        console.error(
+          `Failed family detachment during account deletion user=${userId}, family=${(membership as any).familyCode}:`,
+          error?.message || error,
+        );
+      }
+    }
+
+    await this.hideFamilyContentForDeletedUser(userId);
+
+    return {
+      message: 'Account deletion requested successfully',
+      data: {
+        status: 'pending_deletion',
+        deletedAt: now,
+        purgeAfter,
+      },
+    };
+  }
+
   async requestAccountRecovery(identifier: string) {
     this.normalizeRecoveryIdentifier(identifier);
 
@@ -351,6 +470,11 @@ export class UserService {
       });
 
       if (!user || !this.isPendingDeletion(user)) {
+        await transaction.commit();
+        return { message: 'If this account is recoverable, a token has been sent.' };
+      }
+
+      if ((user as any)?.deletedByAdminId) {
         await transaction.commit();
         return { message: 'If this account is recoverable, a token has been sent.' };
       }
@@ -411,13 +535,14 @@ export class UserService {
     await this.purgeExpiredDeletedUsers(10);
 
     const user = await this.findUserByRecoveryIdentifier(identifier, {
-      attributes: ['id', 'status', 'lifecycleState', 'deletedAt', 'purgeAfter'],
+      attributes: ['id', 'status', 'lifecycleState', 'deletedAt', 'purgeAfter', 'deletedByAdminId', 'deletedByUserId'],
     });
 
     const now = new Date();
     const canRecover =
       !!user &&
       this.isPendingDeletion(user) &&
+      !(user as any)?.deletedByAdminId &&
       !!user.purgeAfter &&
       new Date(user.purgeAfter).getTime() > now.getTime();
 
@@ -454,6 +579,10 @@ export class UserService {
         throw new BadRequestException('Invalid or expired recovery token');
       }
 
+      if ((user as any)?.deletedByAdminId) {
+        throw new BadRequestException('Invalid or expired recovery token');
+      }
+
       if (!user.purgeAfter || new Date(user.purgeAfter) <= new Date()) {
         throw new BadRequestException('Recovery window expired');
       }
@@ -481,6 +610,8 @@ export class UserService {
           lifecycleState: 'active',
           deletedAt: null,
           purgeAfter: null,
+          deletedByAdminId: null,
+          deletedByUserId: null,
           accessToken: null,
         } as any,
         { transaction },
@@ -503,6 +634,94 @@ export class UserService {
       await transaction.rollback();
       throw error;
     }
+  }
+
+  async adminRestoreDeletedUser(userId: number) {
+    const id = Number(userId);
+    if (!Number.isFinite(id) || Number.isNaN(id) || id <= 0) {
+      throw new NotFoundException('User not found');
+    }
+
+    const transaction = await this.userModel.sequelize.transaction();
+    try {
+      const user = await this.userModel.findByPk(id, {
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
+
+      if (!this.isPendingDeletion(user)) {
+        await transaction.commit();
+        return { message: 'User is not deleted' };
+      }
+
+      await this.accountRecoveryTokenModel.destroy({ where: { userId: id } as any, transaction });
+
+      await user.update(
+        {
+          status: 1,
+          lifecycleState: 'active',
+          deletedAt: null,
+          purgeAfter: null,
+          accessToken: null,
+        } as any,
+        { transaction },
+      );
+
+      await transaction.commit();
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+    await this.restoreFamilyContentForRecoveredUser(id);
+
+    return { message: 'User restored successfully' };
+  }
+
+  async adminPurgeDeletedUserNow(userId: number) {
+    const id = Number(userId);
+    if (!Number.isFinite(id) || Number.isNaN(id) || id <= 0) {
+      throw new NotFoundException('User not found');
+    }
+
+    const transaction = await this.userModel.sequelize.transaction();
+    try {
+      const user = await this.userModel.findByPk(id, {
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
+
+      if (!this.isPendingDeletion(user)) {
+        throw new ForbiddenException('User must be soft deleted before it can be purged');
+      }
+
+      await this.accountRecoveryTokenModel.destroy({ where: { userId: id } as any, transaction });
+
+      const medusaCustomerId = String((user as any)?.medusaCustomerId || '').trim();
+      if (medusaCustomerId) {
+        try {
+          await this.medusaCustomerSyncService.deleteCustomer(medusaCustomerId);
+        } catch (e) {
+          console.error('Failed to delete Medusa customer during admin purge:', e?.message || e);
+        }
+      }
+
+      await user.destroy({ transaction });
+      await transaction.commit();
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+    return { message: 'User permanently deleted' };
   }
 
   // eslint-disable-next-line sonarjs/cognitive-complexity
@@ -1516,7 +1735,7 @@ export class UserService {
       throw new ForbiddenException('Only superadmin can delete a superadmin');
     }
 
-    return this.requestAccountDeletion(userId);
+    return this.requestAccountDeletionWithInitiator(userId, isSelf ? { type: 'user', id: requesterId } : { type: 'admin', id: requesterId });
   }
 
   async mergeUserData(

@@ -70,6 +70,12 @@ export class User extends Model<User> {
   @Column({ type: DataType.DATE, allowNull: true })
   purgeAfter: Date;
 
+  @Column({ type: DataType.INTEGER, allowNull: true })
+  deletedByAdminId: number;
+
+  @Column({ type: DataType.INTEGER, allowNull: true })
+  deletedByUserId: number;
+
   @Default('active')
   @Column({ type: DataType.STRING, allowNull: false })
   lifecycleState: string; // active | pending_deletion | purged

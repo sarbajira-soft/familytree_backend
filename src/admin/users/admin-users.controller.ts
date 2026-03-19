@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { AdminJwtAuthGuard } from '../auth/admin-jwt-auth.guard';
@@ -71,6 +71,46 @@ export class AdminUsersController {
   @ApiOperation({ summary: 'Get non-app user details for admin panel (admin/superadmin)' })
   nonAppUserById(@Req() req, @Param('id') id: string) {
     return this.adminUsersService.getNonAppUserById(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Patch(':id/delete')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Request deletion for an app user (admin/superadmin)' })
+  deleteUser(@Req() req, @Param('id') id: string) {
+    return this.adminUsersService.requestUserDeletion(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Get('deleted')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'List deleted app users for trash bin (admin/superadmin)' })
+  listDeletedUsers(@Req() req, @Query('page') page?: string, @Query('limit') limit?: string, @Query('eligible') eligible?: string) {
+    return this.adminUsersService.listDeletedAppUsers(req.user, {
+      page: page ? Number(page) : 1,
+      limit: limit ? Number(limit) : 25,
+      eligible: eligible === '1' || String(eligible || '').toLowerCase() === 'true',
+    });
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Patch(':id/restore')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Restore a deleted app user (admin/superadmin)' })
+  restoreDeletedUser(@Req() req, @Param('id') id: string) {
+    return this.adminUsersService.restoreDeletedUser(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Patch(':id/purge')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Purge (permanently delete) a deleted app user (admin/superadmin)' })
+  purgeDeletedUser(@Req() req, @Param('id') id: string) {
+    return this.adminUsersService.purgeDeletedUser(req.user, Number(id));
   }
 
   @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)

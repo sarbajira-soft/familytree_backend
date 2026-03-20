@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
 
@@ -10,6 +10,7 @@ import { User } from '../../user/model/user.model';
 import { UserProfile } from '../../user/model/user-profile.model';
 import { UploadService } from '../../uploads/upload.service';
 import { AdminAuditLogService } from '../admin-audit-log.service';
+import { UpdateAdminGalleryDto } from './dto/update-admin-gallery.dto';
 
 @Injectable()
 export class AdminGalleriesService {
@@ -42,6 +43,169 @@ export class AdminGalleriesService {
       throw new NotFoundException(`${label} not found`);
     }
     return id;
+  }
+
+  async updateGallery(
+    actor: any,
+    galleryId: number,
+    dto: UpdateAdminGalleryDto,
+    coverFile?: Express.Multer.File | null,
+    albumFiles: Express.Multer.File[] = [],
+  ) {
+    this.assertActor(actor);
+    const id = this.normalizeId(galleryId, 'Gallery');
+
+    const gallery = await this.galleryModel.findOne({ where: { id } as any });
+    if (!gallery) throw new NotFoundException('Gallery not found');
+
+    if ((gallery as any).deletedAt) {
+      throw new ForbiddenException('Cannot update a deleted gallery');
+    }
+
+    const patch: any = {};
+    if ((dto as any)?.galleryTitle !== undefined) patch.galleryTitle = String((dto as any).galleryTitle ?? '').trim();
+    if ((dto as any)?.galleryDescription !== undefined) patch.galleryDescription = String((dto as any).galleryDescription ?? '').trim();
+
+    const removeCover = String((dto as any)?.removeCover || '').toLowerCase() === 'true';
+    const hasNewCover = Boolean(coverFile);
+
+    const rawRemoved: any = (dto as any)?.removedImageIds;
+    const removedImageIds = rawRemoved !== undefined && rawRemoved !== null
+      ? (Array.isArray(rawRemoved) ? rawRemoved : [rawRemoved])
+          .flatMap((v) => String(v).split(','))
+          .map((v) => Number(String(v).trim()))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      : [];
+
+    const hasRemovedImages = removedImageIds.length > 0;
+    const hasNewAlbumImages = Array.isArray(albumFiles) && albumFiles.length > 0;
+
+    if (removeCover && hasNewCover) {
+      throw new BadRequestException('Cannot upload a new cover photo and remove cover photo at the same time');
+    }
+
+    if (removeCover) {
+      patch.coverPhoto = null;
+    }
+
+    if (hasNewCover) {
+      const oldCover = (gallery as any)?.coverPhoto ? String((gallery as any).coverPhoto) : null;
+      if (oldCover) {
+        try {
+          await this.uploadService.deleteFile(oldCover, 'gallery/cover');
+        } catch (_) {
+          // ignore
+        }
+      }
+      patch.coverPhoto = await this.uploadService.uploadFile(coverFile as any, 'gallery/cover');
+    }
+
+    if (Object.keys(patch).length === 0 && !hasRemovedImages && !hasNewAlbumImages) {
+      throw new BadRequestException('No changes');
+    }
+
+    const before = {
+      galleryTitle: (gallery as any)?.galleryTitle ?? null,
+      galleryDescription: (gallery as any)?.galleryDescription ?? null,
+      coverPhoto: (gallery as any)?.coverPhoto ?? null,
+    };
+
+    const transaction = await this.galleryModel.sequelize.transaction();
+
+    const beforeAlbum = await this.galleryAlbumModel.findAll({
+      where: { galleryId: id } as any,
+      attributes: ['id', 'album'] as any,
+      transaction,
+    });
+
+    const beforeAlbumJson = (beforeAlbum || []).map((a: any) => (typeof a?.toJSON === 'function' ? a.toJSON() : a));
+
+    await gallery.update(patch as any, { transaction } as any);
+
+    if (hasRemovedImages) {
+      const imagesToDelete = await this.galleryAlbumModel.findAll({
+        where: { id: removedImageIds, galleryId: id } as any,
+        attributes: ['id', 'album'] as any,
+        transaction,
+      });
+
+      for (const img of imagesToDelete || []) {
+        const json: any = typeof (img as any)?.toJSON === 'function' ? (img as any).toJSON() : img;
+        if (!json?.album) continue;
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          await this.uploadService.deleteFile(String(json.album), 'gallery');
+        } catch (_) {
+          // ignore
+        }
+      }
+
+      await this.galleryAlbumModel.destroy({
+        where: { id: removedImageIds, galleryId: id } as any,
+        transaction,
+      });
+    }
+
+    if (hasNewAlbumImages) {
+      const rows: any[] = [];
+      for (const f of albumFiles) {
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          const key = await this.uploadService.uploadFile(f as any, 'gallery');
+          rows.push({ galleryId: id, album: key });
+        } catch (_) {
+          // ignore
+        }
+      }
+      if (rows.length > 0) {
+        await this.galleryAlbumModel.bulkCreate(rows as any, { transaction } as any);
+      }
+    }
+
+    if (removeCover) {
+      const oldCover = before.coverPhoto ? String(before.coverPhoto) : null;
+      if (oldCover) {
+        try {
+          await this.uploadService.deleteFile(oldCover, 'gallery/cover');
+        } catch (_) {
+          // ignore
+        }
+      }
+    }
+
+    await transaction.commit();
+
+    const afterAlbum = await this.galleryAlbumModel.findAll({
+      where: { galleryId: id } as any,
+      attributes: ['id', 'album'] as any,
+    });
+
+    const afterAlbumJson = (afterAlbum || []).map((a: any) => (typeof a?.toJSON === 'function' ? a.toJSON() : a));
+
+    const after = {
+      galleryTitle: (gallery as any)?.galleryTitle ?? null,
+      galleryDescription: (gallery as any)?.galleryDescription ?? null,
+      coverPhoto: (gallery as any)?.coverPhoto ?? null,
+    };
+
+    await this.adminAuditLogService.log(Number(actor?.adminId), 'gallery_update', {
+      targetType: 'gallery',
+      targetId: id,
+      metadata: {
+        galleryId: id,
+        createdBy: Number((gallery as any)?.createdBy),
+        before,
+        after,
+        album: {
+          added: hasNewAlbumImages ? albumFiles.length : 0,
+          removed: removedImageIds.length,
+          beforeCount: beforeAlbumJson.length,
+          afterCount: afterAlbumJson.length,
+        },
+      },
+    });
+
+    return this.getGalleryById(actor, id);
   }
 
   async softDeleteGallery(actor: any, galleryId: number) {

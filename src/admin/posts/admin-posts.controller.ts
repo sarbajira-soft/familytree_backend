@@ -1,10 +1,14 @@
-import { Controller, Delete, Get, Param, Patch, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Query, Req, UseGuards, UseInterceptors, UploadedFile } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 
 import { AdminJwtAuthGuard } from '../auth/admin-jwt-auth.guard';
 import { AdminRolesGuard } from '../auth/admin-roles.guard';
 import { AdminRoles } from '../auth/admin-roles.decorator';
 import { AdminPostsService } from './admin-posts.service';
+import { UpdateAdminPostDto } from './dto/update-admin-post.dto';
+import { imageFileFilter } from '../../utils/upload.utils';
 
 @ApiTags('Admin')
 @Controller('admin/posts')
@@ -84,6 +88,27 @@ export class AdminPostsController {
   @ApiOperation({ summary: 'Get post details for admin panel (admin/superadmin)' })
   postById(@Req() req, @Param('id') id: string) {
     return this.adminPostsService.getPostById(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Patch(':id')
+  @UseInterceptors(
+    FileInterceptor('postImage', {
+      storage: memoryStorage(),
+      fileFilter: imageFileFilter,
+      limits: { fileSize: 5 * 1024 * 1024 },
+    }),
+  )
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update a post (admin/superadmin)' })
+  updatePost(
+    @Req() req,
+    @Param('id') id: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Body() dto: UpdateAdminPostDto,
+  ) {
+    return this.adminPostsService.updatePost(req.user, Number(id), dto, file || null);
   }
 
   @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)

@@ -45,6 +45,7 @@ import { InjectModel } from '@nestjs/sequelize';
 import { FamilyLink } from '../family/model/family-link.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { UserProfile } from './model/user-profile.model';
+import { applyPrivacyToProfileResponse, resolvePhoneNumber } from './privacy.util';
 
  
 @ApiTags('User Module')
@@ -310,9 +311,10 @@ export class UserController {
     const userdata = await this.userService.getUserProfile(
       Number(loggedInUser.userId),
     );
+    const plainUserData = this.toPlainObject(userdata);
     return {
       message: 'Profile fetched successfully',
-      data: userdata,
+      data: applyPrivacyToProfileResponse(plainUserData, 'self'),
       currentUser: loggedInUser,
     };
   }
@@ -326,7 +328,7 @@ export class UserController {
   @ApiSecurity('application-token')
   async setPrivacy(@Req() req, @Body() dto: TogglePrivacyDto) {
     const loggedInUser = req.user;
-    return this.userService.setPrivacy(Number(loggedInUser.userId), dto.isPrivate);
+    return this.userService.setPrivacy(Number(loggedInUser.userId), dto);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -345,11 +347,12 @@ export class UserController {
     if (loggedInUserId === targetUserId) {
       const userdata = await this.userService.getUserProfile(id);
       const plainUserData = this.toPlainObject(userdata);
+      const visibleSelfProfile = applyPrivacyToProfileResponse(plainUserData, 'self');
       return {
         message: 'Profile fetched successfully',
         // BLOCK OVERRIDE: Injected new blockStatus contract.
         data: {
-          ...plainUserData,
+          ...visibleSelfProfile,
           blockStatus: {
             isBlockedByMe: false,
             isBlockedByThem: false,
@@ -407,10 +410,11 @@ export class UserController {
     // If profile is NOT private (public), allow any authenticated user to view
     if (!targetIsPrivate) {
       this.logger.log(`Profile is public - allowing access`);
+      const publicVisibleProfile = applyPrivacyToProfileResponse(plainTargetUser, 'other');
       return {
         message: 'Profile fetched successfully',
         // BLOCK OVERRIDE: Injected new blockStatus contract.
-        data: { ...plainTargetUser, blockStatus },
+        data: { ...publicVisibleProfile, blockStatus },
         currentUser: loggedInUser,
       };
     }
@@ -422,9 +426,10 @@ export class UserController {
       // Same family check
       if (myFamilyCode && targetFamilyCode && myFamilyCode === targetFamilyCode) {
         this.logger.log(`Same family - allowing access`);
+        const familyVisibleProfile = applyPrivacyToProfileResponse(plainTargetUser, 'family');
         return {
           message: 'Profile fetched successfully',
-          data: { ...plainTargetUser, blockStatus },
+          data: { ...familyVisibleProfile, blockStatus },
           currentUser: loggedInUser,
         };
       }
@@ -434,9 +439,10 @@ export class UserController {
         const familiesAreLinked = await this.areFamiliesLinked(myFamilyCode, targetFamilyCode);
         if (familiesAreLinked) {
           this.logger.log(`Linked families - allowing access`);
+          const linkedVisibleProfile = applyPrivacyToProfileResponse(plainTargetUser, 'family');
           return {
             message: 'Profile fetched successfully',
-            data: { ...plainTargetUser, blockStatus },
+            data: { ...linkedVisibleProfile, blockStatus },
             currentUser: loggedInUser,
           };
         }
@@ -447,9 +453,10 @@ export class UserController {
         const familiesAreAssociated = await this.areFamiliesAssociated(myFamilyCode, targetFamilyCode);
         if (familiesAreAssociated) {
           this.logger.log(`Associated families - allowing access`);
+          const linkedVisibleProfile = applyPrivacyToProfileResponse(plainTargetUser, 'family');
           return {
             message: 'Profile fetched successfully',
-            data: { ...plainTargetUser, blockStatus },
+            data: { ...linkedVisibleProfile, blockStatus },
             currentUser: loggedInUser,
           };
         }
@@ -464,12 +471,12 @@ export class UserController {
     // Default allow (should not reach here)
     return {
       message: 'Profile fetched successfully',
-      data: { ...plainTargetUser, blockStatus },
+      data: { ...applyPrivacyToProfileResponse(plainTargetUser, 'other'), blockStatus },
       currentUser: loggedInUser,
     };
   }
 
-  @UseGuards(JwtAuthGuard)
+    @UseGuards(JwtAuthGuard)
   @Get('gift-address/:id')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Get minimal user address info for gifting' })
@@ -483,11 +490,26 @@ export class UserController {
     const loggedInUser = req.user;
     const targetUserId = Number(id);
 
+    const buildGiftPayload = (plainUserData: any, relation: 'self' | 'family') => {
+      const visibleUserData = applyPrivacyToProfileResponse(plainUserData, relation);
+      return {
+        id: visibleUserData?.id || null,
+        firstName: visibleUserData?.userProfile?.firstName || null,
+        lastName: visibleUserData?.userProfile?.lastName || null,
+        address: visibleUserData?.userProfile?.address || null,
+        contactNumber:
+          visibleUserData?.userProfile?.contactNumber ||
+          resolvePhoneNumber(visibleUserData, visibleUserData?.userProfile),
+        familyCode: visibleUserData?.userProfile?.familyCode || null,
+        fieldVisibility: visibleUserData?.userProfile?.fieldVisibility || null,
+      };
+    };
+
     if (loggedInUser.userId === targetUserId) {
-      const data = await this.userService.getUserAddressForGifting(id);
+      const targetUser = await this.userService.getUserProfile(id);
       return {
         message: 'Gifting address fetched successfully',
-        data,
+        data: buildGiftPayload(this.toPlainObject(targetUser), 'self'),
         currentUser: loggedInUser,
       };
     }
@@ -506,14 +528,15 @@ export class UserController {
       this.userService.getUserProfile(id),
     ]);
 
-    const myFamilyCode = myProfile?.userProfile?.familyCode;
-    const targetFamilyCode = targetUser?.userProfile?.familyCode;
+    const plainMyProfile = this.toPlainObject(myProfile);
+    const plainTargetUser = this.toPlainObject(targetUser);
+    const myFamilyCode = plainMyProfile?.userProfile?.familyCode;
+    const targetFamilyCode = plainTargetUser?.userProfile?.familyCode;
 
     if (myFamilyCode && targetFamilyCode && myFamilyCode === targetFamilyCode) {
-      const data = await this.userService.getUserAddressForGifting(id);
       return {
         message: 'Gifting address fetched successfully',
-        data,
+        data: buildGiftPayload(plainTargetUser, 'family'),
         currentUser: loggedInUser,
       };
     }
@@ -622,3 +645,5 @@ export class UserController {
     return this.userService.deleteUser(id, loggedInUser.userId);
   }
 }
+
+

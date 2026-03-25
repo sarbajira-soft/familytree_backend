@@ -11,6 +11,7 @@
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
     "admin:create-superadmin": "ts-node -r tsconfig-paths/register src/scripts/create-superadmin.ts",
+    "migrate:sensitive-user-data": "ts-node -r tsconfig-paths/register src/scripts/migrate-sensitive-user-data.ts",
     "deploy:lambda": "npm run build && zip -r nest-lambda.zip dist node_modules package.json",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
@@ -114,3 +115,6 @@
   },
   "keywords": []
 }
+
+
+

@@ -29,6 +29,7 @@ import { saveBase64Image } from '../utils/upload.utils';
 import { Relationship } from '../relationships/entities/relationship.model';
 import { RelationshipEdgeService } from './relationship-edge.service';
 import { repairFamilyTreeIntegrity } from './tree-integrity';
+import { canViewScopedField } from '../user/privacy.util';
 
 @Injectable()
 export class FamilyService {
@@ -191,7 +192,7 @@ export class FamilyService {
 
   async getUserName(userId: number): Promise<string> {
     try {
-      console.log(`Getting user name for userId: ${userId}`);
+
 
       // First try to get name from UserProfile directly
       const userProfile = await this.userProfileModel.findOne({
@@ -199,7 +200,6 @@ export class FamilyService {
         attributes: ['firstName', 'lastName', 'userId'],
       });
 
-      console.log('UserProfile found:', userProfile?.toJSON());
 
       if (userProfile) {
         const firstName = userProfile.firstName || '';
@@ -207,7 +207,7 @@ export class FamilyService {
         const fullName = `${firstName} ${lastName}`.trim();
 
         if (fullName) {
-          console.log(`Returning name: ${fullName}`);
+
           return fullName;
         }
       }
@@ -224,7 +224,6 @@ export class FamilyService {
         ],
       });
 
-      console.log('User with profile found:', user?.toJSON());
 
       if (user?.userProfile) {
         const firstName = user.userProfile.firstName || '';
@@ -232,12 +231,11 @@ export class FamilyService {
         const fullName = `${firstName} ${lastName}`.trim();
 
         if (fullName) {
-          console.log(`Returning fallback name: ${fullName}`);
+
           return fullName;
         }
       }
 
-      console.log('No name found, returning default');
       return 'Family Member';
     } catch (error) {
       console.error('Error getting user name:', error);
@@ -2503,12 +2501,18 @@ export class FamilyService {
         if (userProfile?.profile) {
           img = this.uploadService.getFileUrl(userProfile.profile, 'profile');
         }
-        const mobile = entry.user?.mobile || null;
-        const countryCode = entry.user?.countryCode || null;
-        const contactNumber =
-          userProfile?.contactNumber ||
-          (countryCode && mobile ? `${countryCode}${mobile}` : mobile) ||
-          null;
+        const phoneVisible = canViewScopedField(
+          userProfile?.phonePrivacy,
+          Number(entry.userId) === Number(userId) ? 'self' : 'family',
+        );
+        const mobile = phoneVisible ? entry.user?.mobile || null : null;
+        const countryCode = phoneVisible ? entry.user?.countryCode || null : null;
+        const contactNumber = phoneVisible
+          ? userProfile?.contactNumber ||
+            (countryCode && mobile ? `${countryCode}${mobile}` : mobile) ||
+            null
+          : null;
+
         return {
           id: entry.personId, // Use personId as id
           nodeUid: entry.nodeUid,
@@ -2518,8 +2522,8 @@ export class FamilyService {
           memberId: entry.userId, // Include userId as memberId
           name: userProfile
             ? [userProfile.firstName, userProfile.lastName]
-              .filter(Boolean)
-              .join(' ') || 'Unknown'
+                .filter(Boolean)
+                .join(' ') || 'Unknown'
             : 'Unknown',
           gender: this.normalizeGender(userProfile?.gender),
           age: userProfile?.age || null,
@@ -3963,3 +3967,5 @@ export class FamilyService {
     }
   }
 }
+
+

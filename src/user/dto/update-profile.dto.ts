@@ -8,6 +8,7 @@ import {
   IsEmail,
   Matches,
   MaxLength,
+  IsIn,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import { ApiPropertyOptional } from '@nestjs/swagger';
@@ -265,6 +266,24 @@ export class UpdateProfileDto {
   @MaxLength(1000)
   bio?: string;
 
+  @ApiPropertyOptional({ description: 'Email visibility scope', example: 'FAMILY', enum: ['PRIVATE', 'FAMILY'] })
+  @IsOptional()
+  @IsString()
+  @IsIn(['PRIVATE', 'FAMILY'])
+  emailPrivacy?: string;
+
+  @ApiPropertyOptional({ description: 'Address visibility scope', example: 'FAMILY', enum: ['PRIVATE', 'FAMILY'] })
+  @IsOptional()
+  @IsString()
+  @IsIn(['PRIVATE', 'FAMILY'])
+  addressPrivacy?: string;
+
+  @ApiPropertyOptional({ description: 'Phone visibility scope', example: 'FAMILY', enum: ['PRIVATE', 'FAMILY'] })
+  @IsOptional()
+  @IsString()
+  @IsIn(['PRIVATE', 'FAMILY'])
+  phonePrivacy?: string;
+
   @ApiPropertyOptional({ description: 'System generated Family Code or Root ID', example: 'FAM000123' })
   @IsOptional()
   @IsString()
@@ -272,3 +291,6 @@ export class UpdateProfileDto {
   familyCode?: string;
   
 }
+
+
+

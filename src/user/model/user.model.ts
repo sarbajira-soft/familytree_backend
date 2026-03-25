@@ -3,19 +3,55 @@ import { HasManyGetAssociationsMixin, HasOneGetAssociationMixin } from 'sequeliz
 import { FamilyMember } from '../../family/model/family-member.model';
 import { FamilyTree } from '../../family/model/family-tree.model';
 import { UserProfile } from './user-profile.model';
+import {
+  buildEmailHash,
+  buildMobileHash,
+  decryptFieldValue,
+  encryptFieldValue,
+  normalizeEmailValue,
+  normalizeMobileValue,
+} from '../../common/security/field-encryption.util';
 
 @Table({ tableName: 'ft_user' })
 export class User extends Model<User> {
-  @Column({ type: DataType.STRING, unique: true, allowNull: true })
+  @Column({
+    type: DataType.TEXT,
+    allowNull: true,
+    get(this: User) {
+      return decryptFieldValue(this.getDataValue('email'));
+    },
+    set(this: User, value: string | null) {
+      const normalizedEmail = normalizeEmailValue(value);
+      this.setDataValue('email', encryptFieldValue(normalizedEmail));
+      this.setDataValue('emailHash', buildEmailHash(normalizedEmail));
+    },
+  })
   email: string;
+
+  @Column({ type: DataType.STRING, allowNull: true })
+  emailHash: string;
 
   // New field for country code (e.g., +91, +1)
   @Column({ type: DataType.STRING, allowNull: true })
   countryCode: string;
 
   // Mobile without country code
-  @Column({ type: DataType.STRING, unique: true, allowNull: true })
+  @Column({
+    type: DataType.TEXT,
+    allowNull: true,
+    get(this: User) {
+      return decryptFieldValue(this.getDataValue('mobile'));
+    },
+    set(this: User, value: string | null) {
+      const normalizedMobile = normalizeMobileValue(value);
+      this.setDataValue('mobile', encryptFieldValue(normalizedMobile));
+      this.setDataValue('mobileHash', buildMobileHash(normalizedMobile));
+    },
+  })
   mobile: string;
+
+  @Column({ type: DataType.STRING, allowNull: true })
+  mobileHash: string;
 
   @Column(DataType.STRING)
   password: string;

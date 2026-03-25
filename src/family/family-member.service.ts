@@ -20,6 +20,13 @@ import { repairFamilyTreeIntegrity } from './tree-integrity';
 import { CreateFamilyMemberDto } from './dto/create-family-member.dto';
 import { CreateUserAndJoinFamilyDto } from './dto/create-user-and-join-family.dto';
 import { ContentVisibilityService } from '../user/content-visibility.service';
+import {
+  buildEmailHash,
+  buildMobileHash,
+  normalizeEmailValue,
+  normalizeMobileValue,
+} from '../common/security/field-encryption.util';
+import { applyPrivacyToNestedUser } from '../user/privacy.util';
 
 @Injectable()
 export class FamilyMemberService {
@@ -61,6 +68,38 @@ export class FamilyMemberService {
     private readonly sequelize: Sequelize,
   ) {}
 
+
+  private buildEmailLookupOptions(email: string) {
+    const normalizedEmail = normalizeEmailValue(email);
+    if (!normalizedEmail) {
+      return [];
+    }
+
+    return [
+      { emailHash: buildEmailHash(normalizedEmail) },
+      { email: { [Op.iLike]: normalizedEmail } },
+    ];
+  }
+
+  private buildMobileLookupOptions(mobile: string) {
+    const normalizedMobile = normalizeMobileValue(mobile);
+    if (!normalizedMobile) {
+      return [];
+    }
+
+    return [
+      { mobileHash: buildMobileHash(normalizedMobile) },
+      { mobile: normalizedMobile },
+    ];
+  }
+
+  private applyFamilyVisibility(user: any) {
+    return applyPrivacyToNestedUser(user, 'family');
+  }
+
+  private applyPublicVisibility(user: any) {
+    return applyPrivacyToNestedUser(user, 'other');
+  }
   private async requireFamilyOrThrow(familyCode: string) {
     const family = await this.familyModel.findOne({ where: { familyCode } });
     if (!family) {
@@ -428,11 +467,8 @@ export class FamilyMemberService {
       where: {
         status: 1,
         [Op.or]: [
-          { email: dto.email },
-          {
-            countryCode: dto.countryCode,
-            mobile: dto.mobile,
-          },
+          { [Op.or]: this.buildEmailLookupOptions(dto.email) },
+          { [Op.or]: this.buildMobileLookupOptions(dto.mobile) },
         ],
       },
       transaction,
@@ -1473,12 +1509,12 @@ export class FamilyMemberService {
         {
           model: this.userModel,
           as: 'user',
-          attributes: ['id', 'email', 'mobile', 'status', 'role', 'isAppUser'],
+          attributes: ['id', 'email', 'mobile', 'countryCode', 'status', 'role', 'isAppUser'],
           include: [
             {
               model: this.userProfileModel,
               as: 'userProfile',
-              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'familyCode'],
+              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'familyCode', 'contactNumber', 'emailPrivacy', 'addressPrivacy', 'phonePrivacy'],
             },
           ],
         },
@@ -1522,13 +1558,13 @@ export class FamilyMemberService {
       return {
         ...member,
         blockStatus,
-        user: {
+        user: this.applyFamilyVisibility({
           ...user,
           fullName: user?.userProfile
             ? `${user.userProfile.firstName} ${user.userProfile.lastName}`.trim()
             : null,
           profileImage,
-        },
+        }),
         membershipType: (() => {
           const userPrimaryFamily = String(user?.userProfile?.familyCode || '').trim().toUpperCase();
           return userPrimaryFamily === normalizedFamilyCode ? 'member' : 'associated';
@@ -1585,12 +1621,12 @@ export class FamilyMemberService {
     if (associatedUserIds.length > 0) {
       const associatedUsers = await this.userModel.findAll({
         where: { id: { [Op.in]: associatedUserIds } } as any,
-        attributes: ['id', 'email', 'mobile', 'status', 'role', 'isAppUser'],
+        attributes: ['id', 'email', 'mobile', 'countryCode', 'status', 'role', 'isAppUser'],
         include: [
           {
             model: this.userProfileModel,
             as: 'userProfile',
-            attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'familyCode'],
+            attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'familyCode', 'contactNumber', 'emailPrivacy', 'addressPrivacy', 'phonePrivacy'],
           },
         ],
         order: [['id', 'DESC']],
@@ -1630,13 +1666,13 @@ export class FamilyMemberService {
             isLinkedUsed: false,
             createdAt: null,
             updatedAt: null,
-            user: {
+            user: this.applyFamilyVisibility({
               ...u.toJSON(),
               fullName: u?.userProfile
                 ? `${u.userProfile.firstName || ''} ${u.userProfile.lastName || ''}`.trim()
                 : null,
               profileImage,
-            },
+            }),
             blockStatus,
             membershipType: 'associated',
             familyRole: 'Member',
@@ -1679,12 +1715,12 @@ export class FamilyMemberService {
         const existingIds = new Set<number>([...baseUserIds, ...associatedUserIds]);
         const linkedUsers = await this.userModel.findAll({
           where: { '$userProfile.familyCode$': { [Op.in]: linkedCodes } } as any,
-          attributes: ['id', 'email', 'mobile', 'status', 'role', 'isAppUser'],
+          attributes: ['id', 'email', 'mobile', 'countryCode', 'status', 'role', 'isAppUser'],
           include: [
             {
               model: this.userProfileModel,
               as: 'userProfile',
-              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'familyCode'],
+              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'familyCode', 'contactNumber', 'emailPrivacy', 'addressPrivacy', 'phonePrivacy'],
             },
           ],
           order: [['id', 'DESC']],
@@ -1725,13 +1761,13 @@ export class FamilyMemberService {
                 isLinkedUsed: false,
                 createdAt: null,
                 updatedAt: null,
-                user: {
+                user: this.applyFamilyVisibility({
                   ...u.toJSON(),
                   fullName: u?.userProfile
                     ? `${u.userProfile.firstName || ''} ${u.userProfile.lastName || ''}`.trim()
                     : null,
                   profileImage,
-                },
+                }),
                 blockStatus,
                 membershipType: 'linked',
                 familyRole: 'Member',
@@ -1889,12 +1925,12 @@ export class FamilyMemberService {
         {
           model: this.userModel,
           as: 'user',
-          attributes: ['id', 'email', 'mobile', 'status', 'role', 'isAppUser'],
+          attributes: ['id', 'email', 'mobile', 'countryCode', 'status', 'role', 'isAppUser'],
           include: [
             {
               model: this.userProfileModel,
               as: 'userProfile',
-              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address'],
+              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'contactNumber', 'emailPrivacy', 'addressPrivacy', 'phonePrivacy'],
             },
           ],
         },
@@ -1921,13 +1957,13 @@ export class FamilyMemberService {
 
       return {
         ...member,
-        user: {
+        user: this.applyFamilyVisibility({
           ...user,
           fullName: user?.userProfile
-            ? `${user.userProfile.firstName} ${user.userProfile.lastName}`
+            ? `${user.userProfile.firstName || ''} ${user.userProfile.lastName || ''}`.trim()
             : null,
           profileImage,
-        },
+        }),
       };
     });
 
@@ -2035,12 +2071,13 @@ async checkMemberExists(familyCode: string, memberId: number) {
           id: member.memberId,
           familyCode: member.familyCode,
           approveStatus: member.approveStatus,
-          user: memberData.user ? {
+          user: memberData.user ? this.applyPublicVisibility({
             id: memberData.user.id,
             email: memberData.user.email,
             mobile: memberData.user.mobile,
-            userProfile: memberData.user.userProfile
-          } : null
+            countryCode: memberData.user.countryCode,
+            userProfile: memberData.user.userProfile,
+          }) : null
         }
       }
     };
@@ -2249,12 +2286,12 @@ async markLinkAsUsed(familyCode: string, memberId: number) {
         {
           model: this.userModel,
           as: 'user',
-          attributes: ['id', 'email', 'mobile', 'status', 'role', 'isAppUser'],
+          attributes: ['id', 'email', 'mobile', 'countryCode', 'status', 'role', 'isAppUser'],
           include: [
             {
               model: this.userProfileModel,
               as: 'userProfile',
-              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'familyCode'],
+              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'familyCode', 'contactNumber', 'emailPrivacy', 'addressPrivacy', 'phonePrivacy'],
             },
           ],
         },
@@ -2292,19 +2329,29 @@ async markLinkAsUsed(familyCode: string, memberId: number) {
         memberId: member.memberId,
         familyCode: member.familyCode,
         approveStatus: member.approveStatus,
-        user: {
+        user: this.applyFamilyVisibility({
           id: user?.id,
           email: user?.email,
           mobile: user?.mobile,
+          countryCode: user?.countryCode,
           isAppUser: user?.isAppUser,
           role: user?.role,
           fullName: user?.userProfile
             ? `${user.userProfile.firstName || ''} ${user.userProfile.lastName || ''}`.trim()
             : null,
           profileImage: user?.userProfile?.profile || null,
-          gender: user?.userProfile?.gender || null,
-          familyCode: user?.userProfile?.familyCode || null,
-        },
+          userProfile: user?.userProfile
+            ? {
+                gender: user.userProfile.gender || null,
+                familyCode: user.userProfile.familyCode || null,
+                address: user.userProfile.address || null,
+                phonePrivacy: user.userProfile.phonePrivacy,
+                addressPrivacy: user.userProfile.addressPrivacy,
+                emailPrivacy: user.userProfile.emailPrivacy,
+                contactNumber: user.userProfile.contactNumber || null,
+              }
+            : null,
+        }),
       };
     });
 
@@ -2314,3 +2361,6 @@ async markLinkAsUsed(familyCode: string, memberId: number) {
     };
   }
 }
+
+
+

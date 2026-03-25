@@ -1,16 +1,20 @@
 import { Controller, Get, Query, Logger } from '@nestjs/common';
 import { Public } from '../auth/public.decorator';
-import { 
-  ApiOperation, 
-  ApiResponse, 
-  ApiTags, 
-  ApiQuery, 
-  ApiProperty 
+import {
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+  ApiQuery,
+  ApiProperty,
 } from '@nestjs/swagger';
 import { InjectModel } from '@nestjs/sequelize';
+import { Op } from 'sequelize';
 import { User } from './model/user.model';
 import { UserProfile } from './model/user-profile.model';
-// Note: Avoid strict class-validator here to keep this endpoint error-less for UX
+import {
+  buildMobileHash,
+  normalizeMobileValue,
+} from '../common/security/field-encryption.util';
 
 class PhoneLookupDto {
   @ApiProperty({
@@ -20,10 +24,6 @@ class PhoneLookupDto {
   })
   phone: string;
 }
-
-
-
-
 
 @ApiTags('User Module')
 @Controller('user')
@@ -41,67 +41,49 @@ export class UserLookupController {
   @ApiResponse({ status: 500, description: 'Internal server error' })
   @ApiQuery({ name: 'phone', type: String, required: true, description: 'Phone number to look up (with or without country code)' })
   async lookup(@Query('phone') phone: string) {
-    Logger.log(`Lookup request for phone=${phone}`);
-    
+    Logger.log('Phone lookup request received', UserLookupController.name);
+
     try {
-      // Basic validation - check if phone is provided. Never throw 400 – return exists:false
       if (!phone || typeof phone !== 'string') {
         return { exists: false, message: 'A valid phone number is required' };
       }
-      
-      // Remove any non-digit characters and convert to string
+
       const cleanPhone = phone.replace(/\D/g, '');
-      
-      // Check if we have at least 10 digits
       if (cleanPhone.length < 10) {
         return { exists: false, message: 'Phone number must be at least 10 digits' };
       }
-      
-      // Extract the last 10 digits (in case country code is included)
+
       const last10Digits = cleanPhone.slice(-10);
-      
-      // Log the values for debugging
-      Logger.debug(`Phone lookup - Original: ${phone}, Cleaned: ${cleanPhone}, Last 10: ${last10Digits}`);
-      
-      // Find user with the last 10 digits
-      const user = await this.userModel.findOne({ 
-        where: { 
-          mobile: last10Digits,
-          status: 1 // Only active users
+      const normalizedMobile = normalizeMobileValue(last10Digits);
+      const mobileHash = buildMobileHash(normalizedMobile);
+
+      const user = await this.userModel.findOne({
+        where: {
+          status: 1,
+          [Op.or]: [
+            { mobileHash },
+            { mobile: normalizedMobile },
+          ],
         },
         include: [{
           model: UserProfile,
           as: 'userProfile',
-          required: false
-        }]
+          required: false,
+        }],
       });
-      
+
       if (!user) {
-        return { 
+        return {
           exists: false,
           message: 'User not found with the provided phone number',
-          ...(process.env.NODE_ENV === 'development' ? {
-            debug: {
-              input: phone,
-              cleaned: cleanPhone,
-              usedDigits: last10Digits,
-              length: cleanPhone.length
-            }
-          } : {})
         };
       }
-      
-      // Get user data as plain object
+
       const userData = user.get({ plain: true });
-      
-      // Format the response
       return {
         exists: true,
         user: {
           id: userData.id,
-          email: userData.email || null,
-          mobile: userData.mobile || null,
-          countryCode: userData.countryCode || null,
           firstName: userData.userProfile?.firstName || null,
           lastName: userData.userProfile?.lastName || null,
           fullName: [userData.userProfile?.firstName, userData.userProfile?.lastName]
@@ -110,13 +92,12 @@ export class UserLookupController {
             .trim() || null,
           familyCode: userData.userProfile?.familyCode || null,
           profilePicture: userData.userProfile?.profile || null,
-          gender: userData.userProfile?.gender || null
-        }
+          gender: userData.userProfile?.gender || null,
+          isAppUser: Boolean(userData.isAppUser),
+        },
       };
-      
     } catch (error) {
-      Logger.error(`Error in user lookup: ${error.message}`, error.stack);
-      // Never surface 500/400 to client for this lookup; keep it error-less
+      Logger.error(`Error in user lookup: ${error.message}`, error.stack, UserLookupController.name);
       return { exists: false, message: 'Error processing your request. Please try again later.' };
     }
   }

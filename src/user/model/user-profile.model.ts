@@ -7,6 +7,11 @@ import {
   BelongsTo,
 } from 'sequelize-typescript';
 import { User } from './user.model';
+import {
+  decryptFieldValue,
+  encryptFieldValue,
+  normalizeDateValue,
+} from '../../common/security/field-encryption.util';
 
 @Table({ tableName: 'ft_user_profile', timestamps: true })
 export class UserProfile extends Model<UserProfile> {
@@ -18,10 +23,10 @@ export class UserProfile extends Model<UserProfile> {
   user: User;
 
   @Column(DataType.STRING)
-  firstName: string; 
+  firstName: string;
 
   @Column(DataType.STRING)
-  lastName: string; 
+  lastName: string;
   
   @Column(DataType.STRING)
   profile: string; // profile photo URL or path
@@ -29,8 +34,16 @@ export class UserProfile extends Model<UserProfile> {
   @Column(DataType.STRING)
   gender: string;
 
-  @Column(DataType.DATE)
-  dob: Date;
+  @Column({
+    type: DataType.TEXT,
+    get(this: UserProfile) {
+      return decryptFieldValue(this.getDataValue('dob'));
+    },
+    set(this: UserProfile, value: string | null) {
+      this.setDataValue('dob', encryptFieldValue(normalizeDateValue(value)));
+    },
+  })
+  dob: string | Date;
 
   @Column(DataType.INTEGER)
   age: number;
@@ -92,13 +105,29 @@ export class UserProfile extends Model<UserProfile> {
   @Column(DataType.TEXT)
   favoriteFoods: string;
 
-  @Column(DataType.STRING)
+  @Column({
+    type: DataType.TEXT,
+    get(this: UserProfile) {
+      return decryptFieldValue(this.getDataValue('contactNumber'));
+    },
+    set(this: UserProfile, value: string | null) {
+      this.setDataValue('contactNumber', encryptFieldValue(value));
+    },
+  })
   contactNumber: string;
 
   @Column(DataType.INTEGER)
   countryId: number;
 
-  @Column(DataType.TEXT)
+  @Column({
+    type: DataType.TEXT,
+    get(this: UserProfile) {
+      return decryptFieldValue(this.getDataValue('address'));
+    },
+    set(this: UserProfile, value: string | null) {
+      this.setDataValue('address', encryptFieldValue(value));
+    },
+  })
   address: string;
 
   @Column(DataType.TEXT)
@@ -110,6 +139,27 @@ export class UserProfile extends Model<UserProfile> {
     defaultValue: false,
   })
   isPrivate: boolean;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: false,
+    defaultValue: 'FAMILY',
+  })
+  emailPrivacy: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: false,
+    defaultValue: 'FAMILY',
+  })
+  addressPrivacy: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: false,
+    defaultValue: 'FAMILY',
+  })
+  phonePrivacy: string;
 
   @Column(DataType.STRING)
   familyCode: string; // Main family code (birth family)
@@ -126,3 +176,5 @@ export class UserProfile extends Model<UserProfile> {
   language?: any;
   gothram?: any;
 }
+
+

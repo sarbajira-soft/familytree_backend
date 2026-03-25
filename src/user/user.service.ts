@@ -31,6 +31,13 @@ import { Event } from '../event/model/event.model';
 import { AccountRecoveryToken } from './model/account-recovery-token.model';
 import { FamilyMemberService } from '../family/family-member.service';
 import { ContentVisibilityService } from './content-visibility.service';
+import {
+  buildEmailHash,
+  buildMobileHash,
+  normalizeEmailValue,
+  normalizeMobileValue,
+} from '../common/security/field-encryption.util';
+import { resolvePhoneNumber } from './privacy.util';
 
 @Injectable()
 export class UserService {
@@ -108,6 +115,36 @@ export class UserService {
     };
   }
 
+
+  private buildEmailLookupOptions(email: string) {
+    const normalizedEmail = normalizeEmailValue(email);
+    if (!normalizedEmail) {
+      return [];
+    }
+
+    return [
+      { emailHash: buildEmailHash(normalizedEmail) },
+      { email: { [Op.iLike]: normalizedEmail } },
+    ];
+  }
+
+  private buildMobileLookupOptions(mobile: string) {
+    const normalizedMobile = normalizeMobileValue(mobile);
+    if (!normalizedMobile) {
+      return [];
+    }
+
+    return [
+      { mobileHash: buildMobileHash(normalizedMobile) },
+      { mobile: normalizedMobile },
+    ];
+  }
+
+  private normalizePrivacyScope(value: unknown) {
+    return String(value || 'FAMILY').trim().toUpperCase() === 'PRIVATE'
+      ? 'PRIVATE'
+      : 'FAMILY';
+  }
   private generateAccessToken(user: User): string {
     return jwt.sign(
       {
@@ -164,10 +201,12 @@ export class UserService {
     options?: { transaction?: any; lock?: boolean; attributes?: string[] },
   ) {
     const normalized = this.normalizeRecoveryIdentifier(identifier);
+    const whereClause = normalized.isEmail
+      ? { [Op.or]: this.buildEmailLookupOptions(normalized.normalizedEmail) }
+      : { [Op.or]: this.buildMobileLookupOptions(normalized.normalizedMobile) };
+
     return this.userModel.findOne({
-      where: normalized.isEmail
-        ? { email: { [Op.iLike]: normalized.normalizedEmail } }
-        : { mobile: normalized.normalizedMobile },
+      where: whereClause,
       ...(options?.attributes ? { attributes: options.attributes } : {}),
       ...(options?.transaction ? { transaction: options.transaction } : {}),
       ...(options?.lock && options?.transaction
@@ -776,7 +815,7 @@ export class UserService {
       const existingVerifiedByEmail = await this.userModel.findOne({
         where: {
           status: 1,
-          email: { [Op.iLike]: normalizedEmail },
+          [Op.or]: this.buildEmailLookupOptions(normalizedEmail),
         },
       });
 
@@ -791,8 +830,7 @@ export class UserService {
       const existingVerifiedByMobile = await this.userModel.findOne({
         where: {
           status: 1,
-          countryCode: registerDto.countryCode,
-          mobile: registerDto.mobile,
+          [Op.or]: this.buildMobileLookupOptions(registerDto.mobile),
         },
       });
 
@@ -808,12 +846,8 @@ export class UserService {
       const existingUnverifiedUser = await this.userModel.findOne({
         where: {
           [Op.or]: [
-            { email: { [Op.iLike]: normalizedEmail }, status: 0 },
-            {
-              countryCode: registerDto.countryCode,
-              mobile: registerDto.mobile,
-              status: 0,
-            },
+            { status: 0, [Op.or]: this.buildEmailLookupOptions(normalizedEmail) },
+            { status: 0, [Op.or]: this.buildMobileLookupOptions(registerDto.mobile) },
           ],
         },
       });
@@ -932,8 +966,8 @@ export class UserService {
     const normalizedUserName = (userName || '').trim();
     const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedUserName);
     const whereClause: any = isEmail
-      ? { email: { [Op.iLike]: normalizedUserName.toLowerCase() } }
-      : { mobile: normalizedUserName.replaceAll(/^\+\d{1,4}/g, '') };
+      ? { [Op.or]: this.buildEmailLookupOptions(normalizedUserName.toLowerCase()) }
+      : { [Op.or]: this.buildMobileLookupOptions(normalizedUserName) };
 
     const user = await this.userModel.findOne({ where: whereClause });
 
@@ -997,8 +1031,8 @@ export class UserService {
 
     const isEmail = usernameRaw.includes('@');
     const whereClause: any = isEmail
-      ? { email: { [Op.iLike]: usernameRaw.toLowerCase() } }
-      : { mobile: usernameRaw.replaceAll(/\D/g, '').slice(-14) };
+      ? { [Op.or]: this.buildEmailLookupOptions(usernameRaw.toLowerCase()) }
+      : { [Op.or]: this.buildMobileLookupOptions(usernameRaw) };
 
     const user = await this.userModel.findOne({ where: whereClause });
 
@@ -1047,17 +1081,14 @@ export class UserService {
 
     let whereClause: any;
     if (email) {
-      whereClause = { email: { [Op.iLike]: email } };
+      whereClause = { [Op.or]: this.buildEmailLookupOptions(email) };
     } else {
       const match = /^\+(\d{1,4})(\d{6,14})$/.exec(mobileWithCountry);
       if (!match) {
         throw new BadRequestException({ message: 'Invalid mobile format' });
       }
 
-      whereClause = {
-        countryCode: `+${match[1]}`,
-        mobile: match[2],
-      };
+      whereClause = { [Op.or]: this.buildMobileLookupOptions(match[2]) };
     }
 
     const user = await this.userModel.findOne({ where: whereClause });
@@ -1088,8 +1119,8 @@ export class UserService {
 
     const isEmail = username.includes('@');
     const whereClause: any = isEmail
-      ? { email: { [Op.iLike]: username.toLowerCase() } }
-      : { mobile: username.replaceAll(/\D/g, '') };
+      ? { [Op.or]: this.buildEmailLookupOptions(username.toLowerCase()) }
+      : { [Op.or]: this.buildMobileLookupOptions(username) };
 
     const user = await this.userModel.findOne({ where: whereClause });
     if (!user) {
@@ -1138,8 +1169,8 @@ export class UserService {
     const whereClause: any = {
       otp,
       ...(isEmail
-        ? { email: { [Op.iLike]: (username || '').trim() } }
-        : { mobile: (username || '').trim() }),
+        ? { [Op.or]: this.buildEmailLookupOptions((username || '').trim()) }
+        : { [Op.or]: this.buildMobileLookupOptions((username || '').trim()) }),
     };
 
     // Find user
@@ -1280,11 +1311,7 @@ export class UserService {
         throw new NotFoundException('User profile not found');
       }
 
-      const fullPhone =
-        user.userProfile?.contactNumber ||
-        (user.countryCode && user.mobile
-          ? `${user.countryCode}${user.mobile}`
-          : user.mobile);
+      const fullPhone = resolvePhoneNumber(user, user.userProfile);
 
       return {
         id: user.id,
@@ -1305,17 +1332,39 @@ export class UserService {
     }
   }
 
-  async setPrivacy(userId: number, isPrivate: boolean) {
+  async setPrivacy(userId: number, dto: { isPrivate?: boolean; emailPrivacy?: string; addressPrivacy?: string; phonePrivacy?: string }) {
     const profile = await this.userProfileModel.findOne({ where: { userId } });
     if (!profile) {
       throw new NotFoundException('User profile not found');
     }
 
-    await profile.update({ isPrivate: !!isPrivate } as any);
+    const updates: Record<string, unknown> = {};
+    if (typeof dto?.isPrivate === 'boolean') {
+      updates.isPrivate = dto.isPrivate;
+    }
+    if (dto?.emailPrivacy !== undefined) {
+      updates.emailPrivacy = this.normalizePrivacyScope(dto.emailPrivacy);
+    }
+    if (dto?.addressPrivacy !== undefined) {
+      updates.addressPrivacy = this.normalizePrivacyScope(dto.addressPrivacy);
+    }
+    if (dto?.phonePrivacy !== undefined) {
+      updates.phonePrivacy = this.normalizePrivacyScope(dto.phonePrivacy);
+    }
+
+    if (Object.keys(updates).length > 0) {
+      await profile.update(updates as any);
+    }
 
     return {
       message: 'Privacy updated successfully',
-      data: { userId, isPrivate: !!profile.isPrivate },
+      data: {
+        userId,
+        isPrivate: !!profile.isPrivate,
+        emailPrivacy: this.normalizePrivacyScope(profile.emailPrivacy),
+        addressPrivacy: this.normalizePrivacyScope(profile.addressPrivacy),
+        phonePrivacy: this.normalizePrivacyScope(profile.phonePrivacy),
+      },
     };
   }
 
@@ -1443,7 +1492,17 @@ export class UserService {
         }
       }
 
-      const { email, countryCode, mobile, role, status, password } = dto;
+      const {
+        email,
+        countryCode,
+        mobile,
+        role,
+        status,
+        password,
+        emailPrivacy,
+        addressPrivacy,
+        phonePrivacy,
+      } = dto;
 
       // -----------------------------
       // CONTACT / PASSWORD PERMISSIONS
@@ -1471,12 +1530,12 @@ export class UserService {
       // -----------------------------
       if (
         email !== undefined &&
-        email !== targetUser.email &&
+        normalizeEmailValue(email) !== targetUser.email &&
         actorCanChangeContact
       ) {
         const emailExists = await this.userModel.findOne({
           where: {
-            email,
+            [Op.or]: this.buildEmailLookupOptions(email),
             id: { [Op.ne]: userId },
             status: { [Op.ne]: 3 },
           },
@@ -1502,8 +1561,7 @@ export class UserService {
       ) {
         const mobileExists = await this.userModel.findOne({
           where: {
-            mobile,
-            countryCode,
+            [Op.or]: this.buildMobileLookupOptions(mobile),
             id: { [Op.ne]: userId },
             status: { [Op.ne]: 3 },
           },
@@ -1548,6 +1606,15 @@ export class UserService {
       if (normalizedDto.otherReligion) normalizedDto.religionId = null;
       if (normalizedDto.otherLanguage) normalizedDto.languageId = null;
       if (normalizedDto.otherGothram) normalizedDto.gothramId = null;
+      if ('emailPrivacy' in normalizedDto) {
+        normalizedDto.emailPrivacy = this.normalizePrivacyScope(emailPrivacy);
+      }
+      if ('addressPrivacy' in normalizedDto) {
+        normalizedDto.addressPrivacy = this.normalizePrivacyScope(addressPrivacy);
+      }
+      if ('phonePrivacy' in normalizedDto) {
+        normalizedDto.phonePrivacy = this.normalizePrivacyScope(phonePrivacy);
+      }
 
       const profileUpdates = {};
       const profileFields = [
@@ -1579,6 +1646,9 @@ export class UserService {
         'countryId',
         'address',
         'bio',
+        'emailPrivacy',
+        'addressPrivacy',
+        'phonePrivacy',
       ];
 
       profileFields.forEach((field) => {
@@ -1820,3 +1890,8 @@ export class UserService {
     };
   }
 }
+
+
+
+
+

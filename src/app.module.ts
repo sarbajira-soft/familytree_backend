@@ -1,3 +1,4 @@
+import { resolve } from 'path';
 import { Module } from '@nestjs/common';
 import { SequelizeModule } from '@nestjs/sequelize';
 import { ConfigModule } from '@nestjs/config';
@@ -21,7 +22,14 @@ import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
-    ConfigModule.forRoot({ isGlobal: true }),
+    ConfigModule.forRoot({
+      isGlobal: true,
+      envFilePath: [
+        resolve(process.cwd(), '.env'),
+        resolve(process.cwd(), 'familytree_backend/.env'),
+        resolve(__dirname, '..', '.env'),
+      ],
+    }),
     SequelizeModule.forRoot({
       dialect: 'postgres',
       host: process.env.DB_HOST,

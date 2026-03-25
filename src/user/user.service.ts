@@ -1332,7 +1332,7 @@ export class UserService {
     }
   }
 
-  async setPrivacy(userId: number, dto: { isPrivate?: boolean; emailPrivacy?: string; addressPrivacy?: string; phonePrivacy?: string }) {
+  async setPrivacy(userId: number, dto: { isPrivate?: boolean; emailPrivacy?: string; addressPrivacy?: string; phonePrivacy?: string; dobPrivacy?: string }) {
     const profile = await this.userProfileModel.findOne({ where: { userId } });
     if (!profile) {
       throw new NotFoundException('User profile not found');
@@ -1351,6 +1351,9 @@ export class UserService {
     if (dto?.phonePrivacy !== undefined) {
       updates.phonePrivacy = this.normalizePrivacyScope(dto.phonePrivacy);
     }
+    if (dto?.dobPrivacy !== undefined) {
+      updates.dobPrivacy = this.normalizePrivacyScope(dto.dobPrivacy);
+    }
 
     if (Object.keys(updates).length > 0) {
       await profile.update(updates as any);
@@ -1364,6 +1367,7 @@ export class UserService {
         emailPrivacy: this.normalizePrivacyScope(profile.emailPrivacy),
         addressPrivacy: this.normalizePrivacyScope(profile.addressPrivacy),
         phonePrivacy: this.normalizePrivacyScope(profile.phonePrivacy),
+        dobPrivacy: this.normalizePrivacyScope(profile.dobPrivacy),
       },
     };
   }
@@ -1502,6 +1506,7 @@ export class UserService {
         emailPrivacy,
         addressPrivacy,
         phonePrivacy,
+        dobPrivacy,
       } = dto;
 
       // -----------------------------
@@ -1615,6 +1620,9 @@ export class UserService {
       if ('phonePrivacy' in normalizedDto) {
         normalizedDto.phonePrivacy = this.normalizePrivacyScope(phonePrivacy);
       }
+      if ('dobPrivacy' in normalizedDto) {
+        normalizedDto.dobPrivacy = this.normalizePrivacyScope(dobPrivacy);
+      }
 
       const profileUpdates = {};
       const profileFields = [
@@ -1649,6 +1657,7 @@ export class UserService {
         'emailPrivacy',
         'addressPrivacy',
         'phonePrivacy',
+        'dobPrivacy',
       ];
 
       profileFields.forEach((field) => {

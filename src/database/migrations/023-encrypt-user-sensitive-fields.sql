@@ -36,3 +36,7 @@ ALTER TABLE public.ft_user_profile
 
 ALTER TABLE public.ft_user_profile
   ADD COLUMN IF NOT EXISTS "phonePrivacy" VARCHAR(16) NOT NULL DEFAULT 'FAMILY';
+
+ALTER TABLE public.ft_user_profile
+  ADD COLUMN IF NOT EXISTS "dobPrivacy" VARCHAR(16) NOT NULL DEFAULT 'FAMILY';
+

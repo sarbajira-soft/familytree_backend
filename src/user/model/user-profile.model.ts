@@ -161,6 +161,13 @@ export class UserProfile extends Model<UserProfile> {
   })
   phonePrivacy: string;
 
+  @Column({
+    type: DataType.STRING,
+    allowNull: false,
+    defaultValue: 'FAMILY',
+  })
+  dobPrivacy: string;
+
   @Column(DataType.STRING)
   familyCode: string; // Main family code (birth family)
 

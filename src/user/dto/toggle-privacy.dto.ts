@@ -24,4 +24,10 @@ export class TogglePrivacyDto {
   @IsString()
   @IsIn(['PRIVATE', 'FAMILY'])
   phonePrivacy?: string;
+
+  @ApiPropertyOptional({ description: 'Date of birth visibility scope', example: 'FAMILY', enum: ['PRIVATE', 'FAMILY'] })
+  @IsOptional()
+  @IsString()
+  @IsIn(['PRIVATE', 'FAMILY'])
+  dobPrivacy?: string;
 }

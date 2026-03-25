@@ -50,6 +50,7 @@ async function migrateProfiles() {
       'emailPrivacy',
       'addressPrivacy',
       'phonePrivacy',
+      'dobPrivacy',
     ],
     order: [['id', 'ASC']],
   });
@@ -89,6 +90,11 @@ async function migrateProfiles() {
 
     if (!profile.phonePrivacy) {
       profile.phonePrivacy = 'FAMILY';
+      changed = true;
+    }
+
+    if (!profile.dobPrivacy) {
+      profile.dobPrivacy = 'FAMILY';
       changed = true;
     }
 

@@ -44,7 +44,7 @@ export function resolvePhoneNumber(
   }
 
   const countryCode = String(user?.countryCode || '').trim();
-  return `${countryCode}${mobile}`.trim() || mobile;
+  return (countryCode + mobile).trim() || mobile;
 }
 
 export function applyPrivacyToNestedUser<T extends Record<string, any>>(
@@ -63,6 +63,7 @@ export function applyPrivacyToNestedUser<T extends Record<string, any>>(
   const emailVisible = canViewScopedField(nextProfile?.emailPrivacy, relation);
   const phoneVisible = canViewScopedField(nextProfile?.phonePrivacy, relation);
   const addressVisible = canViewScopedField(nextProfile?.addressPrivacy, relation);
+  const dobVisible = canViewScopedField(nextProfile?.dobPrivacy, relation);
 
   if (!emailVisible) {
     nextUser.email = null;
@@ -82,17 +83,23 @@ export function applyPrivacyToNestedUser<T extends Record<string, any>>(
     nextProfile.address = null;
   }
 
+  if (!dobVisible && nextProfile) {
+    nextProfile.dob = null;
+  }
+
   if (nextProfile) {
     nextProfile.privacySettings = {
       isPrivate: Boolean(nextProfile.isPrivate),
       emailPrivacy: normalizeScope(nextProfile.emailPrivacy),
       addressPrivacy: normalizeScope(nextProfile.addressPrivacy),
       phonePrivacy: normalizeScope(nextProfile.phonePrivacy),
+      dobPrivacy: normalizeScope(nextProfile.dobPrivacy),
     };
     nextProfile.fieldVisibility = {
       email: emailVisible,
       phone: phoneVisible,
       address: addressVisible,
+      dob: dobVisible,
     };
     nextUser.userProfile = nextProfile;
   }
@@ -116,6 +123,7 @@ export function applyPrivacyToProfileResponse<T extends Record<string, any>>(
   const emailVisible = canViewScopedField(nextProfile?.emailPrivacy, relation);
   const phoneVisible = canViewScopedField(nextProfile?.phonePrivacy, relation);
   const addressVisible = canViewScopedField(nextProfile?.addressPrivacy, relation);
+  const dobVisible = canViewScopedField(nextProfile?.dobPrivacy, relation);
 
   if (!emailVisible) {
     nextPayload.email = null;
@@ -135,21 +143,26 @@ export function applyPrivacyToProfileResponse<T extends Record<string, any>>(
     nextProfile.address = null;
   }
 
+  if (!dobVisible && nextProfile) {
+    nextProfile.dob = null;
+  }
+
   if (nextProfile) {
     nextProfile.privacySettings = {
       isPrivate: Boolean(nextProfile.isPrivate),
       emailPrivacy: normalizeScope(nextProfile.emailPrivacy),
       addressPrivacy: normalizeScope(nextProfile.addressPrivacy),
       phonePrivacy: normalizeScope(nextProfile.phonePrivacy),
+      dobPrivacy: normalizeScope(nextProfile.dobPrivacy),
     };
     nextProfile.fieldVisibility = {
       email: emailVisible,
       phone: phoneVisible,
       address: addressVisible,
+      dob: dobVisible,
     };
     nextPayload.userProfile = nextProfile;
   }
 
   return nextPayload as T;
 }
-

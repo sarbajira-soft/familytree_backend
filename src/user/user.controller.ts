@@ -407,66 +407,49 @@ export class UserController {
 
     this.logger.log(`Profile access check: isPrivate=${targetIsPrivate}, myFamilyCode=${myFamilyCode}, targetFamilyCode=${targetFamilyCode}`);
 
-    // If profile is NOT private (public), allow any authenticated user to view
+    let viewerRelation: 'family' | 'other' = 'other';
+
+    if (myFamilyCode && targetFamilyCode && myFamilyCode === targetFamilyCode) {
+      viewerRelation = 'family';
+      this.logger.log('Same family viewer detected');
+    } else if (myFamilyCode && targetFamilyCode) {
+      const familiesAreLinked = await this.areFamiliesLinked(myFamilyCode, targetFamilyCode);
+      if (familiesAreLinked) {
+        viewerRelation = 'family';
+        this.logger.log('Linked family viewer detected');
+      } else {
+        const familiesAreAssociated = await this.areFamiliesAssociated(myFamilyCode, targetFamilyCode);
+        if (familiesAreAssociated) {
+          viewerRelation = 'family';
+          this.logger.log('Associated family viewer detected');
+        }
+      }
+    }
+
     if (!targetIsPrivate) {
-      this.logger.log(`Profile is public - allowing access`);
-      const publicVisibleProfile = applyPrivacyToProfileResponse(plainTargetUser, 'other');
+      this.logger.log(`Profile is public - applying relation-based privacy: ${viewerRelation}`);
+      const visibleProfile = applyPrivacyToProfileResponse(plainTargetUser, viewerRelation);
       return {
         message: 'Profile fetched successfully',
-        // BLOCK OVERRIDE: Injected new blockStatus contract.
-        data: { ...publicVisibleProfile, blockStatus },
+        data: { ...visibleProfile, blockStatus },
         currentUser: loggedInUser,
       };
     }
 
-    // If profile IS private, check if viewer is in same family or linked/associated
-    if (targetIsPrivate) {
-      this.logger.log(`Profile is private - checking family/association access`);
-
-      // Same family check
-      if (myFamilyCode && targetFamilyCode && myFamilyCode === targetFamilyCode) {
-        this.logger.log(`Same family - allowing access`);
-        const familyVisibleProfile = applyPrivacyToProfileResponse(plainTargetUser, 'family');
-        return {
-          message: 'Profile fetched successfully',
-          data: { ...familyVisibleProfile, blockStatus },
-          currentUser: loggedInUser,
-        };
-      }
-
-      // Check linked families
-      if (myFamilyCode && targetFamilyCode) {
-        const familiesAreLinked = await this.areFamiliesLinked(myFamilyCode, targetFamilyCode);
-        if (familiesAreLinked) {
-          this.logger.log(`Linked families - allowing access`);
-          const linkedVisibleProfile = applyPrivacyToProfileResponse(plainTargetUser, 'family');
-          return {
-            message: 'Profile fetched successfully',
-            data: { ...linkedVisibleProfile, blockStatus },
-            currentUser: loggedInUser,
-          };
-        }
-      }
-
-      // Check associated families
-      if (myFamilyCode && targetFamilyCode) {
-        const familiesAreAssociated = await this.areFamiliesAssociated(myFamilyCode, targetFamilyCode);
-        if (familiesAreAssociated) {
-          this.logger.log(`Associated families - allowing access`);
-          const linkedVisibleProfile = applyPrivacyToProfileResponse(plainTargetUser, 'family');
-          return {
-            message: 'Profile fetched successfully',
-            data: { ...linkedVisibleProfile, blockStatus },
-            currentUser: loggedInUser,
-          };
-        }
-      }
-
-      this.logger.error(`Private profile access denied: user ${loggedInUser.userId} cannot view user ${id}`);
-      throw new BadRequestException({
-        message: 'This profile is private. Only family members can view it.',
-      });
+    if (viewerRelation === 'family') {
+      this.logger.log('Private profile allowed for family viewer');
+      const familyVisibleProfile = applyPrivacyToProfileResponse(plainTargetUser, 'family');
+      return {
+        message: 'Profile fetched successfully',
+        data: { ...familyVisibleProfile, blockStatus },
+        currentUser: loggedInUser,
+      };
     }
+
+    this.logger.error(`Private profile access denied: user ${loggedInUser.userId} cannot view user ${id}`);
+    throw new BadRequestException({
+      message: 'This profile is private. Only family members can view it.',
+    });
 
     // Default allow (should not reach here)
     return {

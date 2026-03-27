@@ -1072,6 +1072,70 @@ export class AdminUsersService {
     };
   }
 
+  async deleteNonAppUser(actor: any, id: number) {
+    this.assertActor(actor);
+
+    const userId = Number(id);
+    if (!Number.isFinite(userId) || Number.isNaN(userId) || userId <= 0) {
+      throw new NotFoundException('User not found');
+    }
+
+    const user = await this.userModel.findOne({
+      where: { id: userId, isAppUser: false } as any,
+      attributes: ['id', 'isAppUser'] as any,
+    });
+
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const [membershipCount, treeAsPersonCount, treeAsUserCount, postsCount, galleriesCount, eventsCount] = await Promise.all([
+      this.familyMemberModel.count({ where: { memberId: userId } as any }),
+      this.familyTreeModel.count({ where: { personId: userId } as any }),
+      this.familyTreeModel.count({ where: { userId: userId } as any }),
+      this.postModel.count({ where: { createdBy: userId, status: 1 } as any }),
+      this.galleryModel.count({ where: { createdBy: userId, status: 1 } as any }),
+      this.eventModel.count({ where: { userId: userId, status: 1 } as any }),
+    ]);
+
+    const hasReferences =
+      Number(membershipCount || 0) > 0 ||
+      Number(treeAsPersonCount || 0) > 0 ||
+      Number(treeAsUserCount || 0) > 0 ||
+      Number(postsCount || 0) > 0 ||
+      Number(galleriesCount || 0) > 0 ||
+      Number(eventsCount || 0) > 0;
+
+    if (hasReferences) {
+      throw new ForbiddenException('Non-app user cannot be deleted while it has references (memberships/tree/content)');
+    }
+
+    const transaction = await this.userModel.sequelize.transaction();
+    try {
+      await this.userProfileModel.destroy({ where: { userId } as any, transaction });
+      await this.userModel.destroy({ where: { id: userId, isAppUser: false } as any, transaction });
+      await transaction.commit();
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
+
+    await this.adminAuditLogService.log(actor.adminId, 'ADMIN_NON_APP_USER_DELETE', {
+      targetType: 'user_account',
+      targetId: userId,
+      metadata: {
+        membershipCount,
+        treeAsPersonCount,
+        treeAsUserCount,
+        postsCount,
+        galleriesCount,
+        eventsCount,
+      },
+    });
+
+    return { message: 'Non-app user permanently deleted' };
+  }
+
   async listAppUsers(
     actor: any,
     params: {

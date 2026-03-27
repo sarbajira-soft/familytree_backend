@@ -19,6 +19,7 @@ import { EventModule } from './event/event.module';
 import { InviteModule } from './invite/invite.module';
 import { BlockingModule } from './blocking/blocking.module';
 import { AdminModule } from './admin/admin.module';
+import { ReportModule } from './report/report.module';
 
 @Module({
   imports: [
@@ -75,6 +76,7 @@ import { AdminModule } from './admin/admin.module';
     EventModule,
     InviteModule,
     AdminModule,
+    ReportModule,
   ],
 })
 export class AppModule {

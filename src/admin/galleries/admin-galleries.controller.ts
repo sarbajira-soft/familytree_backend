@@ -1,11 +1,15 @@
-import { Controller, Delete, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UploadedFiles, UseGuards, UseInterceptors } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { FileFieldsInterceptor } from '@nestjs/platform-express';
+import { memoryStorage } from 'multer';
 
 import { AdminJwtAuthGuard } from '../auth/admin-jwt-auth.guard';
 import { AdminRolesGuard } from '../auth/admin-roles.guard';
 import { AdminRoles } from '../auth/admin-roles.decorator';
 import { AdminGalleriesService } from './admin-galleries.service';
 import { GalleryRetentionService } from '../../gallery/gallery-retention.service';
+import { imageFileFilter } from '../../utils/upload.utils';
+import { UpdateAdminGalleryDto } from './dto/update-admin-gallery.dto';
 
 @ApiTags('Admin')
 @Controller('admin/galleries')
@@ -95,6 +99,33 @@ export class AdminGalleriesController {
   @ApiOperation({ summary: 'Get gallery details for admin panel (admin/superadmin)' })
   galleryById(@Req() req, @Param('id') id: string) {
     return this.adminGalleriesService.getGalleryById(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Patch(':id')
+  @UseInterceptors(
+    FileFieldsInterceptor(
+      [
+        { name: 'coverPhoto', maxCount: 1 },
+        { name: 'images', maxCount: 20 },
+      ],
+      {
+        storage: memoryStorage(),
+        fileFilter: imageFileFilter,
+        limits: { fileSize: 5 * 1024 * 1024 },
+      },
+    ),
+  )
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update gallery (admin/superadmin)' })
+  updateGallery(
+    @Req() req,
+    @Param('id') id: string,
+    @UploadedFiles() files: { coverPhoto?: Express.Multer.File[]; images?: Express.Multer.File[] },
+    @Body() dto: UpdateAdminGalleryDto,
+  ) {
+    return this.adminGalleriesService.updateGallery(req.user, Number(id), dto, files?.coverPhoto?.[0] || null, files?.images || []);
   }
 
   @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)

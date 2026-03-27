@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, Req, UseGuards, Delete } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { AdminJwtAuthGuard } from '../auth/admin-jwt-auth.guard';
@@ -62,5 +62,14 @@ export class AdminFamiliesController {
   @ApiOperation({ summary: 'Get family details for admin panel (admin/superadmin)' })
   familyById(@Req() req, @Param('id') id: string) {
     return this.adminFamiliesService.getFamilyById(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Delete(':id')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Delete a family (admin/superadmin)' })
+  deleteFamily(@Req() req, @Param('id') id: string) {
+    return this.adminFamiliesService.deleteFamily(req.user, Number(id));
   }
 }

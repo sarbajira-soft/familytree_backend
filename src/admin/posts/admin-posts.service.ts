@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
 
@@ -9,6 +9,7 @@ import { User } from '../../user/model/user.model';
 import { UserProfile } from '../../user/model/user-profile.model';
 import { UploadService } from '../../uploads/upload.service';
 import { AdminAuditLogService } from '../admin-audit-log.service';
+import { UpdateAdminPostDto } from './dto/update-admin-post.dto';
 
 @Injectable()
 export class AdminPostsService {
@@ -429,6 +430,84 @@ export class AdminPostsService {
       },
       creator,
     };
+  }
+
+  async updatePost(actor: any, postId: number, dto: UpdateAdminPostDto, file?: Express.Multer.File | null) {
+    this.assertActor(actor);
+    const id = this.normalizeId(postId, 'Post');
+
+    const post = await this.postModel.findOne({ where: { id } as any });
+    if (!post) throw new NotFoundException('Post not found');
+
+    if ((post as any).deletedAt) {
+      throw new ForbiddenException('Cannot update a deleted post');
+    }
+
+    const patch: any = {};
+    if (dto?.caption !== undefined) patch.caption = String(dto.caption ?? '').trim();
+
+    const removeImage = String((dto as any)?.removeImage || '').toLowerCase() === 'true';
+    const hasNewImage = Boolean(file);
+
+    if (removeImage && hasNewImage) {
+      throw new BadRequestException('Cannot upload a new image and remove image at the same time');
+    }
+
+    if (removeImage) {
+      patch.postImage = null;
+    }
+
+    if (hasNewImage) {
+      const oldImage = (post as any)?.postImage ? String((post as any).postImage) : null;
+      if (oldImage) {
+        try {
+          await this.uploadService.deleteFile(oldImage, 'posts');
+        } catch (_) {
+          // ignore
+        }
+      }
+      patch.postImage = await this.uploadService.uploadFile(file as any, 'posts');
+    }
+
+    if (Object.keys(patch).length === 0) {
+      throw new BadRequestException('No changes');
+    }
+
+    const before = {
+      caption: (post as any)?.caption ?? null,
+      postImage: (post as any)?.postImage ?? null,
+    };
+
+    await post.update(patch as any);
+
+    if (removeImage) {
+      const oldImage = before.postImage ? String(before.postImage) : null;
+      if (oldImage) {
+        try {
+          await this.uploadService.deleteFile(oldImage, 'posts');
+        } catch (_) {
+          // ignore
+        }
+      }
+    }
+
+    const after = {
+      caption: (post as any)?.caption ?? null,
+      postImage: (post as any)?.postImage ?? null,
+    };
+
+    await this.adminAuditLogService.log(Number(actor?.adminId), 'post_update', {
+      targetType: 'post',
+      targetId: id,
+      metadata: {
+        postId: id,
+        createdBy: Number((post as any)?.createdBy),
+        before,
+        after,
+      },
+    });
+
+    return this.getPostById(actor, id);
   }
 
   async softDeletePost(actor: any, postId: number) {

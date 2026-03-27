@@ -47,6 +47,9 @@ import { MedusaCustomerSyncService } from '../medusa/medusa-customer-sync.servic
 import { CommentRetentionService } from './retention/comment-retention.service';
 import { CommentRetentionScheduler } from './retention/comment-retention.scheduler';
 import { UserModule } from '../user/user.module';
+import { ContentReport } from '../report/model/content-report.model';
+import { AdminReportsController } from './reports/admin-reports.controller';
+import { AdminReportsService } from './reports/admin-reports.service';
 
 @Module({
   imports: [
@@ -67,6 +70,7 @@ import { UserModule } from '../user/user.module';
       FamilyMember,
       Family,
       FamilyTree,
+      ContentReport,
     ]),
     ScheduleModule.forRoot(),
     UploadModule,
@@ -91,7 +95,7 @@ import { UserModule } from '../user/user.module';
       },
     }),
   ],
-  controllers: [AdminController, AdminUsersController, AdminPostsController, AdminGalleriesController, AdminEventsController, AdminFamiliesController, AdminS3Controller, AdminRetailController],
+  controllers: [AdminController, AdminUsersController, AdminPostsController, AdminGalleriesController, AdminEventsController, AdminFamiliesController, AdminS3Controller, AdminRetailController, AdminReportsController],
   providers: [
     AdminService,
     AdminAuditLogService,
@@ -102,6 +106,7 @@ import { UserModule } from '../user/user.module';
     AdminFamiliesService,
     AdminS3Service,
     AdminRetailService,
+    AdminReportsService,
     MedusaCustomerSyncService,
     CommentRetentionService,
     CommentRetentionScheduler,

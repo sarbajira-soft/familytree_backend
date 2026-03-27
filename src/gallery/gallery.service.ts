@@ -665,6 +665,13 @@ export class GalleryService {
       const resolvedPrivacy = dto.privacy ?? existingGallery.privacy;
       const updateData: Partial<Gallery> = {};
 
+      // Normalize empty strings coming from multipart/form-data.
+      // familyCode participates in an FK to ft_family.familyCode; empty string can violate it.
+      const normalizedFamilyCode =
+        dto.familyCode !== undefined && dto.familyCode !== null
+          ? String(dto.familyCode).trim()
+          : undefined;
+
       if (dto.galleryTitle !== undefined) {
         updateData.galleryTitle = dto.galleryTitle;
       }
@@ -680,7 +687,7 @@ export class GalleryService {
 
       // Handle privacy and family code updates
       if (resolvedPrivacy === 'private') {
-        const resolvedFamilyCode = dto.familyCode || existingGallery.familyCode;
+        const resolvedFamilyCode = normalizedFamilyCode || existingGallery.familyCode;
         if (!resolvedFamilyCode) {
           throw new BadRequestException('familyCode is required for private privacy');
         }
@@ -689,7 +696,12 @@ export class GalleryService {
         }
       } else if (resolvedPrivacy === 'public') {
         if (dto.privacy !== undefined) {
-          updateData.familyCode = ''; // Clear family code for public galleries
+          updateData.familyCode = null; // Clear family code for public galleries
+        }
+      } else {
+        // For any other non-private privacy mode, do not persist empty string into a FK column.
+        if (dto.familyCode !== undefined) {
+          updateData.familyCode = normalizedFamilyCode ? normalizedFamilyCode : null;
         }
       }
 

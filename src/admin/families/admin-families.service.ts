@@ -1,9 +1,15 @@
 import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
+import { Sequelize } from 'sequelize-typescript';
 
+import { AdminAuditLogService } from '../admin-audit-log.service';
 import { Family } from '../../family/model/family.model';
 import { FamilyMember } from '../../family/model/family-member.model';
+import { FamilyTree } from '../../family/model/family-tree.model';
+import { Event } from '../../event/model/event.model';
+import { Gallery } from '../../gallery/model/gallery.model';
+import { Post } from '../../post/model/post.model';
 import { User } from '../../user/model/user.model';
 import { UserProfile } from '../../user/model/user-profile.model';
 import { UploadService } from '../../uploads/upload.service';
@@ -15,11 +21,21 @@ export class AdminFamiliesService {
     private readonly familyModel: typeof Family,
     @InjectModel(FamilyMember)
     private readonly familyMemberModel: typeof FamilyMember,
+    @InjectModel(FamilyTree)
+    private readonly familyTreeModel: typeof FamilyTree,
+    @InjectModel(Post)
+    private readonly postModel: typeof Post,
+    @InjectModel(Gallery)
+    private readonly galleryModel: typeof Gallery,
+    @InjectModel(Event)
+    private readonly eventModel: typeof Event,
     @InjectModel(User)
     private readonly userModel: typeof User,
     @InjectModel(UserProfile)
     private readonly userProfileModel: typeof UserProfile,
     private readonly uploadService: UploadService,
+    private readonly sequelize: Sequelize,
+    private readonly adminAuditLogService: AdminAuditLogService,
   ) {}
 
   private assertActor(actor: any) {
@@ -309,5 +325,177 @@ export class AdminFamiliesService {
       message: 'Family members fetched successfully',
       data,
     };
+  }
+
+  async deleteFamily(actor: any, familyId: number) {
+    this.assertActor(actor);
+    const id = this.normalizeId(familyId, 'Family');
+
+    const family = await this.familyModel.findOne({
+      where: { id } as any,
+      attributes: ['id', 'familyName', 'familyPhoto', 'familyCode', 'createdBy'] as any,
+    });
+    if (!family) {
+      throw new NotFoundException('Family not found');
+    }
+
+    const familyJson: any = typeof (family as any)?.toJSON === 'function' ? (family as any).toJSON() : family;
+    const familyCode = String(familyJson?.familyCode || '').trim();
+    if (!familyCode) {
+      throw new NotFoundException('Family not found');
+    }
+
+    const transaction = await this.sequelize.transaction();
+    try {
+      const now = new Date();
+
+      const memberLinks = await this.familyMemberModel.findAll({
+        where: { familyCode } as any,
+        attributes: ['memberId', 'approveStatus'] as any,
+        transaction,
+      });
+      const memberIds = Array.from(
+        new Set(
+          (memberLinks as any[])
+            .map((m: any) => Number(typeof m?.get === 'function' ? m.get('memberId') : m?.memberId))
+            .filter((v: number) => Number.isFinite(v) && !Number.isNaN(v) && v > 0),
+        ),
+      );
+
+      const users = memberIds.length
+        ? await this.userModel.findAll({
+            where: { id: { [Op.in]: memberIds } } as any,
+            attributes: ['id', 'isAppUser'] as any,
+            transaction,
+          })
+        : [];
+      const isAppUserById = new Map<number, boolean>();
+      (users as any[]).forEach((u: any) => {
+        const json = typeof u?.toJSON === 'function' ? u.toJSON() : u;
+        isAppUserById.set(Number(json?.id), Boolean(json?.isAppUser));
+      });
+
+      const treeDummyRows = await this.familyTreeModel.findAll({
+        where: { familyCode, userId: { [Op.ne]: null } } as any,
+        attributes: ['userId'] as any,
+        include: [
+          {
+            model: this.userModel,
+            as: 'user',
+            required: true,
+            where: { isAppUser: false } as any,
+            attributes: ['id', 'isAppUser'] as any,
+          },
+        ] as any,
+        transaction,
+      });
+      const dummyUserIds = Array.from(
+        new Set(
+          (treeDummyRows as any[])
+            .map((r: any) => Number(typeof r?.get === 'function' ? r.get('userId') : r?.userId))
+            .filter((v: number) => Number.isFinite(v) && !Number.isNaN(v) && v > 0),
+        ),
+      );
+
+      if (memberIds.length > 0) {
+        await this.familyMemberModel.update(
+          {
+            approveStatus: 'removed',
+            removedAt: now,
+            removedBy: null,
+          } as any,
+          { where: { familyCode } as any, transaction },
+        );
+
+        const profiles = await this.userProfileModel.findAll({
+          where: { userId: { [Op.in]: memberIds } } as any,
+          attributes: ['userId', 'familyCode', 'associatedFamilyCodes'] as any,
+          transaction,
+        });
+
+        for (const p of profiles as any[]) {
+          const json = typeof p?.toJSON === 'function' ? p.toJSON() : p;
+          const uid = Number(json?.userId);
+          const isApp = isAppUserById.get(uid);
+          if (!isApp) continue;
+
+          const associated = Array.isArray(json?.associatedFamilyCodes) ? json.associatedFamilyCodes : [];
+          const nextAssociated = associated.filter((code: any) => code && String(code).trim() !== familyCode);
+          const shouldClearPrimary = String(json?.familyCode || '').trim() === familyCode;
+          if (shouldClearPrimary || nextAssociated.length !== associated.length) {
+            await this.userProfileModel.update(
+              {
+                ...(shouldClearPrimary ? { familyCode: null } : {}),
+                associatedFamilyCodes: nextAssociated,
+              } as any,
+              { where: { userId: uid } as any, transaction },
+            );
+          }
+        }
+      }
+
+      await this.postModel.update(
+        { deletedAt: now, deletedByAdminId: Number(actor?.adminId), deletedByUserId: null } as any,
+        { where: { familyCode, deletedAt: null } as any, transaction },
+      );
+      await this.galleryModel.update(
+        { deletedAt: now, deletedByAdminId: Number(actor?.adminId), deletedByUserId: null } as any,
+        { where: { familyCode, deletedAt: null } as any, transaction },
+      );
+      await this.eventModel.update(
+        { deletedAt: now, deletedByAdminId: Number(actor?.adminId), deletedByUserId: null } as any,
+        { where: { familyCode, deletedAt: null } as any, transaction },
+      );
+
+      await this.familyTreeModel.destroy({ where: { familyCode } as any, transaction });
+      await this.familyMemberModel.destroy({ where: { familyCode } as any, transaction });
+
+      for (const dummyId of dummyUserIds) {
+        const stillUsed = await this.familyTreeModel.count({
+          where: { userId: dummyId } as any,
+          transaction,
+        });
+        if (stillUsed > 0) continue;
+
+        await this.userProfileModel.destroy({ where: { userId: dummyId } as any, transaction });
+        await this.userModel.destroy({ where: { id: dummyId, isAppUser: false } as any, transaction });
+      }
+
+      await (family as any).destroy({ transaction } as any);
+
+      await transaction.commit();
+
+      if (familyJson?.familyPhoto) {
+        try {
+          await this.uploadService.deleteFile(String(familyJson.familyPhoto), 'family');
+        } catch (_) {
+          // ignore
+        }
+      }
+
+      await this.adminAuditLogService.log(Number(actor?.adminId), 'family_delete', {
+        targetType: 'family',
+        targetId: id,
+        metadata: {
+          familyId: id,
+          familyCode,
+          createdBy: Number(familyJson?.createdBy),
+          appUsersUnlinked: memberIds.filter((uid) => Boolean(isAppUserById.get(uid))).length,
+          dummyUsersDeleted: dummyUserIds.length,
+        },
+      });
+
+      return {
+        message: 'Family deleted successfully',
+        data: {
+          familyId: id,
+          familyCode,
+          dummyUsersDeleted: dummyUserIds.length,
+        },
+      };
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
+    }
   }
 }

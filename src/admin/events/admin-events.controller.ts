@@ -1,10 +1,11 @@
-import { Controller, Delete, Get, Param, Patch, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { AdminJwtAuthGuard } from '../auth/admin-jwt-auth.guard';
 import { AdminRolesGuard } from '../auth/admin-roles.guard';
 import { AdminRoles } from '../auth/admin-roles.decorator';
 import { AdminEventsService } from './admin-events.service';
+import { UpdateAdminEventDto } from './dto/update-admin-event.dto';
 
 @ApiTags('Admin')
 @Controller('admin/events')
@@ -75,6 +76,15 @@ export class AdminEventsController {
   @ApiOperation({ summary: 'Permanently delete a soft deleted event (admin/superadmin)' })
   purge(@Req() req, @Param('id') id: string) {
     return this.adminEventsService.purgeEvent(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Patch(':id')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Update an event (admin/superadmin)' })
+  updateEvent(@Req() req, @Param('id') id: string, @Body() dto: UpdateAdminEventDto) {
+    return this.adminEventsService.updateEvent(req.user, Number(id), dto);
   }
 
   @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)

@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
 
@@ -8,6 +8,7 @@ import { User } from '../../user/model/user.model';
 import { UserProfile } from '../../user/model/user-profile.model';
 import { UploadService } from '../../uploads/upload.service';
 import { AdminAuditLogService } from '../admin-audit-log.service';
+import { UpdateAdminEventDto } from './dto/update-admin-event.dto';
 
 @Injectable()
 export class AdminEventsService {
@@ -36,6 +37,75 @@ export class AdminEventsService {
       throw new NotFoundException(`${label} not found`);
     }
     return id;
+  }
+
+  async updateEvent(actor: any, eventId: number, dto: UpdateAdminEventDto) {
+    this.assertActor(actor);
+    const id = this.normalizeId(eventId, 'Event');
+
+    const event = await this.eventModel.findOne({ where: { id } as any });
+    if (!event) throw new NotFoundException('Event not found');
+    if ((event as any).deletedAt) {
+      throw new ForbiddenException('Cannot update a deleted event');
+    }
+
+    const patch: any = {};
+    if ((dto as any)?.eventTitle !== undefined) patch.eventTitle = String((dto as any).eventTitle ?? '').trim();
+    if ((dto as any)?.eventDescription !== undefined) patch.eventDescription = String((dto as any).eventDescription ?? '').trim();
+    if ((dto as any)?.eventDate !== undefined) patch.eventDate = String((dto as any).eventDate ?? '').trim();
+    if ((dto as any)?.eventTime !== undefined) patch.eventTime = String((dto as any).eventTime ?? '').trim();
+    if ((dto as any)?.location !== undefined) patch.location = String((dto as any).location ?? '').trim();
+    if ((dto as any)?.familyCode !== undefined) patch.familyCode = String((dto as any).familyCode ?? '').trim();
+    if ((dto as any)?.status !== undefined) patch.status = Number((dto as any).status);
+
+    if (patch.eventTitle !== undefined && !String(patch.eventTitle || '').trim()) {
+      throw new BadRequestException('Event title is required');
+    }
+    if (patch.eventDate !== undefined && !String(patch.eventDate || '').trim()) {
+      throw new BadRequestException('Event date is required');
+    }
+    if (patch.familyCode !== undefined && !String(patch.familyCode || '').trim()) {
+      throw new BadRequestException('Family code is required');
+    }
+
+    if (Object.keys(patch).length === 0) {
+      throw new BadRequestException('No changes');
+    }
+
+    const before = {
+      eventTitle: (event as any)?.eventTitle ?? null,
+      eventDescription: (event as any)?.eventDescription ?? null,
+      eventDate: (event as any)?.eventDate ?? null,
+      eventTime: (event as any)?.eventTime ?? null,
+      location: (event as any)?.location ?? null,
+      familyCode: (event as any)?.familyCode ?? null,
+      status: (event as any)?.status ?? null,
+    };
+
+    await (event as any).update(patch as any);
+
+    const after = {
+      eventTitle: (event as any)?.eventTitle ?? null,
+      eventDescription: (event as any)?.eventDescription ?? null,
+      eventDate: (event as any)?.eventDate ?? null,
+      eventTime: (event as any)?.eventTime ?? null,
+      location: (event as any)?.location ?? null,
+      familyCode: (event as any)?.familyCode ?? null,
+      status: (event as any)?.status ?? null,
+    };
+
+    await this.adminAuditLogService.log(Number(actor?.adminId), 'event_update', {
+      targetType: 'event',
+      targetId: id,
+      metadata: {
+        eventId: id,
+        createdBy: Number((event as any)?.createdBy),
+        before,
+        after,
+      },
+    });
+
+    return this.getEventById(actor, id);
   }
 
   async getEventsStats(actor: any) {

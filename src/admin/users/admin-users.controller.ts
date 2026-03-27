@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 
 import { AdminJwtAuthGuard } from '../auth/admin-jwt-auth.guard';
@@ -71,6 +71,15 @@ export class AdminUsersController {
   @ApiOperation({ summary: 'Get non-app user details for admin panel (admin/superadmin)' })
   nonAppUserById(@Req() req, @Param('id') id: string) {
     return this.adminUsersService.getNonAppUserById(req.user, Number(id));
+  }
+
+  @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)
+  @AdminRoles('admin', 'superadmin')
+  @Delete('non-app/:id')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Permanently delete a non-app user (admin/superadmin)' })
+  deleteNonAppUser(@Req() req, @Param('id') id: string) {
+    return this.adminUsersService.deleteNonAppUser(req.user, Number(id));
   }
 
   @UseGuards(AdminJwtAuthGuard, AdminRolesGuard)

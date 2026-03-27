@@ -146,12 +146,23 @@ export class PostService {
       return filename;
     }
 
+    const cleaned = String(filename || '').trim().replace(/^\/+/, '');
+    // If stored value is already a full key (e.g. "posts/user-10/x.jpg"), use it as-is.
+    if (cleaned.includes('/')) {
+      if (process.env.S3_BUCKET_NAME && process.env.REGION) {
+        return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/${cleaned}`;
+      }
+
+      const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
+      return `${baseUrl}/uploads/posts/${cleaned.split('/').pop() || cleaned}`;
+    }
+
     if (process.env.S3_BUCKET_NAME && process.env.REGION) {
-      return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/posts/${filename}`;
+      return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/posts/${cleaned}`;
     }
 
     const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
-    return `${baseUrl}/uploads/posts/${filename}`;
+    return `${baseUrl}/uploads/posts/${cleaned}`;
   }
 
   private normalizeFamilyCodeInput(value: any): string | null {
@@ -171,10 +182,10 @@ export class PostService {
     return this.getPostMediaUrl(filename);
   }
 
-  private extractFilenameFromUrl(value: string, label: string): string {
+  private extractKeyFromUrl(value: string, label: string): string {
     try {
       const url = new URL(value);
-      return url.pathname.split('/').pop() || value;
+      return url.pathname.replace(/^\/+/, '') || value;
     } catch (error) {
       console.error(`Error parsing ${label} URL:`, error);
       return value;
@@ -187,19 +198,26 @@ export class PostService {
 
   private normalizePostImageInput(postImage?: string | null): string | null {
     if (!postImage) return null;
-    return postImage.startsWith('http')
-      ? this.extractFilenameFromUrl(postImage, 'image')
-      : postImage;
+
+    if (postImage.startsWith('http')) {
+      const key = this.extractKeyFromUrl(postImage, 'image');
+      // If it looks like an S3 key, keep it. Otherwise fall back to filename.
+      return key.includes('/') ? key : (key.split('/').pop() || key);
+    }
+
+    // Keep full key if provided
+    return postImage;
   }
 
   private normalizePostVideoInput(postVideo?: string | null): string | null {
     if (!postVideo) return null;
     if (postVideo.startsWith('http')) {
-      return this.extractFilenameFromUrl(postVideo, 'video');
+      const key = this.extractKeyFromUrl(postVideo, 'video');
+      return key.includes('/') ? key : (key.split('/').pop() || key);
     }
-    return postVideo.includes('/')
-      ? this.extractFilenameFromPath(postVideo)
-      : postVideo;
+
+    // Keep full key if provided
+    return postVideo;
   }
 
   private resolveCaption(
@@ -270,6 +288,7 @@ export class PostService {
   private async resolvePostImageUpdate(
     newImage: Express.Multer.File | string | undefined,
     oldImage: string | null,
+    userId?: number,
   ): Promise<string | null> {
     if (!newImage) return null;
 
@@ -281,8 +300,15 @@ export class PostService {
 
     try {
       const uploadService = new UploadService();
-      const imageUrl = await uploadService.uploadFile(newImage, 'posts');
-      return this.extractFilenameFromUrl(imageUrl, 'image');
+      const safeUserId = Number(userId);
+      const now = new Date();
+      const year = String(now.getFullYear());
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+
+      const keyPrefix = Number.isFinite(safeUserId) && !Number.isNaN(safeUserId) && safeUserId > 0
+        ? `posts/${safeUserId}/${year}/${month}`
+        : 'posts';
+      return await uploadService.uploadFileKey(newImage, keyPrefix);
     } catch (error) {
       console.error('Error uploading new image:', error);
       throw new Error('Failed to upload new image');
@@ -445,6 +471,7 @@ export class PostService {
     const newImageFilename = await this.resolvePostImageUpdate(
       newImage,
       post.postImage,
+      userId,
     );
     const { filename: newVideoFilename, isProvided: isVideoProvided } =
       await this.resolvePostVideoUpdate(dto.postVideo, post.postVideo);

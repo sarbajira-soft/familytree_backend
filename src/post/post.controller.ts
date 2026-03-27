@@ -65,7 +65,10 @@ export class PostController {
 
     if (file) {
       // Upload to S3, store URL in DTO
-      dto.postImage = await this.uploadService.uploadFile(file, 'posts');
+      const now = new Date();
+      const year = String(now.getFullYear());
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      dto.postImage = await this.uploadService.uploadFileKey(file, `posts/${createdBy}/${year}/${month}`);
     }
 
     return this.postService.createPost(dto, createdBy);

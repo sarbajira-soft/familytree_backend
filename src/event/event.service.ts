@@ -161,12 +161,20 @@ export class EventService {
     const event = await this.eventModel.create(dto);
     const uploadService = new UploadService();
 
+    const actorId = Number(requestingUserId ?? (dto as any)?.createdBy ?? (dto as any)?.userId);
+    const now = new Date();
+    const year = String(now.getFullYear());
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const uploadPrefix = Number.isFinite(actorId) && !Number.isNaN(actorId) && actorId > 0
+      ? `events/${actorId}/${year}/${month}`
+      : 'events';
+
     // Save images if provided
     if (imageFiles && imageFiles.length > 0) {
       try {
         // Upload files to S3 and get URLs
         const uploadPromises = imageFiles.map(file => 
-          uploadService.uploadFile(file, 'events')
+          uploadService.uploadFileKey(file, uploadPrefix)
         );
         
         const imageUrls = await Promise.all(uploadPromises);
@@ -231,7 +239,11 @@ export class EventService {
 
     // If S3 is configured, construct S3 URL
     if (process.env.S3_BUCKET_NAME && process.env.REGION) {
-      return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/events/${filename}`;
+      const cleaned = String(filename || '').trim().replace(/^\/+/, '');
+      if (cleaned.includes('/')) {
+        return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/${cleaned}`;
+      }
+      return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/events/${cleaned}`;
     }
 
     // Fallback to local URL
@@ -469,9 +481,17 @@ export class EventService {
       // Add new images from uploaded files
       if (hasNewImageFiles) {
         try {
+          const actorId = Number(loggedId || event.createdBy);
+          const now = new Date();
+          const year = String(now.getFullYear());
+          const month = String(now.getMonth() + 1).padStart(2, '0');
+          const uploadPrefix = Number.isFinite(actorId) && !Number.isNaN(actorId) && actorId > 0
+            ? `events/${actorId}/${year}/${month}`
+            : 'events';
+
           // Upload files to S3 and get URLs
           const uploadPromises = imageFiles.map(file => 
-            uploadService.uploadFile(file, 'events')
+            uploadService.uploadFileKey(file, uploadPrefix)
           );
           
           const imageUrls = await Promise.all(uploadPromises);

@@ -28,3 +28,10 @@ Notes:
 
 - The script will **create** the superadmin if the email does not exist.
 - If the email already exists, it will **update** the existing row and promote it to `superadmin`.
+
+
+
+## For mirating the old data - email,phone etc to hashed/masked
+```bash
+ npm run migrate:sensitive-user-data 
+```

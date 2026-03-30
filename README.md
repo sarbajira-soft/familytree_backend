@@ -35,3 +35,6 @@ Notes:
 ```bash
  npm run migrate:sensitive-user-data 
 ```
+
+## Encryption key 
+The encryption key is stored in the `.env` file as `DATA_ENCRYPTION_KEY` and `DATA_HASH_KEY`. - must be take care , once key is lost the data which are encrypted using those keys wont be accessible.

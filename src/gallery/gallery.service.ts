@@ -441,7 +441,7 @@ export class GalleryService {
 
     if (galleryTitle) {
       whereClause.galleryTitle = {
-        [Op.like]: `%${galleryTitle}%`,
+        [Op.iLike]: `%${galleryTitle}%`,
       };
     }
 

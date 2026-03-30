@@ -1,38 +1,93 @@
 import 'dotenv/config';
 import 'reflect-metadata';
+import { Op } from 'sequelize';
 import { Sequelize } from 'sequelize-typescript';
-import { ensureFieldEncryptionConfigured, isEncryptedValue } from '../common/security/field-encryption.util';
+import {
+  buildEmailHash,
+  buildMobileHash,
+  ensureFieldEncryptionConfigured,
+  isEncryptedValue,
+} from '../common/security/field-encryption.util';
 import { User } from '../user/model/user.model';
 import { UserProfile } from '../user/model/user-profile.model';
 
 async function migrateUsers() {
   const users = await User.findAll({
-    attributes: ['id', 'email', 'mobile', 'emailHash', 'mobileHash'],
     order: [['id', 'ASC']],
   });
 
   let updatedUsers = 0;
 
   for (const user of users) {
-    const rawEmail = user.getDataValue('email');
-    const rawMobile = user.getDataValue('mobile');
-    const decryptedEmail = user.email;
-    const decryptedMobile = user.mobile;
-    let changed = false;
+    try {
+      const id = Number(user.getDataValue('id'));
+      const rawEmail = user.getDataValue('email');
+      const rawMobile = user.getDataValue('mobile');
+      const decryptedEmail = user.email;
+      const decryptedMobile = user.mobile;
+      let changed = false;
 
-    if (decryptedEmail && (!isEncryptedValue(rawEmail) || !user.getDataValue('emailHash'))) {
-      user.email = decryptedEmail;
-      changed = true;
-    }
+      const nextEmailHash = decryptedEmail ? buildEmailHash(decryptedEmail) : null;
+      const nextMobileHash = decryptedMobile ? buildMobileHash(decryptedMobile) : null;
 
-    if (decryptedMobile && (!isEncryptedValue(rawMobile) || !user.getDataValue('mobileHash'))) {
-      user.mobile = decryptedMobile;
-      changed = true;
-    }
+      const emailHashConflict =
+        nextEmailHash &&
+        (await User.findOne({
+          attributes: ['id'],
+          where: {
+            emailHash: nextEmailHash,
+            id: { [Op.ne]: id },
+          } as any,
+        }));
 
-    if (changed) {
-      await user.save();
-      updatedUsers++;
+      const mobileHashConflict =
+        nextMobileHash &&
+        (await User.findOne({
+          attributes: ['id'],
+          where: {
+            mobileHash: nextMobileHash,
+            id: { [Op.ne]: id },
+          } as any,
+        }));
+
+      if (decryptedEmail && (!isEncryptedValue(rawEmail) || !user.getDataValue('emailHash'))) {
+        if (emailHashConflict) {
+          console.warn('Skipping user email migration due to emailHash conflict', {
+            id,
+            conflictUserId: emailHashConflict.getDataValue('id'),
+          });
+        } else {
+          user.email = decryptedEmail;
+          changed = true;
+        }
+      }
+
+      if (decryptedMobile && (!isEncryptedValue(rawMobile) || !user.getDataValue('mobileHash'))) {
+        if (mobileHashConflict) {
+          console.warn('Skipping user mobile migration due to mobileHash conflict', {
+            id,
+            conflictUserId: mobileHashConflict.getDataValue('id'),
+          });
+        } else {
+          user.mobile = decryptedMobile;
+          changed = true;
+        }
+      }
+
+      if (changed) {
+        await user.save({
+          fields: ['email', 'emailHash', 'mobile', 'mobileHash'],
+          validate: false,
+        });
+        updatedUsers++;
+      }
+    } catch (error: any) {
+      const id = user.getDataValue('id');
+      const details = Array.isArray(error?.errors)
+        ? error.errors.map((e: any) => ({ message: e?.message, path: e?.path, value: e?.value }))
+        : undefined;
+      console.error('User migration failed:', { id, message: error?.message, details });
+      throw error;
     }
   }
 
@@ -58,49 +113,59 @@ async function migrateProfiles() {
   let updatedProfiles = 0;
 
   for (const profile of profiles) {
-    const rawDob = profile.getDataValue('dob');
-    const rawContactNumber = profile.getDataValue('contactNumber');
-    const rawAddress = profile.getDataValue('address');
-    let changed = false;
+    try {
+      const rawDob = profile.getDataValue('dob');
+      const rawContactNumber = profile.getDataValue('contactNumber');
+      const rawAddress = profile.getDataValue('address');
+      let changed = false;
 
-    if (profile.dob && (!rawDob || !isEncryptedValue(rawDob))) {
-      profile.dob = profile.dob as any;
-      changed = true;
-    }
+      if (profile.dob && (!rawDob || !isEncryptedValue(rawDob))) {
+        profile.dob = profile.dob as any;
+        changed = true;
+      }
 
-    if (profile.contactNumber && (!rawContactNumber || !isEncryptedValue(rawContactNumber))) {
-      profile.contactNumber = profile.contactNumber;
-      changed = true;
-    }
+      if (profile.contactNumber && (!rawContactNumber || !isEncryptedValue(rawContactNumber))) {
+        profile.contactNumber = profile.contactNumber;
+        changed = true;
+      }
 
-    if (profile.address && (!rawAddress || !isEncryptedValue(rawAddress))) {
-      profile.address = profile.address;
-      changed = true;
-    }
+      if (profile.address && (!rawAddress || !isEncryptedValue(rawAddress))) {
+        profile.address = profile.address;
+        changed = true;
+      }
 
-    if (!profile.emailPrivacy) {
-      profile.emailPrivacy = 'FAMILY';
-      changed = true;
-    }
+      if (!profile.emailPrivacy) {
+        profile.emailPrivacy = 'FAMILY';
+        changed = true;
+      }
 
-    if (!profile.addressPrivacy) {
-      profile.addressPrivacy = 'FAMILY';
-      changed = true;
-    }
+      if (!profile.addressPrivacy) {
+        profile.addressPrivacy = 'FAMILY';
+        changed = true;
+      }
 
-    if (!profile.phonePrivacy) {
-      profile.phonePrivacy = 'FAMILY';
-      changed = true;
-    }
+      if (!profile.phonePrivacy) {
+        profile.phonePrivacy = 'FAMILY';
+        changed = true;
+      }
 
-    if (!profile.dobPrivacy) {
-      profile.dobPrivacy = 'FAMILY';
-      changed = true;
-    }
+      if (!profile.dobPrivacy) {
+        profile.dobPrivacy = 'FAMILY';
+        changed = true;
+      }
 
-    if (changed) {
-      await profile.save();
-      updatedProfiles++;
+      if (changed) {
+        await profile.save({ validate: false });
+        updatedProfiles++;
+      }
+    } catch (error: any) {
+      const id = profile.getDataValue('id');
+      const userId = profile.getDataValue('userId');
+      const details = Array.isArray(error?.errors)
+        ? error.errors.map((e: any) => ({ message: e?.message, path: e?.path, value: e?.value }))
+        : undefined;
+      console.error('Profile migration failed:', { id, userId, message: error?.message, details });
+      throw error;
     }
   }
 
@@ -130,10 +195,8 @@ async function main() {
   try {
     await sequelize.authenticate();
 
-    const [updatedUsers, updatedProfiles] = await Promise.all([
-      migrateUsers(),
-      migrateProfiles(),
-    ]);
+    const updatedUsers = await migrateUsers();
+    const updatedProfiles = await migrateProfiles();
 
     console.log(
       `Sensitive data migration complete. Users updated: ${updatedUsers}. Profiles updated: ${updatedProfiles}.`,

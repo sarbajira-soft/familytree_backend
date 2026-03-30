@@ -18,6 +18,7 @@ import { UploadService } from '../../uploads/upload.service';
 import { MedusaCustomerSyncService } from '../../medusa/medusa-customer-sync.service';
 import { UserService } from '../../user/user.service';
 import { AdminAuditLogService } from '../admin-audit-log.service';
+import { buildEmailHash, buildMobileHash, normalizeEmailValue, normalizeMobileValue } from '../../common/security/field-encryption.util';
 
 @Injectable()
 export class AdminUsersService {
@@ -1172,9 +1173,14 @@ export class AdminUsersService {
 
     if (q) {
       const numericId = Number(q);
+      const normalizedEmail = q.includes('@') ? normalizeEmailValue(q) : null;
+      const normalizedMobile = normalizeMobileValue(q);
+      const emailHash = normalizedEmail ? buildEmailHash(normalizedEmail) : null;
+      const mobileHash = normalizedMobile ? buildMobileHash(normalizedMobile) : null;
+
       const or: any[] = [
-        { email: { [Op.iLike]: `%${q}%` } },
-        { mobile: { [Op.iLike]: `%${q}%` } },
+        ...(emailHash ? [{ emailHash }] : []),
+        ...(mobileHash ? [{ mobileHash }] : []),
         { '$userProfile.firstName$': { [Op.iLike]: `%${q}%` } },
         { '$userProfile.lastName$': { [Op.iLike]: `%${q}%` } },
       ];
@@ -1293,9 +1299,14 @@ export class AdminUsersService {
 
     if (q) {
       const numericId = Number(q);
+      const normalizedEmail = q.includes('@') ? normalizeEmailValue(q) : null;
+      const normalizedMobile = normalizeMobileValue(q);
+      const emailHash = normalizedEmail ? buildEmailHash(normalizedEmail) : null;
+      const mobileHash = normalizedMobile ? buildMobileHash(normalizedMobile) : null;
+
       const or: any[] = [
-        { email: { [Op.iLike]: `%${q}%` } },
-        { mobile: { [Op.iLike]: `%${q}%` } },
+        ...(emailHash ? [{ emailHash }] : []),
+        ...(mobileHash ? [{ mobileHash }] : []),
         { '$userProfile.firstName$': { [Op.iLike]: `%${q}%` } },
         { '$userProfile.lastName$': { [Op.iLike]: `%${q}%` } },
       ];

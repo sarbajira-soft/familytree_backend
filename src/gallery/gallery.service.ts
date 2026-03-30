@@ -135,8 +135,8 @@ export class GalleryService {
     
     try {
       const parsedUrl = new URL(url);
-      // Extract the filename from the path
-      return parsedUrl.pathname.split('/').pop() || null;
+      // Extract the key from the path (supports nested prefixes)
+      return parsedUrl.pathname.replace(/^\/+/, '') || null;
     } catch (e) {
       // If it's not a valid URL, return as is (might already be a filename)
       return url;
@@ -168,13 +168,18 @@ export class GalleryService {
 
     // If S3 is configured, construct S3 URL
     if (process.env.S3_BUCKET_NAME && process.env.REGION) {
+      const cleaned = String(filename || '').trim().replace(/^\/+/, '');
+      if (cleaned.includes('/')) {
+        return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/${cleaned}`;
+      }
+
       const s3BaseUrl = `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com`;
       if (subfolder === 'cover') {
-        return `${s3BaseUrl}/gallery/cover/${filename}`;
+        return `${s3BaseUrl}/gallery/cover/${cleaned}`;
       } else if (subfolder) {
-        return `${s3BaseUrl}/${subfolder}/${filename}`;
+        return `${s3BaseUrl}/${subfolder}/${cleaned}`;
       }
-      return `${s3BaseUrl}/gallery/${filename}`;
+      return `${s3BaseUrl}/gallery/${cleaned}`;
     }
 
     // Fallback to local URL
@@ -196,13 +201,20 @@ export class GalleryService {
    * @param subfolder Optional subfolder in the gallery bucket
    * @returns Promise<string> The filename of the uploaded file
    */
-  async uploadGalleryFile(file: Express.Multer.File, subfolder?: string): Promise<string> {
+  async uploadGalleryFile(file: Express.Multer.File, userId: number, subfolder?: string): Promise<string> {
     try {
+      const safeUserId = Number(userId);
+      const now = new Date();
+      const year = String(now.getFullYear());
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+
       // Define the upload path based on subfolder
-      const uploadPath = subfolder ? `gallery/${subfolder}` : 'gallery';
+      const uploadPath = subfolder
+        ? `gallery/${subfolder}/${safeUserId}/${year}/${month}`
+        : `gallery/${safeUserId}/${year}/${month}`;
       
       // Upload the file using the upload service
-      const fileName = await this.uploadService.uploadFile(file, uploadPath);
+      const fileName = await this.uploadService.uploadFileKey(file, uploadPath);
       
       // Log the successful upload
       const fullUrl = this.constructGalleryImageUrl(fileName, subfolder);
@@ -299,7 +311,7 @@ export class GalleryService {
       if (dto.coverPhoto) {
         // If it's a file, upload it to S3
         if (typeof dto.coverPhoto !== 'string') {
-          galleryData.coverPhoto = await this.uploadGalleryFile(dto.coverPhoto, 'cover');
+          galleryData.coverPhoto = await this.uploadGalleryFile(dto.coverPhoto, createdBy, 'cover');
         } else {
           // If it's already a string (filename), use it as is
           galleryData.coverPhoto = dto.coverPhoto;
@@ -314,7 +326,7 @@ export class GalleryService {
       const albumData = [];
       for (const image of albumImages) {
         try {
-          const filename = await this.uploadGalleryFile(image);
+          const filename = await this.uploadGalleryFile(image, createdBy);
           albumData.push({
             galleryId,
             album: filename,
@@ -725,7 +737,7 @@ export class GalleryService {
           } else if (dto.coverPhoto && typeof dto.coverPhoto !== 'string') {
             // Case 2: New cover photo file is provided (as Express.Multer.File or similar)
             const fileToUpload = dto.coverPhoto as Express.Multer.File;
-            const newCoverPhoto = await this.uploadGalleryFile(fileToUpload, 'cover');
+            const newCoverPhoto = await this.uploadGalleryFile(fileToUpload, userId, 'cover');
             console.log('New cover photo uploaded:', newCoverPhoto);
             updateData.coverPhoto = newCoverPhoto;
             
@@ -777,7 +789,7 @@ export class GalleryService {
         
         for (const image of newAlbumImages) {
           try {
-            const filename = await this.uploadGalleryFile(image);
+            const filename = await this.uploadGalleryFile(image, userId);
             albumData.push({
               galleryId,
               album: filename,
@@ -904,7 +916,10 @@ export class GalleryService {
       // 2. Delete cover photo from S3 if it exists
       if (gallery.coverPhoto) {
         try {
-          await this.uploadService.deleteFile(`gallery/cover/${gallery.coverPhoto}`);
+          const coverKey = String(gallery.coverPhoto || '').trim().replace(/^\/+/, '');
+          await this.uploadService.deleteFile(
+            coverKey.includes('/') ? coverKey : `gallery/cover/${coverKey}`,
+          );
         } catch (error) {
           console.error(`Error deleting cover photo ${gallery.coverPhoto}:`, error);
           // Continue with deletion even if file deletion fails
@@ -916,7 +931,10 @@ export class GalleryService {
         await Promise.all(
           gallery.galleryAlbums.map(async (album) => {
             try {
-              await this.uploadService.deleteFile(`gallery/${album.album}`);
+              const albumKey = String(album.album || '').trim().replace(/^\/+/, '');
+              await this.uploadService.deleteFile(
+                albumKey.includes('/') ? albumKey : `gallery/${albumKey}`,
+              );
             } catch (error) {
               console.error(`Error deleting album image ${album.album}:`, error);
               // Continue with other deletions even if one fails

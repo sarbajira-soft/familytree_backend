@@ -1459,9 +1459,14 @@ export class UserService {
       if (dto.profile && dto.profile !== '') {
         let newFilename = dto.profile;
 
-        // Extract file name if URL
-        if (dto.profile.includes('/')) {
-          newFilename = dto.profile.split('/').pop() || dto.profile;
+        // If it's a full URL, extract the key. Otherwise keep full key if provided.
+        if (dto.profile.startsWith('http://') || dto.profile.startsWith('https://')) {
+          try {
+            const url = new URL(dto.profile);
+            newFilename = url.pathname.replace(/^\/+/, '') || dto.profile;
+          } catch (_) {
+            newFilename = dto.profile;
+          }
         }
 
         // Delete old S3 file

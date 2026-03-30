@@ -114,7 +114,7 @@ export class GalleryController {
     if (files.coverPhoto?.[0]) {
       try {
         // Upload cover photo to S3 and get the filename
-        coverPhotoFilename = await this.galleryService.uploadGalleryFile(files.coverPhoto[0], 'cover');
+        coverPhotoFilename = await this.galleryService.uploadGalleryFile(files.coverPhoto[0], createdBy, 'cover');
       } catch (error) {
         console.error('Error uploading cover photo:', error);
         throw new BadRequestException('Failed to upload cover photo');
@@ -189,7 +189,7 @@ export class GalleryController {
     // Handle cover photo upload if provided
     if (files?.coverPhoto?.[0]) {
       try {
-        const filename = await this.galleryService.uploadGalleryFile(files.coverPhoto[0], 'cover');
+        const filename = await this.galleryService.uploadGalleryFile(files.coverPhoto[0], req.user.userId, 'cover');
         updateDto.coverPhoto = filename;
       } catch (error) {
         console.error('Error uploading cover photo:', error);

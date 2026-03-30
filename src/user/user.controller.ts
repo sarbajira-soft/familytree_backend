@@ -573,7 +573,10 @@ export class UserController {
     // Handle file upload to S3 if file exists
     if (file) {
       // Upload to S3 and get the URL
-      body.profile = await this.uploadService.uploadFile(file, 'profile');
+      const now = new Date();
+      const year = String(now.getFullYear());
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      body.profile = await this.uploadService.uploadFileKey(file, `profile/${targetUserId}/${year}/${month}`);
     }
 
     return this.userService.updateProfile(targetUserId, body, loggedInUser);

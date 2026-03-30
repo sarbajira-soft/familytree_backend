@@ -141,16 +141,22 @@ export class UploadService {
   }
 
   async uploadFile(file: Express.Multer.File, folder: string): Promise<string> {
+    const key = await this.uploadFileKey(file, folder);
+    return key.split('/').pop() || key;
+  }
+
+  async uploadFileKey(file: Express.Multer.File, keyPrefix: string): Promise<string> {
     const fileExt = extname(file.originalname);
     const fileName = `${uuid()}${fileExt}`;
-    const s3Key = `${folder}/${fileName}`;
+    const prefix = String(keyPrefix || '').trim().replace(/^\/+/, '').replace(/\/+$/, '');
+    const s3Key = `${prefix}/${fileName}`;
 
     console.log('Uploading file to S3:', {
       originalName: file.originalname,
       fileName,
       s3Key,
       bucket: process.env.S3_BUCKET_NAME,
-      folder
+      folder: keyPrefix,
     });
 
     const uploadParams = {
@@ -163,28 +169,24 @@ export class UploadService {
     await this.s3.send(new PutObjectCommand(uploadParams));
     console.log('Successfully uploaded file to S3:', s3Key);
 
-    // Return only the filename without any path
-    return fileName.split('/').pop() || fileName;
+    return s3Key;
   }
 
   getFileUrl(fileName: string, folder: string = 'profile'): string {
     if (!fileName) return '';
     // If it's already a full URL, return as is
     if (fileName.startsWith('http')) {
-      // Clean up any duplicate path segments
-      const url = new URL(fileName);
-      const pathParts = url.pathname.split('/').filter(part => part && part !== folder);
-      url.pathname = `${folder}/${pathParts.pop()}`;
-      return url.toString();
+      return String(fileName || '').trim();
     }
-    
-    // Remove any existing folder prefix from the filename
-    const cleanFileName = fileName.includes('/') 
-      ? fileName.split('/').pop() 
-      : fileName;
-      
-    // Construct the clean URL
-    return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/${folder}/${cleanFileName}`;
+
+    const cleaned = String(fileName || '').trim().replace(/^\/+/, '');
+    // If caller passes a full key like "posts/user-10/x.jpg", use it as-is.
+    if (cleaned.includes('/')) {
+      return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/${cleaned}`;
+    }
+
+    // Legacy: filename only + folder
+    return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/${folder}/${cleaned}`;
   }
 
   async deleteFile(fileName: string, folder: string = 'profile'): Promise<boolean> {
@@ -311,14 +313,11 @@ export class UploadService {
         // Skip the "folder marker" objects
         if (key.endsWith('/')) return null;
 
-        const folder = key.includes('/') ? key.split('/')[0] : '';
-        const filename = key.split('/').pop() || key;
-
         return {
           key,
           size: Number(o.Size || 0),
           lastModified: o.LastModified ? new Date(o.LastModified).toISOString() : null,
-          url: folder ? this.getFileUrl(filename, folder) : null,
+          url: `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/${key.replace(/^\/+/, '')}`,
         };
       })
       .filter(Boolean) as any;

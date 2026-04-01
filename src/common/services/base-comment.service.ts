@@ -76,11 +76,31 @@ export class BaseCommentService {
 
     const now = new Date();
 
-    // Soft delete all replies first
-    await commentModel.update(
-      { deletedAt: now, deletedByUserId: userId, deletedByAdminId: null },
-      { where: { parentCommentId: commentId, deletedAt: null } },
-    );
+    // Soft delete all replies first (cascade through all descendants)
+    const replyIdsToDelete: number[] = [];
+    const toVisit: number[] = [commentId];
+    while (toVisit.length > 0) {
+      const parentIds = toVisit.splice(0, toVisit.length);
+      const children = await commentModel.findAll({
+        where: { parentCommentId: parentIds, deletedAt: null },
+        attributes: ['id'],
+      });
+      const childIds = (children || [])
+        .map((row) => Number(row?.id))
+        .filter((id) => Number.isFinite(id) && id > 0);
+      if (childIds.length === 0) {
+        continue;
+      }
+      replyIdsToDelete.push(...childIds);
+      toVisit.push(...childIds);
+    }
+
+    if (replyIdsToDelete.length > 0) {
+      await commentModel.update(
+        { deletedAt: now, deletedByUserId: userId, deletedByAdminId: null },
+        { where: { id: replyIdsToDelete, deletedAt: null } },
+      );
+    }
 
     // Soft delete the comment
     await comment.update({ deletedAt: now, deletedByUserId: userId, deletedByAdminId: null });
@@ -108,8 +128,8 @@ export class BaseCommentService {
     additionalData: any,
     commentField: string = 'comment',
   ): Promise<any> {
-    // Verify parent comment exists
-    const parentComment = await commentModel.findByPk(parentCommentId);
+    // Verify parent comment exists and normalize parentCommentId to the root comment.
+    let parentComment = await commentModel.findByPk(parentCommentId);
 
     if (!parentComment) {
       throw new NotFoundException('Parent comment not found');
@@ -117,6 +137,20 @@ export class BaseCommentService {
 
     if (parentComment['deletedAt']) {
       throw new NotFoundException('Parent comment not found');
+    }
+
+    // Enforce one-level replies: if replying to a reply, attach to the root comment.
+    while (parentComment && parentComment['parentCommentId']) {
+      const rootCandidateId = Number(parentComment['parentCommentId']);
+      if (!Number.isFinite(rootCandidateId) || rootCandidateId <= 0) {
+        break;
+      }
+      const rootCandidate = await commentModel.findByPk(rootCandidateId);
+      if (!rootCandidate || rootCandidate['deletedAt']) {
+        break;
+      }
+      parentCommentId = rootCandidateId;
+      parentComment = rootCandidate;
     }
 
     // Create the reply
@@ -151,17 +185,37 @@ export class BaseCommentService {
       });
     });
 
-    // Second pass: build the tree structure
+    const rootCache = new Map<number, number>();
+    const getRootId = (commentId: number): number => {
+      if (!Number.isFinite(commentId) || commentId <= 0) return commentId;
+      if (rootCache.has(commentId)) return rootCache.get(commentId);
+
+      const node = commentMap.get(commentId);
+      const parentId = Number(node?.parentCommentId);
+      if (!parentId) {
+        rootCache.set(commentId, commentId);
+        return commentId;
+      }
+      const root = getRootId(parentId);
+      rootCache.set(commentId, root);
+      return root;
+    };
+
+    // Second pass: build a flat (one-level) reply structure
     comments.forEach(comment => {
+      const node = commentMap.get(comment.id);
+      if (!node) return;
+
       if (comment.parentCommentId) {
-        // This is a reply, add it to parent's replies array
-        const parent = commentMap.get(comment.parentCommentId);
-        if (parent) {
-          parent.replies.push(commentMap.get(comment.id));
+        const rootId = getRootId(Number(comment.id));
+        const root = commentMap.get(rootId);
+        if (root && rootId !== Number(comment.id)) {
+          root.replies.push(node);
+        } else {
+          rootComments.push(node);
         }
       } else {
-        // This is a root comment
-        rootComments.push(commentMap.get(comment.id));
+        rootComments.push(node);
       }
     });
 

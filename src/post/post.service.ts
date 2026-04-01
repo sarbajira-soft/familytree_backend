@@ -1006,34 +1006,8 @@ export class PostService {
       ? await this.blockingService.getBlockedUserIdsForUser(requestingUserId)
       : [];
 
-    const { rows, count } = await this.postCommentModel.findAndCountAll({
-      where: {
-        postId,
-        deletedAt: null,
-        ...(blockedUserIds.length > 0
-          ? { userId: { [Op.notIn]: blockedUserIds } }
-          : {}),
-      },
-      order: [['createdAt', 'DESC']],
-      limit,
-      offset,
-      include: [
-        {
-          model: User,
-          as: 'user',
-          attributes: ['status', 'deletedAt'],
-        },
-        {
-          model: this.userProfileModel,
-          as: 'userProfile',
-          attributes: ['firstName', 'lastName', 'profile'],
-        },
-      ],
-    });
-
-    const comments = rows.map((comment) => {
-      const commentJson: PostCommentWithProfile =
-        comment.get({ plain: true }) as PostCommentWithProfile;
+    const formatComment = (comment: PostCommentWithProfile) => {
+      const commentJson = comment as PostCommentWithProfile;
 
       return {
         id: commentJson.id,
@@ -1062,10 +1036,85 @@ export class PostService {
                 }
               : null,
       };
+    };
+
+    // Root comments (top-level only) are paginated.
+    const { rows: rootRows, count: rootCount } = await this.postCommentModel.findAndCountAll({
+      where: {
+        postId,
+        deletedAt: null,
+        parentCommentId: null,
+        ...(blockedUserIds.length > 0
+          ? { userId: { [Op.notIn]: blockedUserIds } }
+          : {}),
+      },
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset,
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['status', 'deletedAt'],
+        },
+        {
+          model: this.userProfileModel,
+          as: 'userProfile',
+          attributes: ['firstName', 'lastName', 'profile'],
+        },
+      ],
+    });
+
+    const rootIds = (rootRows || [])
+      .map((row) => Number((row as any)?.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+
+    const replyRows = rootIds.length
+      ? await this.postCommentModel.findAll({
+          where: {
+            postId,
+            deletedAt: null,
+            parentCommentId: { [Op.in]: rootIds },
+            ...(blockedUserIds.length > 0
+              ? { userId: { [Op.notIn]: blockedUserIds } }
+              : {}),
+          },
+          order: [['createdAt', 'ASC']],
+          include: [
+            {
+              model: User,
+              as: 'user',
+              attributes: ['status', 'deletedAt'],
+            },
+            {
+              model: this.userProfileModel,
+              as: 'userProfile',
+              attributes: ['firstName', 'lastName', 'profile'],
+            },
+          ],
+        })
+      : [];
+
+    const replyMap = new Map<number, any[]>();
+    for (const reply of replyRows || []) {
+      const replyJson = reply.get({ plain: true }) as PostCommentWithProfile;
+      const parentId = Number(replyJson.parentCommentId);
+      if (!Number.isFinite(parentId) || parentId <= 0) continue;
+      const existing = replyMap.get(parentId) || [];
+      existing.push(formatComment(replyJson));
+      replyMap.set(parentId, existing);
+    }
+
+    const comments = (rootRows || []).map((comment) => {
+      const commentJson = comment.get({ plain: true }) as PostCommentWithProfile;
+      return {
+        ...formatComment(commentJson),
+        replies: replyMap.get(Number(commentJson.id)) || [],
+      };
     });
 
     return {
-      total: count,
+      total: rootCount,
       page,
       limit,
       comments,

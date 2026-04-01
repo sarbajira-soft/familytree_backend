@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException, Inject, forwardRef } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Inject, forwardRef, Logger } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { Op, QueryTypes } from 'sequelize';
@@ -30,6 +30,8 @@ import { applyPrivacyToNestedUser } from '../user/privacy.util';
 
 @Injectable()
 export class FamilyMemberService {
+  private readonly logger = new Logger(FamilyMemberService.name);
+
   constructor(
     @InjectModel(User)
     private readonly userModel: typeof User,
@@ -99,6 +101,41 @@ export class FamilyMemberService {
 
   private applyPublicVisibility(user: any) {
     return applyPrivacyToNestedUser(user, 'other');
+  }
+
+  private normalizeApprovalStatus(value: string | null | undefined) {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  private toRequestState(status: string | null | undefined) {
+    const normalized = this.normalizeApprovalStatus(status);
+    switch (normalized) {
+      case 'approved':
+        return 'ACCEPTED';
+      case 'rejected':
+        return 'REJECTED';
+      case 'cancelled':
+        return 'CANCELLED';
+      case 'removed':
+        return 'REMOVED';
+      default:
+        return 'PENDING';
+    }
+  }
+
+  private buildMembershipResponse(message: string, membership: any, familyCode?: string) {
+    const plainMembership = membership?.toJSON ? membership.toJSON() : membership;
+    const normalizedFamilyCode =
+      String(familyCode || plainMembership?.familyCode || '').trim().toUpperCase();
+
+    return {
+      message,
+      data: {
+        ...plainMembership,
+        familyCode: normalizedFamilyCode,
+        requestState: this.toRequestState(plainMembership?.approveStatus),
+      },
+    };
   }
   private async requireFamilyOrThrow(familyCode: string) {
     const family = await this.familyModel.findOne({ where: { familyCode } });
@@ -705,9 +742,9 @@ export class FamilyMemberService {
         }
       }
 
-      if (profile) {
+      if (profile && profile.familyCode) {
         await profile.update(
-          { familyCode } as any,
+          { familyCode: null } as any,
           { transaction },
         );
       }
@@ -761,6 +798,7 @@ export class FamilyMemberService {
           : 'Family join request submitted successfully',
       data: {
         ...(membership?.toJSON ? membership.toJSON() : membership),
+        familyCode,
         requestState: 'PENDING',
         replacedPreviousRequest,
         alreadyPending,
@@ -771,6 +809,8 @@ export class FamilyMemberService {
   // Approve family member request
   async approveFamilyMember(memberId: number, familyCode: string, actingUserId: number) {
     const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    this.logger.log(`family-join approve requested requestUser=${memberId} actor=${actingUserId} family=${normalizedFamilyCode}`);
+
     const family = await this.familyModel.findOne({ where: { familyCode: normalizedFamilyCode } });
     if (!family) {
       throw new NotFoundException('Family not found');
@@ -786,12 +826,24 @@ export class FamilyMemberService {
     let membership: any;
     try {
       membership = await this.familyMemberModel.findOne({
-        where: { memberId, familyCode: normalizedFamilyCode, approveStatus: 'pending' } as any,
+        where: { memberId, familyCode: normalizedFamilyCode } as any,
         transaction,
         lock: (transaction as any).LOCK.UPDATE,
+        order: [['updatedAt', 'DESC'], ['id', 'DESC']],
       });
       if (!membership) {
-        throw new NotFoundException('Pending family member request not found');
+        throw new NotFoundException('Family join request not found');
+      }
+
+      const currentStatus = this.normalizeApprovalStatus((membership as any).approveStatus);
+      if (currentStatus === 'approved') {
+        await transaction.rollback();
+        this.logger.warn(`family-join approve idempotent requestUser=${memberId} actor=${actingUserId} family=${normalizedFamilyCode}`);
+        return this.buildMembershipResponse('Family member already approved', membership, normalizedFamilyCode);
+      }
+
+      if (currentStatus !== 'pending') {
+        throw new BadRequestException(`Family join request is already ${currentStatus}`);
       }
 
       await membership.update(
@@ -858,15 +910,15 @@ export class FamilyMemberService {
       membership.creatorId,
     );
 
-    return {
-      message: 'Family member approved successfully',
-      data: membership,
-    };
+    this.logger.log(`family-join approve completed requestUser=${memberId} actor=${actingUserId} family=${normalizedFamilyCode}`);
+    return this.buildMembershipResponse('Family member approved successfully', membership, normalizedFamilyCode);
   }
 
   // Reject family member request (optional, no notification example here)
   async rejectFamilyMember(memberId: number, rejectorId: number, familyCode: string) {
     const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    this.logger.log(`family-join reject requested requestUser=${memberId} actor=${rejectorId} family=${normalizedFamilyCode}`);
+
     const family = await this.familyModel.findOne({ where: { familyCode: normalizedFamilyCode } });
     if (!family) {
       throw new NotFoundException('Family not found');
@@ -882,12 +934,24 @@ export class FamilyMemberService {
     let membership: any;
     try {
       membership = await this.familyMemberModel.findOne({
-        where: { memberId, familyCode: normalizedFamilyCode, approveStatus: 'pending' } as any,
+        where: { memberId, familyCode: normalizedFamilyCode } as any,
         transaction,
         lock: (transaction as any).LOCK.UPDATE,
+        order: [['updatedAt', 'DESC'], ['id', 'DESC']],
       });
       if (!membership) {
-        throw new NotFoundException('Pending family member request not found');
+        throw new NotFoundException('Family join request not found');
+      }
+
+      const currentStatus = this.normalizeApprovalStatus((membership as any).approveStatus);
+      if (currentStatus === 'rejected') {
+        await transaction.rollback();
+        this.logger.warn(`family-join reject idempotent requestUser=${memberId} actor=${rejectorId} family=${normalizedFamilyCode}`);
+        return this.buildMembershipResponse('Family member already rejected', membership, normalizedFamilyCode);
+      }
+
+      if (currentStatus !== 'pending') {
+        throw new BadRequestException(`Family join request is already ${currentStatus}`);
       }
 
       await membership.update(
@@ -945,7 +1009,8 @@ export class FamilyMemberService {
       null,
     );
 
-    return { message: `Family member ${userName} rejected successfully` };
+    this.logger.log(`family-join reject completed requestUser=${memberId} actor=${rejectorId} family=${normalizedFamilyCode}`);
+    return this.buildMembershipResponse(`Family member ${userName} rejected successfully`, membership, normalizedFamilyCode);
   }
 
   async cancelPendingJoinRequest(familyCode: string, actingUserId: number) {

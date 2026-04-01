@@ -517,6 +517,86 @@ export class NotificationService {
 
     // Handle different notification types
     switch (notification.type) {
+      case 'FAMILY_JOIN_REQUEST': {
+        const joinData = (notification.data || {}) as any;
+        const requesterUserId = Number(
+          joinData.requesterId || notification.triggeredBy || notification.referenceId || 0,
+        );
+        const requestedFamilyCode = String(
+          joinData.requestedFamilyCode || notification.familyCode || '',
+        )
+          .trim()
+          .toUpperCase();
+
+        if (!requesterUserId || !requestedFamilyCode) {
+          throw new BadRequestException('Invalid family join request payload');
+        }
+
+        this.logger.log(
+          `family-join notification response id=${notificationId} requester=${requesterUserId} actor=${userId} action=${action} family=${requestedFamilyCode}`,
+        );
+
+        const existingMembership = await this.familyMemberModel.findOne({
+          where: { memberId: requesterUserId, familyCode: requestedFamilyCode } as any,
+          order: [['updatedAt', 'DESC'], ['id', 'DESC']],
+        });
+        const existingStatus = String((existingMembership as any)?.approveStatus || '').trim().toLowerCase();
+        const targetStatus = action === 'accept' ? 'approved' : 'rejected';
+
+        if (existingStatus === targetStatus) {
+          await this.notificationModel.update(
+            { status: action === 'accept' ? 'accepted' : 'rejected', updatedAt: new Date() } as any,
+            { where: { id: notificationId } as any },
+          );
+          await this.recipientModel.update(
+            { isRead: true, readAt: new Date() } as any,
+            { where: { notificationId } as any },
+          );
+
+          return {
+            success: true,
+            message: action === 'accept' ? 'Family join request already accepted' : 'Family join request already rejected',
+            data: {
+              notificationId,
+              requesterUserId,
+              familyCode: requestedFamilyCode,
+              status: action === 'accept' ? 'ACCEPTED' : 'REJECTED',
+              membership: existingMembership?.toJSON ? existingMembership.toJSON() : existingMembership,
+            },
+          };
+        }
+
+        const familyJoinResult =
+          action === 'accept'
+            ? await this.familyMemberService.approveFamilyMember(
+                requesterUserId,
+                requestedFamilyCode,
+                userId,
+              )
+            : await this.familyMemberService.rejectFamilyMember(
+                requesterUserId,
+                userId,
+                requestedFamilyCode,
+              );
+
+        await this.recipientModel.update(
+          { isRead: true, readAt: new Date() } as any,
+          { where: { notificationId } as any },
+        );
+
+        return {
+          success: true,
+          message: familyJoinResult?.message || (action === 'accept' ? 'Family join request accepted' : 'Family join request rejected'),
+          data: {
+            notificationId,
+            requesterUserId,
+            familyCode: requestedFamilyCode,
+            status: familyJoinResult?.data?.requestState || (action === 'accept' ? 'ACCEPTED' : 'REJECTED'),
+            membership: familyJoinResult?.data || null,
+          },
+        };
+      }
+
       case 'FAMILY_ASSOCIATION_REQUEST':
         const notificationData = notification.data || {};
         const senderId = notificationData.senderId; // The user who sent the request
@@ -1579,10 +1659,30 @@ export class NotificationService {
         notificationId,
         userId,
       },
+      include: [
+        {
+          model: Notification,
+          as: 'notification',
+          required: true,
+        },
+      ],
     });
 
     if (!notifRecipient) {
       throw new NotFoundException('Notification not found for this user');
+    }
+
+    const notification = (notifRecipient as any).notification as Notification | undefined;
+    if (
+      notification?.type === 'FAMILY_JOIN_REQUEST' &&
+      status &&
+      ['accepted', 'rejected'].includes(String(status).toLowerCase())
+    ) {
+      return this.respondToNotification(
+        notificationId,
+        status === 'accepted' ? 'accept' : 'reject',
+        userId,
+      );
     }
 
     // Mark notification as read

@@ -1,7 +1,7 @@
 import { Injectable, BadRequestException, ForbiddenException, Inject, forwardRef, NotFoundException } from '@nestjs/common';
 
 import { InjectModel } from '@nestjs/sequelize';
-import { Op } from 'sequelize';
+import { Op, literal } from 'sequelize';
 import { User } from './model/user.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { FamilyTree } from '../family/model/family-tree.model';
@@ -1272,6 +1272,19 @@ export class UserService {
       });
 
       if (!user) throw new NotFoundException('User profile not found');
+
+      if (user.userProfile) {
+        const latestMembership = await this.familyMemberModel.findOne({
+          where: { memberId: Number(id) } as any,
+          order: [
+            [literal(`CASE "approveStatus" WHEN 'approved' THEN 0 WHEN 'pending' THEN 1 WHEN 'rejected' THEN 2 WHEN 'cancelled' THEN 3 WHEN 'removed' THEN 4 ELSE 5 END`), 'ASC'],
+            ['updatedAt', 'DESC'],
+            ['id', 'DESC'],
+          ],
+        });
+
+        (user.userProfile as any).setDataValue('familyMember', latestMembership || null);
+      }
 
       if (user.userProfile?.profile) {
         user.userProfile.profile = this.uploadService.getFileUrl(

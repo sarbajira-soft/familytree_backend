@@ -18,6 +18,7 @@ import { UploadService } from '../uploads/upload.service';
 import { EventGateway } from './event.gateway';
 import { BlockingService } from '../blocking/blocking.service';
 import { FamilyLink } from '../family/model/family-link.model';
+import { ContentVisibilityService } from '../user/content-visibility.service';
  
 @Injectable()
 export class EventService {
@@ -44,6 +45,7 @@ export class EventService {
     private readonly eventGateway: EventGateway,
 
     private readonly blockingService: BlockingService,
+    private readonly contentVisibilityService: ContentVisibilityService,
   ) {}
 
   private normalizeOptionalString(value: any): string | null | undefined {
@@ -137,6 +139,57 @@ export class EventService {
     const accessible = await this.getAccessibleFamilyCodesForUser(userId);
     if (!accessible.includes(String(familyCode))) {
       throw new ForbiddenException('Not allowed to access this family content');
+    }
+  }
+
+  private async filterEventsByOwnerContentPrivacy<T extends { createdBy?: number }>(
+    events: T[],
+    userId?: number,
+  ): Promise<any[]> {
+    return this.contentVisibilityService.filterVisibleContent(events, {
+      viewerId: userId,
+      type: 'events',
+      getOwnerId: (event) => Number((event as any)?.createdBy),
+    });
+  }
+
+  private async assertViewerCanViewEventContent(
+    event: Pick<Event, 'createdBy' | 'familyCode' | 'isVisibleToFamily'>,
+    requestingUserId?: number,
+  ): Promise<void> {
+    const isOwner = Number(requestingUserId) === Number(event.createdBy);
+
+    if (!event.isVisibleToFamily) {
+      throw new NotFoundException('Event not found');
+    }
+
+    if (event.familyCode) {
+      if (!requestingUserId) {
+        throw new ForbiddenException('Not allowed to view this event');
+      }
+      if (!isOwner) {
+        await this.assertUserCanAccessFamilyOrLinked(requestingUserId, event.familyCode);
+      }
+    }
+
+    if (requestingUserId && event.createdBy && event.createdBy !== requestingUserId) {
+      const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+        requestingUserId,
+        event.createdBy,
+      );
+      if (blockedEitherWay) {
+        throw new NotFoundException('Event not found');
+      }
+    }
+
+    const canView = await this.contentVisibilityService.canViewerAccessOwnerContent(
+      requestingUserId,
+      Number(event.createdBy),
+      'events',
+    );
+
+    if (!canView) {
+      throw new NotFoundException('Event not found');
     }
   }
 
@@ -294,7 +347,9 @@ export class EventService {
     } else {
       events = await this.eventModel.findAll({ include: [EventImage] });
     }
-    return events.map(event => {
+    const visibleEvents = await this.filterEventsByOwnerContentPrivacy(events, userId);
+
+    return visibleEvents.map(event => {
       const eventJson = event.toJSON();
       const eventImages = eventJson.images?.map(img => this.constructEventImageUrl(img.imageUrl)) || [];
       delete eventJson.user;
@@ -316,7 +371,9 @@ export class EventService {
       },
       include: [EventImage]
     });
-    return events.map(event => {
+    const visibleEvents = await this.filterEventsByOwnerContentPrivacy(events, userId);
+
+    return visibleEvents.map(event => {
       const eventJson = event.toJSON();
       const eventImages = eventJson.images?.map(img => this.constructEventImageUrl(img.imageUrl)) || [];
       delete eventJson.user;
@@ -341,21 +398,8 @@ export class EventService {
     const event = await this.eventModel.findByPk(id, { include: [EventImage] });
     if (!event) throw new NotFoundException('Event not found');
 
-    const isOwner = Number(event.createdBy) === Number(requestingUserId);
-    if (!event.isVisibleToFamily) {
-      throw new NotFoundException('Event not found');
-    }
+    await this.assertViewerCanViewEventContent(event, requestingUserId);
 
-    if (requestingUserId && event.familyCode) {
-      await this.assertUserCanAccessFamilyOrLinked(requestingUserId, event.familyCode);
-      const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
-        requestingUserId,
-        event.createdBy,
-      );
-      if (usersBlockedEitherWay && event.createdBy !== requestingUserId) {
-        throw new NotFoundException('Event not found');
-      }
-    }
 
     const eventJson = event.toJSON();
     const eventImages = eventJson.images?.map(img => this.constructEventImageUrl(img.imageUrl)) || [];
@@ -668,7 +712,9 @@ export class EventService {
       });
     }
 
-    return events.map(event => {
+    const visibleEvents = await this.filterEventsByOwnerContentPrivacy(events, userId);
+
+    return visibleEvents.map(event => {
       const eventJson = event.toJSON();
       const eventImages = eventJson.images?.map(img => this.constructEventImageUrl(img.imageUrl)) || [];
       delete eventJson.user;
@@ -871,7 +917,7 @@ export class EventService {
       ...anniversaries
     ].sort((a, b) => new Date(a.eventDate).getTime() - new Date(b.eventDate).getTime());
 
-    return allEvents;
+    return this.filterEventsByOwnerContentPrivacy(allEvents, userId);
   }
 
   async getUpcomingByFamilyCode(familyCode: string, requestingUserId?: number) {
@@ -892,7 +938,7 @@ export class EventService {
       ...anniversaries
     ].sort((a, b) => new Date(a.eventDate).getTime() - new Date(b.eventDate).getTime());
 
-    return allEvents;
+    return this.filterEventsByOwnerContentPrivacy(allEvents, requestingUserId);
   }
 
   private async getUpcomingBirthdaysByFamilyCode(familyCode: string) {
@@ -1129,3 +1175,9 @@ export class EventService {
   }
 
 }
+
+
+
+
+
+

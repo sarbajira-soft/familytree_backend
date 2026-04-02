@@ -16,6 +16,7 @@ import { FamilyLink } from '../family/model/family-link.model';
 import { NotificationModule } from '../notification/notification.module';
 import { UploadModule } from '../uploads/upload.module';
 import { BlockingModule } from '../blocking/blocking.module';
+import { UserModule } from '../user/user.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { BlockingModule } from '../blocking/blocking.module';
     NotificationModule,
     UploadModule,
     BlockingModule,
+    UserModule,
     JwtModule.register({
       secret: process.env.JWT_SECRET,
       signOptions: { expiresIn: '7d' },
@@ -41,3 +43,4 @@ import { BlockingModule } from '../blocking/blocking.module';
   exports: [PostService, PostGateway],
 })
 export class PostModule {} 
+

@@ -34,6 +34,7 @@ import { TogglePrivacyDto } from './dto/toggle-privacy.dto';
 import { RequestAccountDeletionDto } from './dto/request-account-deletion.dto';
 import { RequestAccountRecoveryDto } from './dto/request-account-recovery.dto';
 import { ConfirmAccountRecoveryDto } from './dto/confirm-account-recovery.dto';
+import { UpdateContentPrivacySettingsDto } from './dto/content-privacy-settings.dto';
 import { ApiConsumes, ApiTags, ApiBearerAuth, ApiOperation, ApiResponse, ApiBody, ApiSecurity } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { generateFileName, imageFileFilter } from '../utils/upload.utils';
@@ -329,6 +330,34 @@ export class UserController {
   async setPrivacy(@Req() req, @Body() dto: TogglePrivacyDto) {
     const loggedInUser = req.user;
     return this.userService.setPrivacy(Number(loggedInUser.userId), dto);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('content-privacy-settings')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Get content privacy settings for the logged-in user' })
+  @ApiResponse({ status: 200, description: 'Content privacy settings fetched successfully' })
+  @ApiBearerAuth()
+  @ApiSecurity('application-token')
+  async getContentPrivacySettings(@Req() req) {
+    return this.userService.getContentPrivacySettings(Number(req.user.userId));
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Put('content-privacy-settings')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Update content privacy settings for posts, albums, and events' })
+  @ApiResponse({ status: 200, description: 'Content privacy settings updated successfully' })
+  @ApiBearerAuth()
+  @ApiSecurity('application-token')
+  async updateContentPrivacySettings(
+    @Req() req,
+    @Body() dto: UpdateContentPrivacySettingsDto,
+  ) {
+    return this.userService.updateContentPrivacySettings(
+      Number(req.user.userId),
+      dto,
+    );
   }
 
   @UseGuards(JwtAuthGuard)
@@ -631,5 +660,7 @@ export class UserController {
     return this.userService.deleteUser(id, loggedInUser.userId);
   }
 }
+
+
 
 

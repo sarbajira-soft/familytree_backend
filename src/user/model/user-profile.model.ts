@@ -178,10 +178,18 @@ export class UserProfile extends Model<UserProfile> {
   })
   associatedFamilyCodes: string[]; // Array of other family codes (in-laws, etc.)
 
+  @Column({
+    type: DataType.JSONB,
+    allowNull: false,
+    defaultValue: {},
+  })
+  contentPrivacySettings: Record<string, unknown>;
+
   // Associations - these will be set up in sequelize.associations.ts
   religion?: any;
   language?: any;
   gothram?: any;
 }
+
 
 

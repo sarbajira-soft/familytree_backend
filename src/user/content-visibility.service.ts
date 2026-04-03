@@ -6,7 +6,6 @@ import { Post } from '../post/model/post.model';
 import { Event } from '../event/model/event.model';
 import { UserProfile } from './model/user-profile.model';
 import { FamilyMember } from '../family/model/family-member.model';
-import { UserRelationship } from '../family/model/user-relationship.model';
 import {
   canViewContent,
   ContentPrivacySettings,
@@ -25,8 +24,6 @@ export class ContentVisibilityService {
     private readonly userProfileModel: typeof UserProfile,
     @InjectModel(FamilyMember)
     private readonly familyMemberModel: typeof FamilyMember,
-    @InjectModel(UserRelationship)
-    private readonly userRelationshipModel: typeof UserRelationship,
     @InjectModel(Gallery)
     private readonly galleryModel: typeof Gallery,
     @InjectModel(Post)
@@ -92,7 +89,7 @@ export class ContentVisibilityService {
       return [];
     }
 
-    const [profile, memberships, relationships] = await Promise.all([
+    const [profile, memberships] = await Promise.all([
       this.userProfileModel.findOne({
         where: { userId: normalizedUserId },
         attributes: ['familyCode', 'associatedFamilyCodes'],
@@ -104,48 +101,12 @@ export class ContentVisibilityService {
         } as any,
         attributes: ['familyCode'],
       }),
-      this.userRelationshipModel.findAll({
-        where: {
-          [Op.or]: [{ user1Id: normalizedUserId }, { user2Id: normalizedUserId }],
-        } as any,
-        attributes: ['user1Id', 'user2Id', 'relationshipType'],
-      }),
     ]);
-
-    const spouseIds = Array.isArray(relationships)
-      ? Array.from(
-          new Set(
-            relationships
-              .filter((rel: any) => rel?.relationshipType === 'spouse')
-              .map((rel: any) =>
-                Number(rel.user1Id) === normalizedUserId
-                  ? Number(rel.user2Id)
-                  : Number(rel.user1Id),
-              )
-              .filter((id: any) => Number.isFinite(Number(id)) && Number(id) > 0),
-          ),
-        )
-      : [];
-
-    const spouseProfiles = spouseIds.length
-      ? await this.userProfileModel.findAll({
-          where: { userId: { [Op.in]: spouseIds } },
-          attributes: ['familyCode', 'associatedFamilyCodes'],
-        })
-      : [];
 
     return Array.from(
       new Set([
         ...normalizeFamilyCodes((profile as any)?.familyCode ? [(profile as any).familyCode] : []),
         ...normalizeFamilyCodes((profile as any)?.associatedFamilyCodes),
-        ...normalizeFamilyCodes(
-          (spouseProfiles || []).flatMap((spouseProfile: any) => [
-            spouseProfile?.familyCode,
-            ...(Array.isArray(spouseProfile?.associatedFamilyCodes)
-              ? spouseProfile.associatedFamilyCodes
-              : []),
-          ]),
-        ),
         ...normalizeFamilyCodes(
           (memberships || []).map((membership: any) => membership.familyCode),
         ),

@@ -222,12 +222,10 @@ export class GalleryController {
     return this.galleryService.toggleLikeGallery(body.galleryId, req.user.userId);
   }
 
-  @UseGuards(JwtAuthGuard)
   @Get(':id/likes')
-  @ApiBearerAuth()
   @ApiOperation({ summary: 'Get like count for a gallery' })
-  async getLikeCount(@Param('id') galleryId: number, @Req() req) {
-    return this.galleryService.getGalleryLikeCount(galleryId, req.user?.userId);
+  async getLikeCount(@Param('id') galleryId: number) {
+    return this.galleryService.getGalleryLikeCount(galleryId);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -257,14 +255,17 @@ export class GalleryController {
     return this.galleryService.getGalleryCommentCount(galleryId, req.user?.userId);
   }
 
-  @UseGuards(JwtAuthGuard)
-  @ApiBearerAuth()
   @Get(':galleryId')
-  async getGalleryById(
+  async getPublicGalleryById(
     @Param('galleryId', ParseIntPipe) galleryId: number,
-    @Req() req,
+    @Query('userId') userId?: number,
   ) {
-    return this.galleryService.getGalleryById(galleryId, req.user?.userId);
+    const parsedUserId = Number(userId);
+    const normalizedUserId = Number.isFinite(parsedUserId) && parsedUserId > 0
+      ? parsedUserId
+      : undefined;
+
+    return this.galleryService.getGalleryById(galleryId, normalizedUserId);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -310,4 +311,3 @@ export class GalleryController {
   }
 
 }
-

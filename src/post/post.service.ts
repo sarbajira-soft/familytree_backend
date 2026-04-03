@@ -24,7 +24,6 @@ import { NotificationGateway } from 'src/notification/notification.gateway';
 import { BlockingService } from '../blocking/blocking.service';
 import { FamilyMember } from '../family/model/family-member.model';
 import { FamilyLink } from '../family/model/family-link.model';
-import { ContentVisibilityService } from '../user/content-visibility.service';
 
 type PostWithProfile = Post & { userProfile?: UserProfile };
 type PostCommentWithProfile = PostComment & { userProfile?: UserProfile; user?: User };
@@ -54,7 +53,6 @@ export class PostService {
     private readonly postGateway: PostGateway,
 
     private readonly blockingService: BlockingService,
-    private readonly contentVisibilityService: ContentVisibilityService,
   ) {
     this.baseCommentService = new BaseCommentService();
   }
@@ -138,63 +136,6 @@ export class PostService {
     const accessible = await this.getAccessibleFamilyCodesForUser(userId);
     if (!accessible.includes(String(familyCode))) {
       throw new ForbiddenException('Not allowed to access this family content');
-    }
-  }
-
-  private async filterPostsByOwnerContentPrivacy(
-    posts: Post[],
-    userId?: number,
-  ): Promise<Post[]> {
-    return this.contentVisibilityService.filterVisibleContent(posts, {
-      viewerId: userId,
-      type: 'posts',
-      getOwnerId: (post) => Number((post as any)?.createdBy),
-    });
-  }
-
-  private async assertViewerCanViewPostContent(
-    post: Pick<
-      Post,
-      'createdBy' | 'familyCode' | 'privacy' | 'isVisibleToFamily' | 'isVisibleToPublic'
-    >,
-    requestingUserId?: number,
-  ): Promise<void> {
-    const isOwner = Number(requestingUserId) === Number(post.createdBy);
-
-    if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
-      if (!post.isVisibleToFamily) {
-        throw new NotFoundException('Post not found');
-      }
-      if (!requestingUserId) {
-        throw new ForbiddenException('Not allowed to view this post');
-      }
-      if (!isOwner) {
-        await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
-      }
-    }
-
-    if (post.privacy === 'public' && !post.isVisibleToPublic) {
-      throw new NotFoundException('Post not found');
-    }
-
-    if (requestingUserId && post.createdBy && post.createdBy !== requestingUserId) {
-      const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
-        requestingUserId,
-        post.createdBy,
-      );
-      if (blockedEitherWay) {
-        throw new NotFoundException('Post not found');
-      }
-    }
-
-    const canView = await this.contentVisibilityService.canViewerAccessOwnerContent(
-      requestingUserId,
-      Number(post.createdBy),
-      'posts',
-    );
-
-    if (!canView) {
-      throw new NotFoundException('Post not found');
     }
   }
 
@@ -687,20 +628,26 @@ export class PostService {
       };
     }
 
+    // Private account enforcement:
+    // - If viewer is logged in: allow posts from non-private users, plus the viewer's own posts
+    // - If viewer is not logged in: only allow non-private users
+    const profileVisibilityWhere = userId
+      ? { [Op.or]: [{ isPrivate: false }, { isPrivate: null }, { userId }] }
+      : { [Op.or]: [{ isPrivate: false }, { isPrivate: null }] };
+
     const posts = await this.postModel.findAll({
       where: whereClause,
       include: [
         {
           model: this.userProfileModel,
           as: 'userProfile',
-          required: false,
+          required: true,
+          where: profileVisibilityWhere,
           attributes: ['firstName', 'lastName', 'profile'],
         },
       ],
       order: [['createdAt', 'DESC']],
     });
-
-    const visiblePosts = await this.filterPostsByOwnerContentPrivacy(posts, userId);
 
     const baseUrl = process.env.BASE_URL || '';
     const profilePath =
@@ -708,7 +655,7 @@ export class PostService {
       'uploads/profile';
 
     const formatted = await Promise.all(
-      visiblePosts.map(async (post) => {
+      posts.map(async (post) => {
         if (post.privacy === 'public' && !post.isVisibleToPublic) {
       throw new NotFoundException('Post not found');
     }
@@ -774,7 +721,10 @@ export class PostService {
     const post = await this.postModel.findByPk(postId);
     if (!post || (post as any).deletedAt) return;
 
-    await this.assertViewerCanViewPostContent(post, userId);
+    // Admin family-block: deny interactions on family/private posts if blocked
+    if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
+      await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
+    }
 
     const existingLike = await this.postLikeModel.findOne({
       where: { postId, userId },
@@ -785,6 +735,12 @@ export class PostService {
       userId,
       postOwnerId,
     );
+
+    // Blocking policy: no interactions between blocked users.
+    // Allow removing an existing like (cleanup), but block adding a new like.
+    if (!existingLike && usersBlockedEitherWay && postOwnerId !== userId) {
+      throw new ForbiddenException('Not allowed');
+    }
 
     if (existingLike) {
       await existingLike.destroy();
@@ -862,13 +818,20 @@ export class PostService {
     const post = await this.postModel.findByPk(postId);
     if (!post || (post as any).deletedAt) return;
 
-    await this.assertViewerCanViewPostContent(post, userId);
+    // Admin family-block: deny interactions on family/private posts if blocked
+    if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
+      await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
+    }
 
     const postOwnerId = post.createdBy;
     const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
       userId,
       postOwnerId,
     );
+
+    if (usersBlockedEitherWay && postOwnerId !== userId) {
+      throw new ForbiddenException('You cannot comment due to blocking');
+    }
 
     const newComment = await this.postCommentModel.create({
       postId,
@@ -953,8 +916,36 @@ export class PostService {
       throw new NotFoundException(`Post with ID ${postId} not found`);
     }
 
-    await this.assertViewerCanViewPostContent(post, requestingUserId);
+    const isOwner = Number(requestingUserId) === Number(post.createdBy);
+    if (
+      post.familyCode &&
+      (post.privacy === 'private' || post.privacy === 'family')
+    ) {
+      if (!post.isVisibleToFamily) {
+        throw new NotFoundException('Post not found');
+      }
+      if (!requestingUserId) {
+        throw new ForbiddenException('Not allowed to view this post');
+      }
+      if (!isOwner) {
+        await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
+      }
+    }
 
+    // Hard rule: blocked users cannot view each other's posts (even public).
+    if (requestingUserId && post.createdBy && post.createdBy !== requestingUserId) {
+      const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+        requestingUserId,
+        post.createdBy,
+      );
+      if (blockedEitherWay) {
+        throw new NotFoundException('Post not found');
+      }
+    }
+
+    if (post.privacy === 'public' && !post.isVisibleToPublic) {
+      throw new NotFoundException('Post not found');
+    }
 
     const postJson: PostWithProfile = post.get({ plain: true }) as PostWithProfile;
     const postImageUrl = this.getPostImageUrl(postJson.postImage);
@@ -981,8 +972,33 @@ export class PostService {
       throw new NotFoundException('Post not found');
     }
 
-    await this.assertViewerCanViewPostContent(post, requestingUserId);
+    const isOwner = Number(requestingUserId) === Number(post.createdBy);
+    if (
+      requestingUserId &&
+      post.familyCode &&
+      (post.privacy === 'private' || post.privacy === 'family')
+    ) {
+      if (!post.isVisibleToFamily) {
+        throw new NotFoundException('Post not found');
+      }
+      if (!isOwner) {
+        await this.assertUserCanAccessFamilyOrLinked(
+          requestingUserId,
+          post.familyCode,
+        );
+      }
+    }
 
+    // Hard rule: blocked users cannot view each other's posts/comments.
+    if (requestingUserId && post.createdBy && post.createdBy !== requestingUserId) {
+      const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+        requestingUserId,
+        post.createdBy,
+      );
+      if (blockedEitherWay) {
+        throw new NotFoundException('Post not found');
+      }
+    }
 
     const offset = (page - 1) * limit;
 
@@ -1111,8 +1127,28 @@ export class PostService {
       throw new NotFoundException('Post not found');
     }
 
-    await this.assertViewerCanViewPostContent(post, requestingUserId);
+    const isOwner = Number(requestingUserId) === Number(post.createdBy);
+    if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
+      if (!post.isVisibleToFamily) {
+        throw new NotFoundException('Post not found');
+      }
+      if (!requestingUserId) {
+        throw new ForbiddenException('Not allowed');
+      }
+      if (!isOwner) {
+        await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
+      }
+    }
 
+    if (requestingUserId && post.createdBy && post.createdBy !== requestingUserId) {
+      const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+        requestingUserId,
+        post.createdBy,
+      );
+      if (blockedEitherWay) {
+        throw new NotFoundException('Post not found');
+      }
+    }
 
     const blockedUserIds = requestingUserId
       ? await this.blockingService.getBlockedUserIdsForUser(requestingUserId)
@@ -1137,8 +1173,28 @@ export class PostService {
       throw new NotFoundException('Post not found');
     }
 
-    await this.assertViewerCanViewPostContent(post, requestingUserId);
+    const isOwner = Number(requestingUserId) === Number(post.createdBy);
+    if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
+      if (!post.isVisibleToFamily) {
+        throw new NotFoundException('Post not found');
+      }
+      if (!requestingUserId) {
+        throw new ForbiddenException('Not allowed');
+      }
+      if (!isOwner) {
+        await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
+      }
+    }
 
+    if (requestingUserId && post.createdBy && post.createdBy !== requestingUserId) {
+      const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+        requestingUserId,
+        post.createdBy,
+      );
+      if (blockedEitherWay) {
+        throw new NotFoundException('Post not found');
+      }
+    }
 
     const blockedUserIds = requestingUserId
       ? await this.blockingService.getBlockedUserIdsForUser(requestingUserId)
@@ -1199,8 +1255,17 @@ export class PostService {
       throw new NotFoundException('Comment not found');
     }
     const post = await this.getActivePostOrThrow(Number((comment as any).postId));
-    await this.assertViewerCanViewPostContent(post, userId);
+    if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
+      await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
+    }
 
+    const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      userId,
+      post.createdBy,
+    );
+    if (usersBlockedEitherWay && post.createdBy !== userId) {
+      throw new ForbiddenException('You cannot edit comment due to blocking');
+    }
 
     const result = await this.baseCommentService.editComment(
       this.postCommentModel,
@@ -1254,8 +1319,17 @@ export class PostService {
       };
     }
     const post = await this.getActivePostOrThrow(Number((comment as any).postId));
-    await this.assertViewerCanViewPostContent(post, userId);
+    if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
+      await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
+    }
 
+    const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      userId,
+      post.createdBy,
+    );
+    if (usersBlockedEitherWay && post.createdBy !== userId) {
+      throw new ForbiddenException('You cannot delete comment due to blocking');
+    }
 
     const isCommentOwner = Number((comment as any).userId) === Number(userId);
     const isPostOwner = Number((post as any).createdBy) === Number(userId);
@@ -1297,8 +1371,17 @@ export class PostService {
     replyText: string,
   ) {
     const post = await this.getActivePostOrThrow(postId);
-    await this.assertViewerCanViewPostContent(post, userId);
+    if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
+      await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
+    }
 
+    const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
+      userId,
+      post.createdBy,
+    );
+    if (usersBlockedEitherWay && post.createdBy !== userId) {
+      throw new ForbiddenException('You cannot comment due to blocking');
+    }
 
     const result = await this.baseCommentService.replyToComment(
       this.postCommentModel,
@@ -1337,6 +1420,3 @@ export class PostService {
     return formattedComment;
   }
 }
-
-
-

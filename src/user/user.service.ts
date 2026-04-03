@@ -1385,27 +1385,6 @@ export class UserService {
     };
   }
 
-  async getContentPrivacySettings(userId: number) {
-    const settings =
-      await this.contentVisibilityService.getContentPrivacySettings(userId);
-
-    return {
-      message: 'Content privacy settings fetched successfully',
-      data: settings,
-    };
-  }
-
-  async updateContentPrivacySettings(userId: number, dto: unknown) {
-    const settings = await this.contentVisibilityService.updateContentPrivacySettings(
-      userId,
-      dto,
-    );
-
-    return {
-      message: 'Content privacy settings updated successfully',
-      data: settings,
-    };
-  }
   // eslint-disable-next-line sonarjs/cognitive-complexity
   async updateProfile(
     userId: number,
@@ -1938,7 +1917,6 @@ export class UserService {
     };
   }
 }
-
 
 
 

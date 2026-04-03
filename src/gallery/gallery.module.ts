@@ -15,7 +15,6 @@ import { UploadModule } from '../uploads/upload.module';
 import { BlockingModule } from '../blocking/blocking.module';
 import { FamilyMember } from '../family/model/family-member.model';
 import { FamilyLink } from '../family/model/family-link.model';
-import { UserModule } from '../user/user.module';
  
 @Module({
   imports: [
@@ -31,7 +30,6 @@ import { UserModule } from '../user/user.module';
     ]),
     NotificationModule,
     BlockingModule,
-    UserModule,
     forwardRef(() => UploadModule)
   ],
   controllers: [GalleryController],
@@ -39,4 +37,3 @@ import { UserModule } from '../user/user.module';
   exports: [GalleryService, GalleryRetentionService],
 })
 export class GalleryModule {}
-

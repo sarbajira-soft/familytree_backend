@@ -24,6 +24,7 @@ import { BaseCommentService } from '../common/services/base-comment.service';
 import { FamilyMember } from '../family/model/family-member.model';
 import { BlockingService } from '../blocking/blocking.service';
 import { FamilyLink } from '../family/model/family-link.model';
+import { canViewerAccessFamilyContentForType, isFamilyContentVisibleForType } from '../user/content-visibility-settings.util';
 
 @Injectable()
 export class GalleryService {
@@ -55,6 +56,18 @@ export class GalleryService {
     this.baseCommentService = new BaseCommentService();
   }
 
+  private async getFamilyAlbumsVisibilityEnabled(userId: number): Promise<boolean> {
+    const profile = await this.userProfileModel.findOne({
+      where: { userId },
+      attributes: ['contentVisibilitySettings'],
+    });
+
+    return isFamilyContentVisibleForType(
+      (profile as any)?.contentVisibilitySettings,
+      'albums',
+    );
+  }
+
   private async assertUserCanAccessFamilyContent(userId: number, familyCode: string): Promise<void> {
     if (!userId || !familyCode) {
       throw new ForbiddenException('Not allowed to access this family content');
@@ -82,11 +95,28 @@ export class GalleryService {
       attributes: ['familyCode'],
     });
 
+    const profile = await this.userProfileModel.findOne({
+      where: { userId },
+      attributes: ['familyCode', 'associatedFamilyCodes'],
+    });
+
+    const primaryFamilyCode = String((profile as any)?.familyCode || '').trim().toUpperCase();
+
+    const associated = Array.isArray((profile as any)?.associatedFamilyCodes)
+      ? ((profile as any).associatedFamilyCodes as any[])
+          .filter(Boolean)
+          .map((code: any) => String(code).trim().toUpperCase())
+      : [];
+
     const base = Array.from(
       new Set(
-        (memberships as any[])
-          .filter((m: any) => !!(m as any).familyCode)
-          .map((m: any) => String((m as any).familyCode)),
+        [
+          ...(memberships as any[])
+            .filter((m: any) => !!(m as any).familyCode)
+            .map((m: any) => String((m as any).familyCode).trim().toUpperCase()),
+          ...(primaryFamilyCode ? [primaryFamilyCode] : []),
+          ...associated,
+        ].filter(Boolean),
       ),
     );
 
@@ -128,6 +158,121 @@ export class GalleryService {
     if (!accessible.includes(String(familyCode))) {
       throw new ForbiddenException('Not allowed to access this family content');
     }
+  }
+
+  private async canViewerAccessGalleryFamilyContent(
+    viewerUserId: number | undefined,
+    creatorUserId: number,
+  ): Promise<boolean> {
+    if (!viewerUserId) {
+      return false;
+    }
+    if (Number(viewerUserId) === Number(creatorUserId)) {
+      return true;
+    }
+
+    const [creatorAudienceFamilyCodes, creatorProfile, viewerProfile] = await Promise.all([
+      this.getAccessibleFamilyCodesForUser(creatorUserId),
+      this.userProfileModel.findOne({
+        where: { userId: creatorUserId },
+        attributes: ['contentVisibilitySettings'],
+      }),
+      this.userProfileModel.findOne({
+        where: { userId: viewerUserId },
+        attributes: ['familyCode'],
+      }),
+    ]);
+
+    const viewerPrimaryFamilyCodes = [String((viewerProfile as any)?.familyCode || '').trim().toUpperCase()].filter(Boolean);
+    if (!viewerPrimaryFamilyCodes.length) {
+      return false;
+    }
+
+    return canViewerAccessFamilyContentForType(
+      (creatorProfile as any)?.contentVisibilitySettings,
+      'albums',
+      viewerPrimaryFamilyCodes,
+      creatorAudienceFamilyCodes,
+    );
+  }
+
+  private async canViewerAccessGalleryInstance(gallery: any, viewerUserId?: number): Promise<boolean> {
+    if (!(gallery?.familyCode && gallery?.privacy === 'private')) {
+      return true;
+    }
+    if (!viewerUserId) {
+      return false;
+    }
+    if (Number(gallery?.createdBy) === Number(viewerUserId)) {
+      return true;
+    }
+    if (!gallery?.isVisibleToFamily) {
+      return false;
+    }
+    return this.canViewerAccessGalleryFamilyContent(viewerUserId, Number(gallery?.createdBy));
+  }
+
+  private async filterGalleriesByFamilyVisibility(galleries: any[], viewerUserId?: number) {
+    if (!viewerUserId) {
+      return galleries;
+    }
+
+    const viewerProfile = await this.userProfileModel.findOne({
+      where: { userId: viewerUserId },
+      attributes: ['familyCode'],
+    });
+    const viewerPrimaryFamilyCodes = [String((viewerProfile as any)?.familyCode || '').trim().toUpperCase()].filter(Boolean);
+    if (!viewerPrimaryFamilyCodes.length) {
+      return galleries.filter(
+        (gallery) =>
+          Number(gallery?.createdBy) === Number(viewerUserId) ||
+          !(gallery?.familyCode && gallery?.privacy === 'private'),
+      );
+    }
+
+    const creatorIds = Array.from(
+      new Set(
+        galleries
+          .filter((gallery) => Number(gallery?.createdBy) !== Number(viewerUserId))
+          .map((gallery) => Number(gallery?.createdBy))
+          .filter((id) => Number.isFinite(id) && id > 0),
+      ),
+    );
+
+    const [profiles, creatorAudienceEntries] = await Promise.all([
+      creatorIds.length
+        ? this.userProfileModel.findAll({
+            where: { userId: { [Op.in]: creatorIds } } as any,
+            attributes: ['userId', 'contentVisibilitySettings'],
+          })
+        : Promise.resolve([]),
+      Promise.all(
+        creatorIds.map(async (creatorId) => [creatorId, await this.getAccessibleFamilyCodesForUser(creatorId)] as const),
+      ),
+    ]);
+
+    const settingsByUserId = new Map(
+      (profiles as any[]).map((profile) => [Number((profile as any).userId), (profile as any).contentVisibilitySettings]),
+    );
+    const creatorAudienceByUserId = new Map<number, string[]>(creatorAudienceEntries);
+
+    return galleries.filter((gallery) => {
+      if (!(gallery?.familyCode && gallery?.privacy === 'private')) {
+        return true;
+      }
+      if (Number(gallery?.createdBy) === Number(viewerUserId)) {
+        return true;
+      }
+      if (!gallery?.isVisibleToFamily) {
+        return false;
+      }
+      return canViewerAccessFamilyContentForType(
+        settingsByUserId.get(Number(gallery?.createdBy)),
+        'albums',
+        viewerPrimaryFamilyCodes,
+        creatorAudienceByUserId.get(Number(gallery?.createdBy)) || [],
+      );
+    });
   }
 
   private getGalleryImageFilenameFromUrl(url: string): string | null {
@@ -295,6 +440,10 @@ export class GalleryService {
     }
 
     const transaction = await this.galleryModel.sequelize.transaction();
+    const isFamilyVisible =
+      privacy === 'private'
+        ? await this.getFamilyAlbumsVisibilityEnabled(createdBy)
+        : true;
     
     try {
       // Step 1: Create Gallery
@@ -305,6 +454,8 @@ export class GalleryService {
         familyCode: privacy === 'private' ? dto.familyCode : null,
         status: dto.status ?? 1,
         createdBy,
+        isVisibleToFamily: isFamilyVisible,
+        hiddenReason: privacy === 'private' ? (isFamilyVisible ? null : 'content_privacy_disabled') : null,
       };
 
       // Handle cover photo if provided
@@ -346,8 +497,8 @@ export class GalleryService {
       // Create album entries within the same transaction
       await this.galleryAlbumModel.bulkCreate(albumData, { transaction });
 
-      // Step 3: Send notifications only for private galleries with familyCode
-      if (privacy === 'private' && dto.familyCode) {
+      // Step 3: Send notifications only for visible private galleries with familyCode
+      if (privacy === 'private' && dto.familyCode && gallery.isVisibleToFamily) {
         try {
           // Find all users with this family code (excluding the creator)
           const users = await this.userProfileModel.findAll({
@@ -453,18 +604,22 @@ export class GalleryService {
           Number(createdBy) === Number(userId);
 
         if (!isOwnerScope) {
-          if (!familyCode) {
-            throw new BadRequestException('familyCode is required for private privacy');
+          const accessible = userId
+            ? await this.getAccessibleFamilyCodesForUser(userId)
+            : [];
+          if (!accessible || accessible.length === 0) {
+            throw new ForbiddenException('Not allowed to access this family content');
           }
-          await this.assertUserCanAccessFamilyOrLinked(userId, familyCode);
+          if (familyCode) {
+            await this.assertUserCanAccessFamilyOrLinked(userId, familyCode);
+            whereClause.familyCode = familyCode;
+          }
           whereClause.isVisibleToFamily = true;
-        }
-
-        whereClause.isVisibleToFamily = true;
-        whereClause.privacy = privacy;
-        if (familyCode) {
+        } else if (familyCode) {
           whereClause.familyCode = familyCode;
         }
+
+        whereClause.privacy = privacy;
       } else if (privacy === 'public') {
         whereClause.privacy = 'public';
         whereClause.isVisibleToPublic = true;
@@ -490,7 +645,7 @@ export class GalleryService {
       ? { [Op.or]: [{ isPrivate: false }, { userId }] }
       : { isPrivate: false };
 
-    const galleries = await this.galleryModel.findAll({
+    let galleries = await this.galleryModel.findAll({
       where: whereClause,
       include: [
         {
@@ -507,6 +662,8 @@ export class GalleryService {
       ],
       order: [['createdAt', 'DESC']],
     });
+
+    galleries = await this.filterGalleriesByFamilyVisibility(galleries as any[], userId);
 
     const formatted = await Promise.all(
       galleries.map(async (gallery) => {
@@ -573,7 +730,10 @@ export class GalleryService {
     }
 
     if (gallery.familyCode && gallery.privacy === 'private') {
-      await this.assertUserCanAccessFamilyOrLinked(userId, gallery.familyCode);
+      const canAccess = await this.canViewerAccessGalleryInstance(gallery, userId);
+      if (!canAccess) {
+        throw new ForbiddenException('Not allowed');
+      }
     }
 
     const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
@@ -606,7 +766,22 @@ export class GalleryService {
     };
   }
 
-  async getGalleryLikeCount(galleryId: number) {
+  async getGalleryLikeCount(galleryId: number, requestingUserId?: number) {
+    const gallery = await this.galleryModel.findByPk(galleryId);
+    if (!gallery) {
+      throw new NotFoundException('Gallery not found');
+    }
+
+    if (gallery.familyCode && gallery.privacy === 'private') {
+      if (!requestingUserId) {
+        throw new ForbiddenException('Not allowed');
+      }
+      const canAccess = await this.canViewerAccessGalleryInstance(gallery, requestingUserId);
+      if (!canAccess) {
+        throw new NotFoundException('Gallery not found');
+      }
+    }
+
     const count = await this.galleryLikeModel.count({
       where: { galleryId },
     });
@@ -620,7 +795,10 @@ export class GalleryService {
     }
 
     if (gallery.familyCode && gallery.privacy === 'private') {
-      await this.assertUserCanAccessFamilyOrLinked(userId, gallery.familyCode);
+      const canAccess = await this.canViewerAccessGalleryInstance(gallery, userId);
+      if (!canAccess) {
+        throw new ForbiddenException('You cannot comment on this gallery');
+      }
     }
 
     const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
@@ -998,16 +1176,13 @@ export class GalleryService {
     }
 
     // Enforce access to private galleries
-    const isOwner = Number(requestingUserId) === Number(gallery.createdBy);
     if (gallery.familyCode && gallery.privacy === 'private') {
-      if (!gallery.isVisibleToFamily) {
-        throw new NotFoundException('Gallery not found');
-      }
       if (!requestingUserId) {
         throw new ForbiddenException('Not allowed to view this gallery');
       }
-      if (!isOwner) {
-        await this.assertUserCanAccessFamilyOrLinked(requestingUserId, gallery.familyCode);
+      const canAccess = await this.canViewerAccessGalleryInstance(gallery, requestingUserId);
+      if (!canAccess) {
+        throw new NotFoundException('Gallery not found');
       }
     }
 
@@ -1100,16 +1275,13 @@ export class GalleryService {
       throw new NotFoundException('Gallery not found');
     }
 
-    const isOwner = Number(requestingUserId) === Number(gallery.createdBy);
     if (gallery.familyCode && gallery.privacy === 'private') {
-      if (!gallery.isVisibleToFamily) {
-        throw new NotFoundException('Gallery not found');
-      }
       if (!requestingUserId) {
         throw new ForbiddenException('Not allowed');
       }
-      if (!isOwner) {
-        await this.assertUserCanAccessFamilyOrLinked(requestingUserId, gallery.familyCode);
+      const canAccess = await this.canViewerAccessGalleryInstance(gallery, requestingUserId);
+      if (!canAccess) {
+        throw new NotFoundException('Gallery not found');
       }
     }
 
@@ -1162,16 +1334,13 @@ export class GalleryService {
       throw new NotFoundException('Gallery not found');
     }
 
-    const isOwner = Number(userId) === Number(gallery.createdBy);
     if (gallery.familyCode && gallery.privacy === 'private') {
-      if (!gallery.isVisibleToFamily) {
-        throw new NotFoundException('Gallery not found');
-      }
       if (!userId) {
         throw new ForbiddenException('Not allowed to view this gallery');
       }
-      if (!isOwner) {
-        await this.assertUserCanAccessFamilyOrLinked(userId, gallery.familyCode);
+      const canAccess = await this.canViewerAccessGalleryInstance(gallery, userId);
+      if (!canAccess) {
+        throw new NotFoundException('Gallery not found');
       }
     }
 
@@ -1239,6 +1408,12 @@ export class GalleryService {
     if (!gallery) {
       throw new NotFoundException('Gallery not found');
     }
+    if (gallery.familyCode && gallery.privacy === 'private') {
+      const canAccess = await this.canViewerAccessGalleryInstance(gallery, userId);
+      if (!canAccess) {
+        throw new ForbiddenException('Not allowed');
+      }
+    }
 
     const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
       userId,
@@ -1268,6 +1443,12 @@ export class GalleryService {
     const gallery = await this.galleryModel.findByPk((comment as any).galleryId);
     if (!gallery) {
       throw new NotFoundException('Gallery not found');
+    }
+    if (gallery.familyCode && gallery.privacy === 'private') {
+      const canAccess = await this.canViewerAccessGalleryInstance(gallery, userId);
+      if (!canAccess) {
+        throw new ForbiddenException('Not allowed');
+      }
     }
 
     const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
@@ -1300,7 +1481,10 @@ export class GalleryService {
     }
 
     if (gallery.familyCode && gallery.privacy === 'private') {
-      await this.assertUserCanAccessFamilyOrLinked(userId, gallery.familyCode);
+      const canAccess = await this.canViewerAccessGalleryInstance(gallery, userId);
+      if (!canAccess) {
+        throw new NotFoundException('Gallery not found');
+      }
     }
 
     const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(

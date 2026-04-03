@@ -31,6 +31,7 @@ import { ResendOtpDto } from './dto/resend-otp.dto';
 import { ForgetPasswordDto } from './dto/forget-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { TogglePrivacyDto } from './dto/toggle-privacy.dto';
+import { ContentVisibilitySettingsDto } from './dto/content-visibility-settings.dto';
 import { RequestAccountDeletionDto } from './dto/request-account-deletion.dto';
 import { RequestAccountRecoveryDto } from './dto/request-account-recovery.dto';
 import { ConfirmAccountRecoveryDto } from './dto/confirm-account-recovery.dto';
@@ -329,6 +330,36 @@ export class UserController {
   async setPrivacy(@Req() req, @Body() dto: TogglePrivacyDto) {
     const loggedInUser = req.user;
     return this.userService.setPrivacy(Number(loggedInUser.userId), dto);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Get('content-visibility-settings')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Get family content visibility settings (self only)' })
+  @ApiResponse({ status: 200, description: 'Family content visibility settings fetched' })
+  @ApiBearerAuth()
+  @ApiSecurity('application-token')
+  async getContentVisibilitySettings(@Req() req) {
+    const loggedInUser = req.user;
+    return this.userService.getContentVisibilitySettings(Number(loggedInUser.userId));
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('content-visibility-settings')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Update family content visibility settings (self only)' })
+  @ApiResponse({ status: 200, description: 'Family content visibility settings updated' })
+  @ApiBearerAuth()
+  @ApiSecurity('application-token')
+  async setContentVisibilitySettings(
+    @Req() req,
+    @Body() dto: ContentVisibilitySettingsDto,
+  ) {
+    const loggedInUser = req.user;
+    return this.userService.updateContentVisibilitySettings(
+      Number(loggedInUser.userId),
+      dto,
+    );
   }
 
   @UseGuards(JwtAuthGuard)

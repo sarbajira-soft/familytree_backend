@@ -1,3 +1,5 @@
+import { normalizeFamilyContentVisibilitySettings } from './content-visibility-settings.util';
+
 export const PRIVACY_SCOPE_PRIVATE = 'PRIVATE';
 export const PRIVACY_SCOPE_FAMILY = 'FAMILY';
 
@@ -88,13 +90,18 @@ export function applyPrivacyToNestedUser<T extends Record<string, any>>(
   }
 
   if (nextProfile) {
+    const contentVisibilitySettings = normalizeFamilyContentVisibilitySettings(
+      nextProfile.contentVisibilitySettings,
+    );
     nextProfile.privacySettings = {
       isPrivate: Boolean(nextProfile.isPrivate),
       emailPrivacy: normalizeScope(nextProfile.emailPrivacy),
       addressPrivacy: normalizeScope(nextProfile.addressPrivacy),
       phonePrivacy: normalizeScope(nextProfile.phonePrivacy),
       dobPrivacy: normalizeScope(nextProfile.dobPrivacy),
+      contentVisibilitySettings,
     };
+    nextProfile.contentVisibilitySettings = contentVisibilitySettings;
     nextProfile.fieldVisibility = {
       email: emailVisible,
       phone: phoneVisible,
@@ -148,13 +155,18 @@ export function applyPrivacyToProfileResponse<T extends Record<string, any>>(
   }
 
   if (nextProfile) {
+    const contentVisibilitySettings = normalizeFamilyContentVisibilitySettings(
+      nextProfile.contentVisibilitySettings,
+    );
     nextProfile.privacySettings = {
       isPrivate: Boolean(nextProfile.isPrivate),
       emailPrivacy: normalizeScope(nextProfile.emailPrivacy),
       addressPrivacy: normalizeScope(nextProfile.addressPrivacy),
       phonePrivacy: normalizeScope(nextProfile.phonePrivacy),
       dobPrivacy: normalizeScope(nextProfile.dobPrivacy),
+      contentVisibilitySettings,
     };
+    nextProfile.contentVisibilitySettings = contentVisibilitySettings;
     nextProfile.fieldVisibility = {
       email: emailVisible,
       phone: phoneVisible,

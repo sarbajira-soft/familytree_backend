@@ -22,6 +22,7 @@ import {
 } from '@nestjs/common';
 import { AnyFilesInterceptor, FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { InjectModel } from '@nestjs/sequelize';
 import { memoryStorage } from 'multer';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { BlockingService } from '../blocking/blocking.service';
@@ -30,6 +31,7 @@ import { NotificationService } from '../notification/notification.service';
 import { UploadService } from '../uploads/upload.service';
 import { imageFileFilter } from '../utils/upload.utils';
 import { CreateFamilyDto } from './dto/create-family.dto';
+import { FamilyTree } from './model/family-tree.model';
 import { FamilyService } from './family.service';
 
 @ApiTags('Family')
@@ -41,6 +43,7 @@ export class FamilyController {
     private readonly notificationService: NotificationService,
     private readonly blockingService: BlockingService,
     private readonly familyLinkService: FamilyLinkService,
+    @InjectModel(FamilyTree) private readonly familyTreeModel: typeof FamilyTree,
   ) { }
 
   @UseGuards(JwtAuthGuard)
@@ -397,6 +400,32 @@ export class FamilyController {
     const requesterProfile = await this.familyService.getFamilyByUserId(requesterId);
     if (!requesterProfile || !requesterProfile.familyCode) {
       throw new BadRequestException('Requester must have a family code to send association request');
+    }
+
+    let activeTreeFamilyCode = requesterProfile.familyCode;
+    const requestedFamilyCode = String(body?.familyCode || '').trim();
+    if (requestedFamilyCode) {
+      const requesterTreeEntry = await this.familyTreeModel.findOne({
+        where: {
+          familyCode: requestedFamilyCode,
+          userId: requesterId,
+        },
+      });
+
+      if (requesterTreeEntry) {
+        activeTreeFamilyCode = requestedFamilyCode;
+      }
+    }
+
+    const targetAlreadyInTree = await this.familyTreeModel.findOne({
+      where: {
+        familyCode: activeTreeFamilyCode,
+        userId: targetUserId,
+      },
+    });
+
+    if (targetAlreadyInTree) {
+      throw new BadRequestException('This person is already in the family tree');
     }
 
     // Track who initiated the request (may differ from requesterId when acting on behalf of a member)
@@ -764,3 +793,4 @@ export class FamilyController {
   // }
 
 }
+

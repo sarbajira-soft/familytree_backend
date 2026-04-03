@@ -172,6 +172,13 @@ export class UserProfile extends Model<UserProfile> {
   familyCode: string; // Main family code (birth family)
 
   @Column({
+    type: DataType.JSONB,
+    allowNull: false,
+    defaultValue: { posts: true, albums: true, events: true },
+  })
+  contentVisibilitySettings: any;
+
+  @Column({
     type: DataType.JSON,
     allowNull: true,
     defaultValue: [],

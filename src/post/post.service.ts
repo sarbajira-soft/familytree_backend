@@ -24,6 +24,7 @@ import { NotificationGateway } from 'src/notification/notification.gateway';
 import { BlockingService } from '../blocking/blocking.service';
 import { FamilyMember } from '../family/model/family-member.model';
 import { FamilyLink } from '../family/model/family-link.model';
+import { canViewerAccessFamilyContentForType, isFamilyContentVisibleForType } from '../user/content-visibility-settings.util';
 
 type PostWithProfile = Post & { userProfile?: UserProfile };
 type PostCommentWithProfile = PostComment & { userProfile?: UserProfile; user?: User };
@@ -67,6 +68,18 @@ export class PostService {
     return post;
   }
 
+  private async getFamilyPostsVisibilityEnabled(userId: number): Promise<boolean> {
+    const profile = await this.userProfileModel.findOne({
+      where: { userId },
+      attributes: ['contentVisibilitySettings'],
+    });
+
+    return isFamilyContentVisibleForType(
+      (profile as any)?.contentVisibilitySettings,
+      'posts',
+    );
+  }
+
   private async assertUserCanAccessFamilyContent(userId: number, familyCode: string): Promise<void> {
     if (!userId || !familyCode) {
       throw new ForbiddenException('Not allowed to access this family content');
@@ -93,11 +106,28 @@ export class PostService {
       attributes: ['familyCode'],
     });
 
+    const profile = await this.userProfileModel.findOne({
+      where: { userId },
+      attributes: ['familyCode', 'associatedFamilyCodes'],
+    });
+
+    const primaryFamilyCode = String((profile as any)?.familyCode || '').trim().toUpperCase();
+
+    const associated = Array.isArray((profile as any)?.associatedFamilyCodes)
+      ? ((profile as any).associatedFamilyCodes as any[])
+          .filter(Boolean)
+          .map((code: any) => String(code).trim().toUpperCase())
+      : [];
+
     const base = Array.from(
       new Set(
-        memberships
-          .filter((member) => !!member.familyCode)
-          .map((member) => String(member.familyCode)),
+        [
+          ...memberships
+            .filter((member: any) => !!(member as any).familyCode)
+            .map((member: any) => String((member as any).familyCode).trim().toUpperCase()),
+          ...(primaryFamilyCode ? [primaryFamilyCode] : []),
+          ...associated,
+        ].filter(Boolean),
       ),
     );
 
@@ -139,6 +169,121 @@ export class PostService {
     if (!accessible.includes(String(familyCode))) {
       throw new ForbiddenException('Not allowed to access this family content');
     }
+  }
+
+  private async canViewerAccessPostFamilyContent(
+    viewerUserId: number | undefined,
+    creatorUserId: number,
+  ): Promise<boolean> {
+    if (!viewerUserId) {
+      return false;
+    }
+    if (Number(viewerUserId) === Number(creatorUserId)) {
+      return true;
+    }
+
+    const [creatorAudienceFamilyCodes, creatorProfile, viewerProfile] = await Promise.all([
+      this.getAccessibleFamilyCodesForUser(creatorUserId),
+      this.userProfileModel.findOne({
+        where: { userId: creatorUserId },
+        attributes: ['contentVisibilitySettings'],
+      }),
+      this.userProfileModel.findOne({
+        where: { userId: viewerUserId },
+        attributes: ['familyCode'],
+      }),
+    ]);
+
+    const viewerPrimaryFamilyCodes = [String((viewerProfile as any)?.familyCode || '').trim().toUpperCase()].filter(Boolean);
+    if (!viewerPrimaryFamilyCodes.length) {
+      return false;
+    }
+
+    return canViewerAccessFamilyContentForType(
+      (creatorProfile as any)?.contentVisibilitySettings,
+      'posts',
+      viewerPrimaryFamilyCodes,
+      creatorAudienceFamilyCodes,
+    );
+  }
+
+  private async canViewerAccessPostInstance(post: any, viewerUserId?: number): Promise<boolean> {
+    if (!(post?.familyCode && (post?.privacy === 'private' || post?.privacy === 'family'))) {
+      return true;
+    }
+    if (!viewerUserId) {
+      return false;
+    }
+    if (Number(post?.createdBy) === Number(viewerUserId)) {
+      return true;
+    }
+    if (!post?.isVisibleToFamily) {
+      return false;
+    }
+    return this.canViewerAccessPostFamilyContent(viewerUserId, Number(post?.createdBy));
+  }
+
+  private async filterPostsByFamilyVisibility(posts: any[], viewerUserId?: number) {
+    if (!viewerUserId) {
+      return posts;
+    }
+
+    const viewerProfile = await this.userProfileModel.findOne({
+      where: { userId: viewerUserId },
+      attributes: ['familyCode'],
+    });
+    const viewerPrimaryFamilyCodes = [String((viewerProfile as any)?.familyCode || '').trim().toUpperCase()].filter(Boolean);
+    if (!viewerPrimaryFamilyCodes.length) {
+      return posts.filter(
+        (post) =>
+          Number(post?.createdBy) === Number(viewerUserId) ||
+          !(post?.familyCode && (post?.privacy === 'private' || post?.privacy === 'family')),
+      );
+    }
+
+    const creatorIds = Array.from(
+      new Set(
+        posts
+          .filter((post) => Number(post?.createdBy) !== Number(viewerUserId))
+          .map((post) => Number(post?.createdBy))
+          .filter((id) => Number.isFinite(id) && id > 0),
+      ),
+    );
+
+    const [profiles, creatorAudienceEntries] = await Promise.all([
+      creatorIds.length
+        ? this.userProfileModel.findAll({
+            where: { userId: { [Op.in]: creatorIds } } as any,
+            attributes: ['userId', 'contentVisibilitySettings'],
+          })
+        : Promise.resolve([]),
+      Promise.all(
+        creatorIds.map(async (creatorId) => [creatorId, await this.getAccessibleFamilyCodesForUser(creatorId)] as const),
+      ),
+    ]);
+
+    const settingsByUserId = new Map(
+      (profiles as any[]).map((profile) => [Number((profile as any).userId), (profile as any).contentVisibilitySettings]),
+    );
+    const creatorAudienceByUserId = new Map<number, string[]>(creatorAudienceEntries);
+
+    return posts.filter((post) => {
+      if (!(post?.familyCode && (post?.privacy === 'private' || post?.privacy === 'family'))) {
+        return true;
+      }
+      if (Number(post?.createdBy) === Number(viewerUserId)) {
+        return true;
+      }
+      if (!post?.isVisibleToFamily) {
+        return false;
+      }
+      return canViewerAccessFamilyContentForType(
+        settingsByUserId.get(Number(post?.createdBy)),
+        'posts',
+        viewerPrimaryFamilyCodes,
+        creatorAudienceByUserId.get(Number(post?.createdBy)) || [],
+      );
+    });
   }
 
   private getPostMediaUrl(filename: string | null): string | null {
@@ -342,7 +487,8 @@ export class PostService {
   ): Promise<void> {
     if (
       !dto.familyCode ||
-      !(dto.privacy === 'private' || dto.privacy === 'family')
+      !(dto.privacy === 'private' || dto.privacy === 'family') ||
+      !post.isVisibleToFamily
     ) {
       return;
     }
@@ -369,7 +515,7 @@ export class PostService {
   }
 
   private broadcastNewPost(dto: CreatePostDto, post: Post, createdBy: number): void {
-    if (!dto.familyCode) {
+    if (!dto.familyCode || !post.isVisibleToFamily) {
       return;
     }
 
@@ -425,6 +571,11 @@ export class PostService {
       familyCode = null;
     }
 
+    const isFamilyVisible =
+      privacy === 'private' || privacy === 'family'
+        ? await this.getFamilyPostsVisibilityEnabled(createdBy)
+        : true;
+
     const dtoForBroadcast = { ...(dto as any), familyCode: familyCode || undefined } as CreatePostDto;
 
     // Step 1: Create post
@@ -436,6 +587,11 @@ export class PostService {
       postImage: hasImage ? postImage : null,
       postVideo: hasVideo ? postVideo : null,
       privacy,
+      isVisibleToFamily: isFamilyVisible,
+      hiddenReason:
+        privacy === 'private' || privacy === 'family'
+          ? (isFamilyVisible ? null : 'content_privacy_disabled')
+          : null,
     });
 
     await this.notifyFamilyPostCreation(dtoForBroadcast, post, createdBy);
@@ -582,31 +738,26 @@ export class PostService {
         Number(createdBy) > 0 &&
         Number(createdBy) === Number(userId);
 
-      // If familyCode is provided, scope to that family (and enforce access).
-      // If familyCode is omitted, return the viewer’s "family feed" across all accessible family codes.
       if (isOwnerScope) {
         if (familyCode) {
           whereClause.familyCode = familyCode;
         }
       } else {
+        const accessible = userId
+          ? await this.getAccessibleFamilyCodesForUser(userId)
+          : [];
+
+        if (!accessible || accessible.length === 0) {
+          throw new ForbiddenException('Not allowed to access this family content');
+        }
+
         if (familyCode) {
           await this.assertUserCanAccessFamilyOrLinked(userId, familyCode);
           whereClause.familyCode = familyCode;
-        } else {
-          const accessible = userId
-            ? await this.getAccessibleFamilyCodesForUser(userId)
-            : [];
-
-          if (!accessible || accessible.length === 0) {
-            throw new ForbiddenException('Not allowed to access this family content');
-          }
-
-          whereClause.familyCode = { [Op.in]: accessible };
         }
         whereClause.isVisibleToFamily = true;
       }
 
-      whereClause.isVisibleToFamily = true;
       whereClause.privacy = privacy;
     } else if (privacy === 'public') {
       whereClause.privacy = 'public';
@@ -637,7 +788,7 @@ export class PostService {
       ? { [Op.or]: [{ isPrivate: false }, { isPrivate: null }, { userId }] }
       : { [Op.or]: [{ isPrivate: false }, { isPrivate: null }] };
 
-    const posts = await this.postModel.findAll({
+    let posts = await this.postModel.findAll({
       where: whereClause,
       include: [
         {
@@ -650,6 +801,8 @@ export class PostService {
       ],
       order: [['createdAt', 'DESC']],
     });
+
+    posts = await this.filterPostsByFamilyVisibility(posts as any[], userId);
 
     const baseUrl = process.env.BASE_URL || '';
     const profilePath =
@@ -736,7 +889,10 @@ export class PostService {
 
     // Admin family-block: deny interactions on family/private posts if blocked
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
-      await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
+      const canAccess = await this.canViewerAccessPostInstance(post, userId);
+      if (!canAccess) {
+        throw new ForbiddenException('Not allowed');
+      }
     }
 
     const existingLike = await this.postLikeModel.findOne({
@@ -833,7 +989,10 @@ export class PostService {
 
     // Admin family-block: deny interactions on family/private posts if blocked
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
-      await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
+      const canAccess = await this.canViewerAccessPostInstance(post, userId);
+      if (!canAccess) {
+        throw new ForbiddenException('You cannot comment on this post');
+      }
     }
 
     const postOwnerId = post.createdBy;
@@ -929,19 +1088,16 @@ export class PostService {
       throw new NotFoundException(`Post with ID ${postId} not found`);
     }
 
-    const isOwner = Number(requestingUserId) === Number(post.createdBy);
     if (
       post.familyCode &&
       (post.privacy === 'private' || post.privacy === 'family')
     ) {
-      if (!post.isVisibleToFamily) {
-        throw new NotFoundException('Post not found');
-      }
       if (!requestingUserId) {
         throw new ForbiddenException('Not allowed to view this post');
       }
-      if (!isOwner) {
-        await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
+      const canAccess = await this.canViewerAccessPostInstance(post, requestingUserId);
+      if (!canAccess) {
+        throw new NotFoundException('Post not found');
       }
     }
 
@@ -985,20 +1141,16 @@ export class PostService {
       throw new NotFoundException('Post not found');
     }
 
-    const isOwner = Number(requestingUserId) === Number(post.createdBy);
     if (
-      requestingUserId &&
       post.familyCode &&
       (post.privacy === 'private' || post.privacy === 'family')
     ) {
-      if (!post.isVisibleToFamily) {
-        throw new NotFoundException('Post not found');
+      if (!requestingUserId) {
+        throw new ForbiddenException('Not allowed to view this post');
       }
-      if (!isOwner) {
-        await this.assertUserCanAccessFamilyOrLinked(
-          requestingUserId,
-          post.familyCode,
-        );
+      const canAccess = await this.canViewerAccessPostInstance(post, requestingUserId);
+      if (!canAccess) {
+        throw new NotFoundException('Post not found');
       }
     }
 
@@ -1143,16 +1295,13 @@ export class PostService {
       throw new NotFoundException('Post not found');
     }
 
-    const isOwner = Number(requestingUserId) === Number(post.createdBy);
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
-      if (!post.isVisibleToFamily) {
-        throw new NotFoundException('Post not found');
-      }
       if (!requestingUserId) {
         throw new ForbiddenException('Not allowed');
       }
-      if (!isOwner) {
-        await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
+      const canAccess = await this.canViewerAccessPostInstance(post, requestingUserId);
+      if (!canAccess) {
+        throw new NotFoundException('Post not found');
       }
     }
 
@@ -1189,16 +1338,13 @@ export class PostService {
       throw new NotFoundException('Post not found');
     }
 
-    const isOwner = Number(requestingUserId) === Number(post.createdBy);
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
-      if (!post.isVisibleToFamily) {
-        throw new NotFoundException('Post not found');
-      }
       if (!requestingUserId) {
         throw new ForbiddenException('Not allowed');
       }
-      if (!isOwner) {
-        await this.assertUserCanAccessFamilyOrLinked(requestingUserId, post.familyCode);
+      const canAccess = await this.canViewerAccessPostInstance(post, requestingUserId);
+      if (!canAccess) {
+        throw new NotFoundException('Post not found');
       }
     }
 
@@ -1272,7 +1418,10 @@ export class PostService {
     }
     const post = await this.getActivePostOrThrow(Number((comment as any).postId));
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
-      await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
+      const canAccess = await this.canViewerAccessPostInstance(post, userId);
+      if (!canAccess) {
+        throw new ForbiddenException('You cannot edit comment due to privacy settings');
+      }
     }
 
     const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
@@ -1336,7 +1485,10 @@ export class PostService {
     }
     const post = await this.getActivePostOrThrow(Number((comment as any).postId));
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
-      await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
+      const canAccess = await this.canViewerAccessPostInstance(post, userId);
+      if (!canAccess) {
+        throw new ForbiddenException('You cannot delete comment due to privacy settings');
+      }
     }
 
     const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
@@ -1388,7 +1540,10 @@ export class PostService {
   ) {
     const post = await this.getActivePostOrThrow(postId);
     if (post.familyCode && (post.privacy === 'private' || post.privacy === 'family')) {
-      await this.assertUserCanAccessFamilyOrLinked(userId, post.familyCode);
+      const canAccess = await this.canViewerAccessPostInstance(post, userId);
+      if (!canAccess) {
+        throw new ForbiddenException('You cannot comment due to privacy settings');
+      }
     }
 
     const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(

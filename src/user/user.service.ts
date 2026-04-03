@@ -38,6 +38,10 @@ import {
   normalizeMobileValue,
 } from '../common/security/field-encryption.util';
 import { resolvePhoneNumber } from './privacy.util';
+import {
+  mergeFamilyContentVisibilitySettings,
+  normalizeFamilyContentVisibilitySettings,
+} from './content-visibility-settings.util';
 
 @Injectable()
 export class UserService {
@@ -761,6 +765,45 @@ export class UserService {
     }
 
     return { message: 'User permanently deleted' };
+  }
+
+
+  async getContentVisibilitySettings(userId: number) {
+    const profile = await this.userProfileModel.findOne({ where: { userId } });
+    if (!profile) {
+      throw new NotFoundException('User profile not found');
+    }
+
+    return {
+      message: 'Content visibility settings fetched successfully',
+      data: normalizeFamilyContentVisibilitySettings((profile as any).contentVisibilitySettings),
+    };
+  }
+
+  async updateContentVisibilitySettings(
+    userId: number,
+    dto: { posts?: { visibility?: 'all-members' | 'specific-family'; familyCodes?: string[] }; albums?: { visibility?: 'all-members' | 'specific-family'; familyCodes?: string[] }; events?: { visibility?: 'all-members' | 'specific-family'; familyCodes?: string[] } },
+  ) {
+    const profile = await this.userProfileModel.findOne({ where: { userId } });
+    if (!profile) {
+      throw new NotFoundException('User profile not found');
+    }
+
+    const nextSettings = mergeFamilyContentVisibilitySettings(
+      (profile as any).contentVisibilitySettings,
+      dto,
+    );
+
+    await profile.update({ contentVisibilitySettings: nextSettings } as any);
+    await this.contentVisibilityService.applyFamilyContentVisibilitySettings(
+      userId,
+      nextSettings,
+    );
+
+    return {
+      message: 'Content visibility settings updated successfully',
+      data: nextSettings,
+    };
   }
 
   // eslint-disable-next-line sonarjs/cognitive-complexity

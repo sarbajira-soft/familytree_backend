@@ -222,10 +222,12 @@ export class GalleryController {
     return this.galleryService.toggleLikeGallery(body.galleryId, req.user.userId);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Get(':id/likes')
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Get like count for a gallery' })
-  async getLikeCount(@Param('id') galleryId: number) {
-    return this.galleryService.getGalleryLikeCount(galleryId);
+  async getLikeCount(@Param('id') galleryId: number, @Req() req) {
+    return this.galleryService.getGalleryLikeCount(galleryId, req.user?.userId);
   }
 
   @UseGuards(JwtAuthGuard)

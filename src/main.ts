@@ -7,7 +7,18 @@ import { bootstrapApp } from './bootstrap';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
+  app.set('etag', false);
   await bootstrapApp(app);
+
+  app.use((req, res, next) => {
+    if (req.headers.authorization) {
+      res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.setHeader('Surrogate-Control', 'no-store');
+    }
+    next();
+  });
 
   const port = process.env.PORT || 3000;
   await app.listen(port);
@@ -22,3 +33,5 @@ async function bootstrap() {
 }
 
 bootstrap();
+
+

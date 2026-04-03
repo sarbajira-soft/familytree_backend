@@ -18,6 +18,7 @@ import { UploadService } from '../uploads/upload.service';
 import { EventGateway } from './event.gateway';
 import { BlockingService } from '../blocking/blocking.service';
 import { FamilyLink } from '../family/model/family-link.model';
+import { canViewerAccessFamilyContentForType, isFamilyContentVisibleForType } from '../user/content-visibility-settings.util';
  
 @Injectable()
 export class EventService {
@@ -63,6 +64,18 @@ export class EventService {
     } as any;
   }
 
+  private async getFamilyEventsVisibilityEnabled(userId: number): Promise<boolean> {
+    const profile = await this.userProfileModel.findOne({
+      where: { userId },
+      attributes: ['contentVisibilitySettings'],
+    });
+
+    return isFamilyContentVisibleForType(
+      (profile as any)?.contentVisibilitySettings,
+      'events',
+    );
+  }
+
   private async assertUserCanAccessFamilyContent(
     userId: number,
     familyCode: string,
@@ -93,11 +106,28 @@ export class EventService {
       attributes: ['familyCode'],
     });
 
+    const profile = await this.userProfileModel.findOne({
+      where: { userId },
+      attributes: ['familyCode', 'associatedFamilyCodes'],
+    });
+
+    const primaryFamilyCode = String((profile as any)?.familyCode || '').trim().toUpperCase();
+
+    const associated = Array.isArray((profile as any)?.associatedFamilyCodes)
+      ? ((profile as any).associatedFamilyCodes as any[])
+          .filter(Boolean)
+          .map((code: any) => String(code).trim().toUpperCase())
+      : [];
+
     const base = Array.from(
       new Set(
-        (memberships as any[])
-          .filter((m: any) => !!(m as any).familyCode)
-          .map((m: any) => String((m as any).familyCode)),
+        [
+          ...(memberships as any[])
+            .filter((m: any) => !!(m as any).familyCode)
+            .map((m: any) => String((m as any).familyCode).trim().toUpperCase()),
+          ...(primaryFamilyCode ? [primaryFamilyCode] : []),
+          ...associated,
+        ].filter(Boolean),
       ),
     );
 
@@ -140,6 +170,119 @@ export class EventService {
     }
   }
 
+  private async canViewerAccessEventFamilyContent(
+    viewerUserId: number | undefined,
+    creatorUserId: number,
+  ): Promise<boolean> {
+    if (!viewerUserId) {
+      return false;
+    }
+    if (Number(viewerUserId) === Number(creatorUserId)) {
+      return true;
+    }
+
+    const [creatorAudienceFamilyCodes, creatorProfile, viewerProfile] = await Promise.all([
+      this.getAccessibleFamilyCodesForUser(creatorUserId),
+      this.userProfileModel.findOne({
+        where: { userId: creatorUserId },
+        attributes: ['contentVisibilitySettings'],
+      }),
+      this.userProfileModel.findOne({
+        where: { userId: viewerUserId },
+        attributes: ['familyCode'],
+      }),
+    ]);
+
+    const viewerPrimaryFamilyCodes = [String((viewerProfile as any)?.familyCode || '').trim().toUpperCase()].filter(Boolean);
+    if (!viewerPrimaryFamilyCodes.length) {
+      return false;
+    }
+
+    return canViewerAccessFamilyContentForType(
+      (creatorProfile as any)?.contentVisibilitySettings,
+      'events',
+      viewerPrimaryFamilyCodes,
+      creatorAudienceFamilyCodes,
+    );
+  }
+
+  private async canViewerAccessEventInstance(event: any, viewerUserId?: number): Promise<boolean> {
+    if (!event?.familyCode) {
+      return true;
+    }
+    if (!viewerUserId) {
+      return false;
+    }
+    if (Number(event?.createdBy) === Number(viewerUserId)) {
+      return true;
+    }
+    if (!event?.isVisibleToFamily) {
+      return false;
+    }
+    return this.canViewerAccessEventFamilyContent(viewerUserId, Number(event?.createdBy));
+  }
+
+  private async filterEventsByFamilyVisibility(events: any[], viewerUserId?: number) {
+    if (!viewerUserId) {
+      return events;
+    }
+
+    const viewerProfile = await this.userProfileModel.findOne({
+      where: { userId: viewerUserId },
+      attributes: ['familyCode'],
+    });
+    const viewerPrimaryFamilyCodes = [String((viewerProfile as any)?.familyCode || '').trim().toUpperCase()].filter(Boolean);
+    if (!viewerPrimaryFamilyCodes.length) {
+      return events.filter(
+        (event) => Number(event?.createdBy) === Number(viewerUserId) || !(event?.familyCode && event?.familyCode !== ''),
+      );
+    }
+
+    const creatorIds = Array.from(
+      new Set(
+        events
+          .filter((event) => Number(event?.createdBy) !== Number(viewerUserId))
+          .map((event) => Number(event?.createdBy))
+          .filter((id) => Number.isFinite(id) && id > 0),
+      ),
+    );
+
+    const [profiles, creatorAudienceEntries] = await Promise.all([
+      creatorIds.length
+        ? this.userProfileModel.findAll({
+            where: { userId: { [Op.in]: creatorIds } } as any,
+            attributes: ['userId', 'contentVisibilitySettings'],
+          })
+        : Promise.resolve([]),
+      Promise.all(
+        creatorIds.map(async (creatorId) => [creatorId, await this.getAccessibleFamilyCodesForUser(creatorId)] as const),
+      ),
+    ]);
+
+    const settingsByUserId = new Map(
+      (profiles as any[]).map((profile) => [Number((profile as any).userId), (profile as any).contentVisibilitySettings]),
+    );
+    const creatorAudienceByUserId = new Map<number, string[]>(creatorAudienceEntries);
+
+    return events.filter((event) => {
+      if (!(event?.familyCode && event?.familyCode !== '')) {
+        return true;
+      }
+      if (Number(event?.createdBy) === Number(viewerUserId)) {
+        return true;
+      }
+      if (!event?.isVisibleToFamily) {
+        return false;
+      }
+      return canViewerAccessFamilyContentForType(
+        settingsByUserId.get(Number(event?.createdBy)),
+        'events',
+        viewerPrimaryFamilyCodes,
+        creatorAudienceByUserId.get(Number(event?.createdBy)) || [],
+      );
+    });
+  }
+
   async createEvent(
     dto: CreateEventDto,
     imageFiles?: Express.Multer.File[],
@@ -158,7 +301,15 @@ export class EventService {
       }
     }
 
-    const event = await this.eventModel.create(dto);
+    const isFamilyVisible = await this.getFamilyEventsVisibilityEnabled(
+      Number(requestingUserId ?? dto.createdBy ?? dto.userId),
+    );
+
+    const event = await this.eventModel.create({
+      ...(dto as any),
+      isVisibleToFamily: isFamilyVisible,
+      hiddenReason: isFamilyVisible ? null : 'content_privacy_disabled',
+    } as any);
     const uploadService = new UploadService();
 
     const actorId = Number(requestingUserId ?? (dto as any)?.createdBy ?? (dto as any)?.userId);
@@ -211,7 +362,7 @@ export class EventService {
     // }
 
     // Broadcast new event via WebSocket
-    if (dto.familyCode) {
+    if (dto.familyCode && event.isVisibleToFamily) {
       this.eventGateway.broadcastNewEvent(dto.familyCode, {
         id: event.id,
         eventTitle: event.eventTitle,
@@ -280,9 +431,9 @@ export class EventService {
         events = [];
       } else {
         const blockedUserIds = await this.blockingService.getBlockedUserIdsForUser(userId);
-        events = await this.eventModel.findAll({
+        const nextEvents = await this.eventModel.findAll({
           where: {
-            familyCode: { [Op.in]: accessibleFamilyCodes },
+            familyCode: { [Op.ne]: null },
             ...this.familyVisibilityWhereForUser(userId),
             ...(blockedUserIds.length > 0
               ? { createdBy: { [Op.notIn]: blockedUserIds } }
@@ -290,6 +441,7 @@ export class EventService {
           },
           include: [EventImage],
         });
+        events = await this.filterEventsByFamilyVisibility(nextEvents as any[], userId);
       }
     } else {
       events = await this.eventModel.findAll({ include: [EventImage] });
@@ -312,7 +464,6 @@ export class EventService {
       where: { 
         createdBy: userId,
         status: 1,
-        isVisibleToFamily: true,
       },
       include: [EventImage]
     });
@@ -341,13 +492,14 @@ export class EventService {
     const event = await this.eventModel.findByPk(id, { include: [EventImage] });
     if (!event) throw new NotFoundException('Event not found');
 
-    const isOwner = Number(event.createdBy) === Number(requestingUserId);
-    if (!event.isVisibleToFamily) {
-      throw new NotFoundException('Event not found');
-    }
-
-    if (requestingUserId && event.familyCode) {
-      await this.assertUserCanAccessFamilyOrLinked(requestingUserId, event.familyCode);
+    if (event.familyCode) {
+      if (!requestingUserId) {
+        throw new ForbiddenException('Not allowed to view this event');
+      }
+      const canAccess = await this.canViewerAccessEventInstance(event, requestingUserId);
+      if (!canAccess) {
+        throw new NotFoundException('Event not found');
+      }
       const usersBlockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
         requestingUserId,
         event.createdBy,
@@ -518,8 +670,10 @@ export class EventService {
     dto.createdBy = loggedId;
     await event.update(dto);
 
-    // Broadcast event update via WebSocket
-    this.eventGateway.broadcastEventUpdate(id, event, event.familyCode);
+    // Broadcast event update via WebSocket only when family visibility is enabled
+    if (event.isVisibleToFamily) {
+      this.eventGateway.broadcastEventUpdate(id, event, event.familyCode);
+    }
 
     return {
       message: 'Event updated successfully',
@@ -643,11 +797,11 @@ export class EventService {
       const accessibleFamilyCodes = await this.getAccessibleFamilyCodesForUser(userId);
       if (accessibleFamilyCodes.length > 0) {
         const blockedUserIds = await this.blockingService.getBlockedUserIdsForUser(userId);
-        events = await this.eventModel.findAll({
+        const nextEvents = await this.eventModel.findAll({
           where: {
             eventDate: { [Op.gt]: today },
             status: 1,
-            familyCode: { [Op.in]: accessibleFamilyCodes },
+            familyCode: { [Op.ne]: null },
             ...this.familyVisibilityWhereForUser(userId),
             ...(blockedUserIds.length > 0
               ? { createdBy: { [Op.notIn]: blockedUserIds } }
@@ -656,6 +810,7 @@ export class EventService {
           include: [EventImage],
           order: [['eventDate', 'ASC']],
         });
+        events = await this.filterEventsByFamilyVisibility(nextEvents as any[], userId);
       }
     } else {
       events = await this.eventModel.findAll({

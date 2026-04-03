@@ -1,9 +1,13 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
-import { Op } from 'sequelize';
 import { Gallery } from '../gallery/model/gallery.model';
 import { Post } from '../post/model/post.model';
 import { Event } from '../event/model/event.model';
+import { UserProfile } from './model/user-profile.model';
+import {
+  FamilyContentVisibilitySettings,
+  normalizeFamilyContentVisibilitySettings,
+} from './content-visibility-settings.util';
 
 type Tx = any;
 
@@ -16,7 +20,78 @@ export class ContentVisibilityService {
     private readonly postModel: typeof Post,
     @InjectModel(Event)
     private readonly eventModel: typeof Event,
+    @InjectModel(UserProfile)
+    private readonly userProfileModel: typeof UserProfile,
   ) {}
+
+  async getFamilyContentVisibilitySettingsForUser(
+    userId: number,
+    transaction?: Tx,
+  ): Promise<FamilyContentVisibilitySettings> {
+    const profile = await this.userProfileModel.findOne({
+      where: { userId } as any,
+      attributes: ['contentVisibilitySettings'],
+      ...(transaction ? { transaction } : {}),
+    });
+
+    return normalizeFamilyContentVisibilitySettings(
+      (profile as any)?.contentVisibilitySettings,
+    );
+  }
+
+  async applyFamilyContentVisibilitySettings(
+    userId: number,
+    settings: unknown,
+    transaction?: Tx,
+  ) {
+    normalizeFamilyContentVisibilitySettings(settings);
+    const toggleReason = 'content_privacy_disabled';
+
+    await this.galleryModel.update(
+      {
+        isVisibleToFamily: true,
+        hiddenReason: null,
+      } as any,
+      {
+        where: {
+          createdBy: userId,
+          deletedAt: null,
+          hiddenReason: toggleReason,
+        } as any,
+        transaction,
+      },
+    );
+
+    await this.postModel.update(
+      {
+        isVisibleToFamily: true,
+        hiddenReason: null,
+      } as any,
+      {
+        where: {
+          createdBy: userId,
+          deletedAt: null,
+          hiddenReason: toggleReason,
+        } as any,
+        transaction,
+      },
+    );
+
+    await this.eventModel.update(
+      {
+        isVisibleToFamily: true,
+        hiddenReason: null,
+      } as any,
+      {
+        where: {
+          createdBy: userId,
+          deletedAt: null,
+          hiddenReason: toggleReason,
+        } as any,
+        transaction,
+      },
+    );
+  }
 
   async hideContentForDeletedAccount(userId: number, transaction?: Tx) {
     await this.galleryModel.update(
@@ -49,24 +124,151 @@ export class ContentVisibilityService {
     );
   }
 
-  async restorePublicContentForRecoveredAccount(userId: number, transaction?: Tx) {
+  async hideContentForRemovedFamily(
+    userId: number,
+    familyCode: string,
+    reason = 'member_removed',
+    transaction?: Tx,
+  ) {
     await this.galleryModel.update(
-      { isVisibleToPublic: true } as any,
+      {
+        isVisibleToPublic: false,
+        isVisibleToFamily: false,
+        hiddenReason: reason,
+      } as any,
       {
         where: {
           createdBy: userId,
-          privacy: 'public',
+          familyCode,
+          deletedAt: null,
         } as any,
         transaction,
       },
     );
 
     await this.postModel.update(
-      { isVisibleToPublic: true } as any,
+      {
+        isVisibleToPublic: false,
+        isVisibleToFamily: false,
+        hiddenReason: reason,
+      } as any,
       {
         where: {
           createdBy: userId,
-          privacy: 'public',
+          familyCode,
+          deletedAt: null,
+        } as any,
+        transaction,
+      },
+    );
+
+    await this.eventModel.update(
+      {
+        isVisibleToFamily: false,
+        hiddenReason: reason,
+      } as any,
+      {
+        where: {
+          createdBy: userId,
+          familyCode,
+          deletedAt: null,
+        } as any,
+        transaction,
+      },
+    );
+  }
+
+  async restoreContentForRecoveredAccount(userId: number, transaction?: Tx) {
+    await this.galleryModel.update(
+      {
+        isVisibleToPublic: true,
+        isVisibleToFamily: true,
+        hiddenReason: null,
+      } as any,
+      {
+        where: {
+          createdBy: userId,
+          hiddenReason: 'account_deleted',
+        } as any,
+        transaction,
+      },
+    );
+
+    await this.postModel.update(
+      {
+        isVisibleToPublic: true,
+        isVisibleToFamily: true,
+        hiddenReason: null,
+      } as any,
+      {
+        where: {
+          createdBy: userId,
+          hiddenReason: 'account_deleted',
+        } as any,
+        transaction,
+      },
+    );
+
+    await this.eventModel.update(
+      {
+        isVisibleToFamily: true,
+        hiddenReason: null,
+      } as any,
+      {
+        where: {
+          createdBy: userId,
+          hiddenReason: 'account_deleted',
+        } as any,
+        transaction,
+      },
+    );
+  }
+
+  async restoreContentForFamilyRejoin(
+    userId: number,
+    familyCode: string,
+    transaction?: Tx,
+  ) {
+    await this.galleryModel.update(
+      {
+        isVisibleToFamily: true,
+        hiddenReason: null,
+      } as any,
+      {
+        where: {
+          createdBy: userId,
+          familyCode,
+          hiddenReason: 'member_removed',
+        } as any,
+        transaction,
+      },
+    );
+
+    await this.postModel.update(
+      {
+        isVisibleToFamily: true,
+        hiddenReason: null,
+      } as any,
+      {
+        where: {
+          createdBy: userId,
+          familyCode,
+          hiddenReason: 'member_removed',
+        } as any,
+        transaction,
+      },
+    );
+
+    await this.eventModel.update(
+      {
+        isVisibleToFamily: true,
+        hiddenReason: null,
+      } as any,
+      {
+        where: {
+          createdBy: userId,
+          familyCode,
+          hiddenReason: 'member_removed',
         } as any,
         transaction,
       },
@@ -74,137 +276,26 @@ export class ContentVisibilityService {
   }
 
   async hideFamilyContentForRemovedMember(
-    memberId: number,
+    userId: number,
     familyCode: string,
-    reason: 'member_removed' | 'account_deleted' = 'member_removed',
+    reason = 'member_removed',
     transaction?: Tx,
   ) {
-    await this.galleryModel.update(
-      {
-        isVisibleToFamily: false,
-        hiddenReason: reason,
-        recoveryFamilyCode: familyCode || null,
-      } as any,
-      {
-        where: {
-          createdBy: memberId,
-          familyCode,
-          privacy: { [Op.in]: ['private', 'family'] },
-        } as any,
-        transaction,
-      },
-    );
-
-    await this.postModel.update(
-      {
-        isVisibleToFamily: false,
-        hiddenReason: reason,
-        recoveryFamilyCode: familyCode || null,
-      } as any,
-      {
-        where: {
-          createdBy: memberId,
-          familyCode,
-          privacy: { [Op.in]: ['private', 'family'] },
-        } as any,
-        transaction,
-      },
-    );
-
-    await this.eventModel.update(
-      {
-        isVisibleToFamily: false,
-        hiddenReason: reason,
-        recoveryFamilyCode: familyCode || null,
-      } as any,
-      {
-        where: {
-          createdBy: memberId,
-          familyCode,
-        } as any,
-        transaction,
-      },
-    );
+    await this.hideContentForRemovedFamily(userId, familyCode, reason, transaction);
   }
 
-  async reconcileRecoveredFamilyContent(userId: number, familyCode: string, transaction?: Tx) {
-    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
-    if (!normalizedFamilyCode) return;
+  async reconcileRecoveredFamilyContent(
+    userId: number,
+    familyCode: string,
+    transaction?: Tx,
+  ) {
+    await this.restoreContentForFamilyRejoin(userId, familyCode, transaction);
+  }
 
-    await this.galleryModel.update(
-      {
-        isVisibleToFamily: true,
-        hiddenReason: null,
-      } as any,
-      {
-        where: {
-          createdBy: userId,
-          hiddenReason: 'account_deleted',
-          recoveryFamilyCode: normalizedFamilyCode,
-          privacy: { [Op.in]: ['private', 'family'] },
-        } as any,
-        transaction,
-      },
-    );
-
-    await this.postModel.update(
-      {
-        isVisibleToFamily: true,
-        hiddenReason: null,
-      } as any,
-      {
-        where: {
-          createdBy: userId,
-          hiddenReason: 'account_deleted',
-          recoveryFamilyCode: normalizedFamilyCode,
-          privacy: { [Op.in]: ['private', 'family'] },
-        } as any,
-        transaction,
-      },
-    );
-
-    await this.eventModel.update(
-      {
-        isVisibleToFamily: true,
-        hiddenReason: null,
-      } as any,
-      {
-        where: {
-          createdBy: userId,
-          hiddenReason: 'account_deleted',
-          recoveryFamilyCode: normalizedFamilyCode,
-        } as any,
-        transaction,
-      },
-    );
-
-    await this.galleryModel.destroy({
-      where: {
-        createdBy: userId,
-        hiddenReason: 'account_deleted',
-        privacy: { [Op.in]: ['private', 'family'] },
-        recoveryFamilyCode: { [Op.ne]: normalizedFamilyCode },
-      } as any,
-      transaction,
-    });
-
-    await this.postModel.destroy({
-      where: {
-        createdBy: userId,
-        hiddenReason: 'account_deleted',
-        privacy: { [Op.in]: ['private', 'family'] },
-        recoveryFamilyCode: { [Op.ne]: normalizedFamilyCode },
-      } as any,
-      transaction,
-    });
-
-    await this.eventModel.destroy({
-      where: {
-        createdBy: userId,
-        hiddenReason: 'account_deleted',
-        recoveryFamilyCode: { [Op.ne]: normalizedFamilyCode },
-      } as any,
-      transaction,
-    });
+  async restorePublicContentForRecoveredAccount(
+    userId: number,
+    transaction?: Tx,
+  ) {
+    await this.restoreContentForRecoveredAccount(userId, transaction);
   }
 }

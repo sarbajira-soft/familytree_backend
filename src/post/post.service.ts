@@ -1,8 +1,8 @@
 import {
   Injectable,
   BadRequestException,
-  ForbiddenException,
   NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Op } from 'sequelize';
@@ -32,7 +32,6 @@ type PostCommentWithProfile = PostComment & { userProfile?: UserProfile; user?: 
 @Injectable()
 export class PostService {
   private readonly baseCommentService: BaseCommentService;
-  private readonly uploadService: UploadService;
 
   constructor(
     @InjectModel(Post)
@@ -58,7 +57,6 @@ export class PostService {
     private readonly contentVisibilityService: ContentVisibilityService,
   ) {
     this.baseCommentService = new BaseCommentService();
-    this.uploadService = new UploadService();
   }
 
   private async getActivePostOrThrow(postId: number): Promise<Post> {
@@ -724,12 +722,7 @@ export class PostService {
         // Get like count and comment count
         const [likeCount, commentCount] = await Promise.all([
           this.postLikeModel.count({ where: { postId: post.id } }),
-          this.postCommentModel.count({
-            where: {
-              postId: post.id,
-              deletedAt: null,
-            },
-          }),
+          this.postCommentModel.count({ where: { postId: post.id } }),
         ]);
 
         // Check if the user liked this post
@@ -749,17 +742,11 @@ export class PostService {
         let profileImage = user?.profile || null;
         if (profileImage) {
           if (!profileImage.startsWith('http')) {
-            const cleaned = String(profileImage || '').trim().replace(/^\/+/g, '');
             // If S3 is configured, construct S3 URL, otherwise use local URL
             if (process.env.S3_BUCKET_NAME && process.env.REGION) {
-              // If stored value is already a full key like "profilefile/2026/...jpg", do not force "profile/".
-              profileImage = cleaned.includes('/')
-                ? `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/${cleaned}`
-                : `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/profile/${cleaned}`;
+              profileImage = `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/profile/${profileImage}`;
             } else {
-              // Local storage: always use just the filename part.
-              const filenameOnly = cleaned.split('/').pop() || cleaned;
-              profileImage = `${baseUrl}/${profilePath}/${filenameOnly}`;
+              profileImage = `${baseUrl}/${profilePath}/${profileImage}`;
             }
           }
         }
@@ -945,7 +932,7 @@ export class PostService {
             firstName: userProfile.firstName,
             lastName: userProfile.lastName,
             profile: userProfile.profile
-              ? this.uploadService.getFileUrl(userProfile.profile, 'profile')
+              ? `${process.env.S3_BUCKET_URL /* || 'https://familytreeupload.s3.eu-north-1.amazonaws.com' */}/profile/${userProfile.profile}`
               : null,
           }
         : null,
@@ -1028,10 +1015,7 @@ export class PostService {
                   firstName: commentJson.userProfile.firstName,
                   lastName: commentJson.userProfile.lastName,
                   profile: commentJson.userProfile.profile
-                    ? this.uploadService.getFileUrl(
-                        commentJson.userProfile.profile,
-                        'profile',
-                      )
+                    ? `${process.env.S3_BUCKET_URL /* || 'https://familytreeupload.s3.eu-north-1.amazonaws.com' */}/profile/${commentJson.userProfile.profile}`
                     : null,
                 }
               : null,

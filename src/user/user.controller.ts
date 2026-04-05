@@ -47,6 +47,7 @@ import { FamilyLink } from '../family/model/family-link.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { UserProfile } from './model/user-profile.model';
 import { applyPrivacyToProfileResponse, resolvePhoneNumber } from './privacy.util';
+import { QueryTypes } from 'sequelize';
 
  
 @ApiTags('User Module')
@@ -88,79 +89,62 @@ export class UserController {
   }
 
   /**
-   * Check if two families are linked via FamilyLink table
+   * Check if two families are linked via active non-dummy linked tree nodes
    */
   private async areFamiliesLinked(familyCode1: string, familyCode2: string): Promise<boolean> {
     if (!familyCode1 || !familyCode2 || familyCode1 === familyCode2) {
       return familyCode1 === familyCode2;
     }
 
-    const [low, high] = familyCode1 < familyCode2 
-      ? [familyCode1, familyCode2] 
-      : [familyCode2, familyCode1];
-
-    const link = await this.familyLinkModel.findOne({
-      where: {
-        familyCodeLow: low,
-        familyCodeHigh: high,
-        status: 'active',
+    const results = await this.userProfileModel.sequelize.query(
+      `SELECT 1
+       FROM ft_family_tree ft
+       WHERE COALESCE(ft."isStructuralDummy", false) = false
+         AND LOWER(COALESCE(ft."nodeType", 'birth')) = 'linked'
+         AND (
+           (LOWER(ft."familyCode") = LOWER(:familyCode1) AND LOWER(COALESCE(ft."canonicalFamilyCode", '')) = LOWER(:familyCode2))
+           OR
+           (LOWER(ft."familyCode") = LOWER(:familyCode2) AND LOWER(COALESCE(ft."canonicalFamilyCode", '')) = LOWER(:familyCode1))
+         )
+       LIMIT 1`,
+      {
+        replacements: { familyCode1, familyCode2 },
+        type: QueryTypes.SELECT,
       },
-    });
+    );
 
-    return !!link;
+    return Array.isArray(results) && results.length > 0;
   }
-
   /**
-   * Check if two families are associated via UserProfile associatedFamilyCodes
+   * Check if two families are associated via active non-dummy associated tree nodes
    */
   private async areFamiliesAssociated(familyCode1: string, familyCode2: string): Promise<boolean> {
     if (!familyCode1 || !familyCode2 || familyCode1 === familyCode2) {
       return familyCode1 === familyCode2;
     }
 
-    this.logger.log(`areFamiliesAssociated: Checking if ${familyCode1} has ${familyCode2} in associatedFamilyCodes`);
-
-    // Use text search for json arrays - case insensitive
-    const [results1] = await this.userProfileModel.sequelize.query(
-      `SELECT 1 FROM ft_user_profile 
-       WHERE LOWER("familyCode") = LOWER(:familyCode1)
-       AND "associatedFamilyCodes"::text ILIKE '%' || :familyCode2 || '%'
+    const results = await this.userProfileModel.sequelize.query(
+      `SELECT 1
+       FROM ft_family_tree ft
+       INNER JOIN ft_user_profile up
+         ON up."userId" = ft."userId"
+       WHERE COALESCE(ft."isStructuralDummy", false) = false
+         AND LOWER(COALESCE(ft."nodeType", 'birth')) = 'associated'
+         AND (
+           (LOWER(ft."familyCode") = LOWER(:familyCode1) AND LOWER(COALESCE(up."familyCode", '')) = LOWER(:familyCode2))
+           OR
+           (LOWER(ft."familyCode") = LOWER(:familyCode2) AND LOWER(COALESCE(up."familyCode", '')) = LOWER(:familyCode1))
+         )
        LIMIT 1`,
       {
         replacements: { familyCode1, familyCode2 },
-        type: 'SELECT',
-      }
+        type: QueryTypes.SELECT,
+      },
     );
 
-    this.logger.log(`areFamiliesAssociated: Query1 results: ${JSON.stringify(results1)}`);
-
-    if (results1 && results1.length > 0) {
-      this.logger.log(`areFamiliesAssociated: Found association! ${familyCode1} has ${familyCode2}`);
-      return true;
-    }
-
-    // Check reverse direction
-    this.logger.log(`areFamiliesAssociated: Checking reverse - if ${familyCode2} has ${familyCode1}`);
-    
-    const [results2] = await this.userProfileModel.sequelize.query(
-      `SELECT 1 FROM ft_user_profile 
-       WHERE LOWER("familyCode") = LOWER(:familyCode2)
-       AND "associatedFamilyCodes"::text ILIKE '%' || :familyCode1 || '%'
-       LIMIT 1`,
-      {
-        replacements: { familyCode1, familyCode2 },
-        type: 'SELECT',
-      }
-    );
-
-    this.logger.log(`areFamiliesAssociated: Query2 results: ${JSON.stringify(results2)}`);
-
-    const found = results2 && results2.length > 0;
-    this.logger.log(`areFamiliesAssociated: Result = ${found}`);
-    return found;
+    return Array.isArray(results) && results.length > 0;
   }
-
-  @Post('register')
+  @Post('register')  @Post('register')
   @ApiOperation({ summary: 'Register a new user' })
   @ApiResponse({
     status: 201,
@@ -662,5 +646,7 @@ export class UserController {
     return this.userService.deleteUser(id, loggedInUser.userId);
   }
 }
+
+
 
 

@@ -14,12 +14,14 @@ import { BlockingModule } from '../blocking/blocking.module';
 import { FamilyLink } from '../family/model/family-link.model';
 import { EventRetentionScheduler } from './event-retention.scheduler';
 import { EventRetentionService } from './event-retention.service';
+import { FamilyModule } from '../family/family.module';
 
 @Module({
   imports: [
     SequelizeModule.forFeature([Event, User, UserProfile, EventImage, FamilyMember, FamilyLink]),
     NotificationModule, // Import NotificationModule to use NotificationService
     BlockingModule,
+    FamilyModule,
     JwtModule.register({
       secret: process.env.JWT_SECRET,
       signOptions: { expiresIn: '7d' },
@@ -30,3 +32,5 @@ import { EventRetentionService } from './event-retention.service';
   exports: [EventService, EventGateway],
 })
 export class EventModule {}
+
+

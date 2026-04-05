@@ -112,7 +112,7 @@ export class FamilyLinkService {
         transaction: any,
     ) {
         const { low, high } = this.normalizeFamilyPair(familyA, familyB);
-        await this.familyLinkModel.findOrCreate({
+        const [familyLink] = await this.familyLinkModel.findOrCreate({
             where: { familyCodeLow: low, familyCodeHigh: high },
             defaults: {
                 familyCodeLow: low,
@@ -122,6 +122,16 @@ export class FamilyLinkService {
             } as any,
             transaction,
         });
+
+        if ((familyLink as any)?.status !== 'active') {
+            await familyLink.update(
+                {
+                    status: 'active',
+                    ...(source ? { source } : {}),
+                } as any,
+                { transaction },
+            );
+        }
     }
 
     async ensureTreeLink(
@@ -901,3 +911,4 @@ export class FamilyLinkService {
         };
     }
 }
+

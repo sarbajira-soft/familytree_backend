@@ -25,6 +25,7 @@ import { FamilyMember } from '../family/model/family-member.model';
 import { BlockingService } from '../blocking/blocking.service';
 import { FamilyLink } from '../family/model/family-link.model';
 import { canViewerAccessFamilyContentForType, isFamilyContentVisibleForType } from '../user/content-visibility-settings.util';
+import { TreeProjectionService } from '../family/tree-projection.service';
 
 @Injectable()
 export class GalleryService {
@@ -47,6 +48,7 @@ export class GalleryService {
 
     @InjectModel(FamilyLink)
     private readonly familyLinkModel: typeof FamilyLink,
+    private readonly treeProjectionService: TreeProjectionService,
 
     private readonly notificationService: NotificationService,
     private readonly uploadService: UploadService,
@@ -69,19 +71,15 @@ export class GalleryService {
   }
 
   private async assertUserCanAccessFamilyContent(userId: number, familyCode: string): Promise<void> {
-    if (!userId || !familyCode) {
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    if (!userId || !normalizedFamilyCode) {
       throw new ForbiddenException('Not allowed to access this family content');
     }
 
-    const membership = await this.familyMemberModel.findOne({
-      where: { memberId: userId, familyCode },
-    });
-
-    if (!membership || (membership as any).approveStatus !== 'approved') {
+    const accessible = await this.getAccessibleFamilyCodesForUser(userId);
+    if (!accessible.includes(normalizedFamilyCode)) {
       throw new ForbiddenException('Not allowed to access this family content');
     }
-
-    // BLOCK OVERRIDE: Legacy family-member block flag removed; access checks no longer use ft_family_members.isBlocked.
   }
 
   private async getAccessibleFamilyCodesForUser(userId: number): Promise<string[]> {
@@ -89,73 +87,20 @@ export class GalleryService {
       return [];
     }
 
-    const memberships = await this.familyMemberModel.findAll({
-      where: { memberId: userId, approveStatus: 'approved' } as any,
-      // BLOCK OVERRIDE: Removed legacy blocked-membership projection.
-      attributes: ['familyCode'],
-    });
-
-    const profile = await this.userProfileModel.findOne({
-      where: { userId },
-      attributes: ['familyCode', 'associatedFamilyCodes'],
-    });
-
-    const primaryFamilyCode = String((profile as any)?.familyCode || '').trim().toUpperCase();
-
-    const associated = Array.isArray((profile as any)?.associatedFamilyCodes)
-      ? ((profile as any).associatedFamilyCodes as any[])
-          .filter(Boolean)
-          .map((code: any) => String(code).trim().toUpperCase())
-      : [];
-
-    const base = Array.from(
-      new Set(
-        [
-          ...(memberships as any[])
-            .filter((m: any) => !!(m as any).familyCode)
-            .map((m: any) => String((m as any).familyCode).trim().toUpperCase()),
-          ...(primaryFamilyCode ? [primaryFamilyCode] : []),
-          ...associated,
-        ].filter(Boolean),
-      ),
-    );
-
-    if (base.length === 0) {
-      return [];
-    }
-
-    const links = await this.familyLinkModel.findAll({
-      where: {
-        status: 'active',
-        [Op.or]: [
-          { familyCodeLow: { [Op.in]: base } },
-          { familyCodeHigh: { [Op.in]: base } },
-        ],
-      } as any,
-      attributes: ['familyCodeLow', 'familyCodeHigh'],
-    });
-
-    const candidate = new Set<string>(base);
-    for (const l of links as any[]) {
-      const low = String((l as any).familyCodeLow);
-      const high = String((l as any).familyCodeHigh);
-      if (base.includes(low)) candidate.add(high);
-      if (base.includes(high)) candidate.add(low);
-    }
-
-    return Array.from(candidate);
+    return this.treeProjectionService.getReachableFamilyCodesForUser(userId);
   }
 
   private async assertUserCanAccessFamilyOrLinked(
     userId: number,
     familyCode: string,
   ): Promise<void> {
-    if (!userId || !familyCode) {
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    if (!userId || !normalizedFamilyCode) {
       throw new ForbiddenException('Not allowed to access this family content');
     }
 
     const accessible = await this.getAccessibleFamilyCodesForUser(userId);
-    if (!accessible.includes(String(familyCode))) {
+    if (!accessible.includes(normalizedFamilyCode)) {
       throw new ForbiddenException('Not allowed to access this family content');
     }
   }
@@ -171,27 +116,23 @@ export class GalleryService {
       return true;
     }
 
-    const [creatorAudienceFamilyCodes, creatorProfile, viewerProfile] = await Promise.all([
+    const [creatorAudienceFamilyCodes, creatorProfile, viewerFamilyCodes] = await Promise.all([
       this.getAccessibleFamilyCodesForUser(creatorUserId),
       this.userProfileModel.findOne({
         where: { userId: creatorUserId },
         attributes: ['contentVisibilitySettings'],
       }),
-      this.userProfileModel.findOne({
-        where: { userId: viewerUserId },
-        attributes: ['familyCode'],
-      }),
+      this.getAccessibleFamilyCodesForUser(viewerUserId),
     ]);
 
-    const viewerPrimaryFamilyCodes = [String((viewerProfile as any)?.familyCode || '').trim().toUpperCase()].filter(Boolean);
-    if (!viewerPrimaryFamilyCodes.length) {
+    if (!viewerFamilyCodes.length) {
       return false;
     }
 
     return canViewerAccessFamilyContentForType(
       (creatorProfile as any)?.contentVisibilitySettings,
       'albums',
-      viewerPrimaryFamilyCodes,
+      viewerFamilyCodes,
       creatorAudienceFamilyCodes,
     );
   }
@@ -217,12 +158,8 @@ export class GalleryService {
       return galleries;
     }
 
-    const viewerProfile = await this.userProfileModel.findOne({
-      where: { userId: viewerUserId },
-      attributes: ['familyCode'],
-    });
-    const viewerPrimaryFamilyCodes = [String((viewerProfile as any)?.familyCode || '').trim().toUpperCase()].filter(Boolean);
-    if (!viewerPrimaryFamilyCodes.length) {
+    const viewerFamilyCodes = await this.getAccessibleFamilyCodesForUser(viewerUserId);
+    if (!viewerFamilyCodes.length) {
       return galleries.filter(
         (gallery) =>
           Number(gallery?.createdBy) === Number(viewerUserId) ||
@@ -269,7 +206,7 @@ export class GalleryService {
       return canViewerAccessFamilyContentForType(
         settingsByUserId.get(Number(gallery?.createdBy)),
         'albums',
-        viewerPrimaryFamilyCodes,
+        viewerFamilyCodes,
         creatorAudienceByUserId.get(Number(gallery?.createdBy)) || [],
       );
     });
@@ -277,13 +214,11 @@ export class GalleryService {
 
   private getGalleryImageFilenameFromUrl(url: string): string | null {
     if (!url) return null;
-    
+
     try {
       const parsedUrl = new URL(url);
-      // Extract the key from the path (supports nested prefixes)
       return parsedUrl.pathname.replace(/^\/+/, '') || null;
     } catch (e) {
-      // If it's not a valid URL, return as is (might already be a filename)
       return url;
     }
   }
@@ -1506,3 +1441,6 @@ export class GalleryService {
   }
 
 }
+
+
+

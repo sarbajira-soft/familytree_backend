@@ -782,6 +782,60 @@ export class FamilyController {
     });
   }
 
+  @UseGuards(JwtAuthGuard)
+  @Post('tree/:familyCode/person/:personId/replace/:replacementUserId')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Replace a removed placeholder in the family tree with an approved member' })
+  @ApiResponse({ status: 200, description: 'Structural placeholder replaced successfully' })
+  @HttpCode(HttpStatus.OK)
+  async replaceStructuralDummy(
+    @Param('familyCode') familyCode: string,
+    @Param('personId', ParseIntPipe) personId: number,
+    @Param('replacementUserId', ParseIntPipe) replacementUserId: number,
+    @Req() req,
+  ) {
+    const actingUserId: number = req.user?.userId;
+    if (!actingUserId) {
+      throw new ForbiddenException('Unauthorized: missing user context');
+    }
+    if (!familyCode || !personId || !replacementUserId) {
+      throw new BadRequestException('familyCode, personId, and replacementUserId are required');
+    }
+
+    return this.familyService.replaceStructuralDummy({
+      actingUserId,
+      familyCode,
+      personId,
+      replacementUserId,
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Delete('tree/:familyCode/person/:personId/permanent')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Delete a removed placeholder from family tree permanently' })
+  @ApiResponse({ status: 200, description: 'Structural placeholder deleted permanently' })
+  @HttpCode(HttpStatus.OK)
+  async permanentlyDeleteStructuralDummy(
+    @Param('familyCode') familyCode: string,
+    @Param('personId', ParseIntPipe) personId: number,
+    @Req() req,
+  ) {
+    const actingUserId: number = req.user?.userId;
+    if (!actingUserId) {
+      throw new ForbiddenException('Unauthorized: missing user context');
+    }
+    if (!familyCode || !personId) {
+      throw new BadRequestException('familyCode and personId are required');
+    }
+
+    return this.familyService.permanentlyDeleteStructuralDummy({
+      actingUserId,
+      familyCode,
+      personId,
+    });
+  }
+
   // ==================== NEW ASSOCIATION ENDPOINTS (TODO: Implement service methods) ====================
 
   // TODO: Implement these endpoints after creating the service methods

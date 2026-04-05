@@ -27,6 +27,8 @@ import {
   normalizeMobileValue,
 } from '../common/security/field-encryption.util';
 import { applyPrivacyToNestedUser } from '../user/privacy.util';
+import { FamilyService } from './family.service';
+import { TreeProjectionNode, TreeProjectionService } from './tree-projection.service';
 
 @Injectable()
 export class FamilyMemberService {
@@ -66,6 +68,8 @@ export class FamilyMemberService {
 
     private readonly blockingService: BlockingService,
     private readonly contentVisibilityService: ContentVisibilityService,
+    private readonly familyService: FamilyService,
+    private readonly treeProjectionService: TreeProjectionService,
 
     private readonly sequelize: Sequelize,
   ) {}
@@ -107,6 +111,80 @@ export class FamilyMemberService {
     return String(value || '').trim().toLowerCase();
   }
 
+  private async mapTreeNodeToMemberResponse(
+    node: TreeProjectionNode,
+    familyCode: string,
+    requestingUserId?: number,
+  ) {
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    const sourceFamilyCode = String(
+      node?.sourceFamilyCode || node?.primaryFamilyCode || node?.familyCode || normalizedFamilyCode,
+    )
+      .trim()
+      .toUpperCase();
+    const userProfile = node?.userProfile || {};
+
+    let blockStatus = { isBlockedByMe: false, isBlockedByThem: false };
+    if (
+      requestingUserId &&
+      node?.userId &&
+      Number(requestingUserId) !== Number(node.userId)
+    ) {
+      try {
+        blockStatus = await this.blockingService.getBlockStatus(
+          requestingUserId,
+          Number(node.userId),
+        );
+      } catch (_) {
+        // non-blocking
+      }
+    }
+
+    const role = Number(node?.role || 0);
+    const isFamilyAdmin =
+      role >= 2 &&
+      String(sourceFamilyCode || '').trim().toUpperCase() === normalizedFamilyCode &&
+      node?.nodeType === 'birth';
+
+    return {
+      id: node?.id,
+      memberId: node?.userId,
+      familyCode: normalizedFamilyCode,
+      creatorId: null,
+      approveStatus: node?.nodeType === 'birth' ? 'approved' : node?.nodeType,
+      isLinkedUsed: false,
+      createdAt: null,
+      updatedAt: null,
+      user: this.applyFamilyVisibility({
+        id: node?.userId,
+        email: node?.email || null,
+        mobile: node?.mobile || null,
+        countryCode: node?.countryCode || null,
+        status: node?.status || 1,
+        role,
+        isAppUser: Boolean(node?.isAppUser),
+        fullName: node?.name || 'Family Member',
+        profileImage: node?.img || null,
+        userProfile: {
+          ...(userProfile || {}),
+          familyCode: sourceFamilyCode || null,
+          contactNumber: node?.contactNumber || userProfile?.contactNumber || null,
+          gender: node?.gender || userProfile?.gender || null,
+          profile: userProfile?.profile || null,
+        },
+      }),
+      blockStatus,
+      membershipType:
+        node?.nodeType === 'birth'
+          ? 'member'
+          : node?.nodeType === 'linked'
+            ? 'linked'
+            : 'associated',
+      familyRole: isFamilyAdmin ? (role === 3 ? 'Superadmin' : 'Admin') : 'Member',
+      isFamilyAdmin,
+      sourceFamilyCode,
+    };
+  }
   private toRequestState(status: string | null | undefined) {
     const normalized = this.normalizeApprovalStatus(status);
     switch (normalized) {
@@ -1143,69 +1221,17 @@ export class FamilyMemberService {
 
     const transaction = await this.sequelize.transaction();
     try {
-      console.log('[DEBUG] Step 1: Finding member user (no lock)...');
-      const memberUser = await this.userModel.findByPk(memberId, {
-        transaction,
-      });
-      console.log('[DEBUG] memberUser found:', memberUser?.id);
-      
-      // Validate transaction is still active
-      try {
-        await this.sequelize.query('SELECT 1', { transaction });
-        console.log('[DEBUG] Transaction valid after Step 1');
-      } catch (txErr) {
-        console.error('[DEBUG] Transaction FAILED after Step 1:', txErr.message);
-        throw txErr;
-      }
-
-      console.log('[DEBUG] Step 2: Finding membership (no lock)...');
-      let membership;
-      try {
-        membership = await this.familyMemberModel.findOne({
+      const [memberUser, membership, treeEntries] = await Promise.all([
+        this.userModel.findByPk(memberId, { transaction }),
+        this.familyMemberModel.findOne({
           where: { memberId, familyCode },
           transaction,
-        });
-        console.log('[DEBUG] membership found:', membership?.id, 'status:', (membership as any)?.approveStatus);
-      } catch (e) {
-        console.error('[DEBUG] Error finding membership:', e.message, e.stack);
-        throw e;
-      }
-      
-      // Validate transaction is still active
-      try {
-        await this.sequelize.query('SELECT 1', { transaction });
-        console.log('[DEBUG] Transaction valid after Step 2');
-      } catch (txErr) {
-        console.error('[DEBUG] Transaction FAILED after Step 2:', txErr.message);
-        throw txErr;
-      }
-
-      console.log('[DEBUG] Step 3: Finding tree entries...');
-      let treeEntries;
-      try {
-        treeEntries = await this.familyTreeModel.findAll({
+        }),
+        this.familyTreeModel.findAll({
           where: { familyCode, userId: memberId },
           transaction,
-        });
-        console.log('[DEBUG] treeEntries found:', treeEntries.length);
-      } catch (e) {
-        console.error('[DEBUG] Error finding tree entries:', e.message, e.stack);
-        throw e;
-      }
-      
-      // Validate transaction is still active
-      try {
-        await this.sequelize.query('SELECT 1', { transaction });
-        console.log('[DEBUG] Transaction valid after Step 3');
-      } catch (txErr) {
-        console.error('[DEBUG] Transaction FAILED after Step 3:', txErr.message);
-        throw txErr;
-      }
-      
-      console.log('[DEBUG] Step 3a: Checking early return conditions...');
-      console.log('[DEBUG] - membership exists:', !!membership);
-      console.log('[DEBUG] - treeEntries.length:', treeEntries.length);
-      console.log('[DEBUG] - approveStatus:', (membership as any)?.approveStatus);
+        }),
+      ]);
 
       if (!membership && treeEntries.length === 0) {
         await transaction.commit();
@@ -1229,57 +1255,6 @@ export class FamilyMemberService {
         };
       }
 
-      if (
-        membership &&
-        String((membership as any).approveStatus || '') !== 'approved' &&
-        treeEntries.length > 0 &&
-        !params.skipAdminGuard &&
-        memberUser &&
-        !memberUser.isAppUser
-      ) {
-        await transaction.commit();
-        return {
-          message: 'Family member already removed',
-          alreadyProcessed: true,
-          dummyUserId: Number(memberUser.id),
-        };
-      }
-
-      const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
-      const memberPrimaryFamilyCode = String((await this.userProfileModel.findOne({ where: { userId: memberId }, transaction }))?.familyCode || '').trim().toUpperCase();
-      const isPrimaryMemberOfFamily = Boolean(memberPrimaryFamilyCode && memberPrimaryFamilyCode === normalizedFamilyCode);
-      const hasTreeEntries = treeEntries.length > 0;
-      const isDummyUser = memberUser ? !memberUser.isAppUser : false;
-
-      if (!params.skipAdminGuard && !isSelfRemoval && hasTreeEntries && isPrimaryMemberOfFamily && memberUser?.isAppUser) {
-        await this.familyTreeModel.destroy({
-          where: { familyCode, userId: memberId } as any,
-          transaction,
-        });
-
-        await repairFamilyTreeIntegrity({
-          familyCode,
-          transaction,
-          lock: true,
-          fixExternalGenerations: true,
-        });
-
-        await transaction.commit();
-
-        this.notificationService.emitFamilyEvent(familyCode, {
-          type: 'MEMBER_MOVED_TO_NOT_IN_TREE',
-          memberId,
-          removedBy: actingUserId,
-        });
-
-        return {
-          message: 'Member moved to Members Not in Tree successfully',
-          alreadyProcessed: false,
-          dummyUserId: null,
-          action: 'moved_to_members_not_in_tree',
-        };
-      }
-
       if (membership) {
         await this.familyMemberModel.update(
           {
@@ -1294,40 +1269,25 @@ export class FamilyMemberService {
       await this.cleanupRemovedMemberProfile(memberId, familyCode, transaction);
       await this.hideFamilyContentForRemovedMember(memberId, familyCode, transaction);
 
+      const hasTreeEntries = treeEntries.length > 0;
       let dummyUserId: number = null;
+      let revokedFamilies: string[] = [];
       let action = 'removed_from_family';
-      if (hasTreeEntries) {
-        if (params.skipAdminGuard) {
-          const dummyUser = await this.createDummyUserFromMember({
-            memberId,
-            familyCode,
-            actingUserId,
-            transaction,
-          });
-          dummyUserId = dummyUser.id;
-          action = 'account_deleted_dummy_created';
 
-          await this.familyTreeModel.update(
-            { userId: dummyUser.id } as any,
-            {
-              where: {
-                familyCode,
-                userId: memberId,
-              } as any,
-              transaction,
-            },
-          );
-        } else if (isDummyUser) {
-          await this.familyTreeModel.destroy({
-            where: { familyCode, userId: memberId } as any,
-            transaction,
-          });
-          action = 'deleted_non_app_user';
-        } else {
-          await this.convertExistingUserToDummy(memberUser, transaction);
-          dummyUserId = Number(memberId);
-          action = 'converted_to_dummy';
-        }
+      if (hasTreeEntries) {
+        const conversion = await this.familyService.convertFamilyUserNodesToStructuralDummy({
+          actingUserId,
+          familyCode,
+          memberUserId: memberId,
+          transaction,
+        });
+        dummyUserId = Number(conversion?.dummyUserId || 0) || null;
+        revokedFamilies = Array.isArray(conversion?.revokedFamilies)
+          ? conversion.revokedFamilies
+          : [];
+        action = params.skipAdminGuard
+          ? 'account_deleted_structural_dummy_created'
+          : 'converted_to_structural_dummy';
       }
 
       await repairFamilyTreeIntegrity({
@@ -1346,6 +1306,7 @@ export class FamilyMemberService {
         isSelfRemoval,
         removedBy: actingUserId,
         action,
+        revokedFamilies,
       });
 
       if (!params.skipAdminGuard && !isSelfRemoval) {
@@ -1353,14 +1314,16 @@ export class FamilyMemberService {
       }
 
       return {
-        message: action === 'converted_to_dummy'
-          ? 'Member removed from family and converted to a Non-App user'
-          : action === 'deleted_non_app_user'
-            ? 'Non-App user removed successfully'
+        message:
+          action === 'converted_to_structural_dummy' ||
+          action === 'account_deleted_structural_dummy_created'
+            ? 'Family member removed and converted to a structural dummy in the tree'
             : 'Family member removed successfully',
         alreadyProcessed: false,
         dummyUserId,
         action,
+        revokedFamilies,
+        removedUserWasAppMember: Boolean(memberUser?.isAppUser),
       };
     } catch (error) {
       await transaction.rollback();
@@ -1401,7 +1364,7 @@ export class FamilyMemberService {
     await this.requireAdminMembership(actingUserId, familyCode);
 
     const rows = await this.familyTreeModel.findAll({
-      where: { familyCode } as any,
+      where: { familyCode, isStructuralDummy: false } as any,
       include: [
         {
           model: this.userModel,
@@ -1438,7 +1401,7 @@ export class FamilyMemberService {
     }
 
     return {
-      message: 'Non-app users fetched successfully',
+      message: 'Non-app tree users fetched successfully',
       data: Array.from(unique.values()),
     };
   }
@@ -1462,7 +1425,7 @@ export class FamilyMemberService {
         lock: (transaction as any).LOCK.UPDATE,
       });
       if (!dummyUser || dummyUser.isAppUser) {
-        throw new BadRequestException('Invalid dummy user');
+        throw new BadRequestException('Invalid non-app tree user');
       }
 
       const replacementMembership = await this.familyMemberModel.findOne({
@@ -1486,7 +1449,7 @@ export class FamilyMemberService {
       }
 
       const existingTargetRows = await this.familyTreeModel.count({
-        where: { familyCode, userId: replacementUserId } as any,
+        where: { familyCode, userId: replacementUserId, isStructuralDummy: false } as any,
         transaction,
       });
       if (existingTargetRows > 0) {
@@ -1496,13 +1459,13 @@ export class FamilyMemberService {
       const [updatedCount] = await this.familyTreeModel.update(
         { userId: replacementUserId } as any,
         {
-          where: { familyCode, userId: dummyUserId } as any,
+          where: { familyCode, userId: dummyUserId, isStructuralDummy: false } as any,
           transaction,
         },
       );
 
       if (!Number(updatedCount)) {
-        throw new NotFoundException('Dummy user not found in this family tree');
+        throw new NotFoundException('Non-app tree user not found in this family tree');
       }
 
       const isSyntheticDummy =
@@ -1550,882 +1513,363 @@ export class FamilyMemberService {
 
   // Get all approved family members by family code
   async getAllFamilyMembers(familyCode: string, requestingUserId?: number) {
-    // BLOCK OVERRIDE: Removed legacy family-member block gate; access now relies on user-level block checks.
-
     const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
-    // Get all users whose primary family is this familyCode OR who are approved members
-    const members = await this.familyMemberModel.findAll({
-      where: {
-        familyCode,
-        // Exclude removed members
-        approveStatus: {
-          [Op.ne]: 'removed'
-        },
-        // Include both primary family members and approved additional members
-        [Op.or]: [
-          { approveStatus: 'approved' },
-          // Include users whose primary family is this code regardless of approval status
-          {
-            '$user.userProfile.familyCode$': familyCode
-          }
-        ]
-      },
-      include: [
-        {
-          model: this.userModel,
-          as: 'user',
-          attributes: ['id', 'email', 'mobile', 'countryCode', 'status', 'role', 'isAppUser'],
-          include: [
-            {
-              model: this.userProfileModel,
-              as: 'userProfile',
-              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'familyCode', 'contactNumber', 'emailPrivacy', 'addressPrivacy', 'phonePrivacy'],
-            },
-          ],
-        },
-        {
-          model: this.userModel,
-          as: 'creator',
-          attributes: ['id', 'email'],
-        },
-      ],
-      order: [['createdAt', 'DESC']],
+    const aggregate = await this.treeProjectionService.getFamilyAggregate(normalizedFamilyCode, {
+      requestingUserId,
+      includeAdminQueue: false,
     });
 
-    const baseResult = await Promise.all(members.map(async (memberInstance: any) => {
-      const member = memberInstance.get({ plain: true });
-      const user = member.user;
-      
-      // Get S3 URL for profile image if it exists
-      let profileImage = null;
-      if (user?.userProfile?.profile) {
-        try {
-          profileImage = this.uploadService.getFileUrl(user.userProfile.profile, 'profile');
-        } catch (error) {
-          console.error('Error getting S3 URL for profile image:', error);
-          // Fallback to the original profile path if S3 URL fetch fails
-          const baseUrl = process.env.BASE_URL || '';
-          const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
-          profileImage = `${baseUrl.replace(/\/$/, '')}/${profilePath}/${user.userProfile.profile}`;
-        }
+    const uniqueMembers = new Map<string, any>();
+    for (const node of aggregate?.projection?.directoryMembers || []) {
+      if (!node?.userId || node?.isStructuralDummy) {
+        continue;
       }
-
-      // Get block status for this member relative to requesting user
-      let blockStatus = { isBlockedByMe: false, isBlockedByThem: false };
-      if (requestingUserId && user?.id && requestingUserId !== user.id) {
-        try {
-          blockStatus = await this.blockingService.getBlockStatus(requestingUserId, user.id);
-        } catch (e) {
-          // Non-blocking: if block check fails, assume not blocked
-        }
+      const sourceFamilyCode = String(
+        node?.sourceFamilyCode || node?.primaryFamilyCode || node?.familyCode || normalizedFamilyCode,
+      )
+        .trim()
+        .toUpperCase();
+      const dedupeKey = `${Number(node.userId)}:${node.nodeType}:${sourceFamilyCode}`;
+      if (uniqueMembers.has(dedupeKey)) {
+        continue;
       }
-
-      return {
-        ...member,
-        blockStatus,
-        user: this.applyFamilyVisibility({
-          ...user,
-          fullName: user?.userProfile
-            ? `${user.userProfile.firstName} ${user.userProfile.lastName}`.trim()
-            : null,
-          profileImage,
-        }),
-        membershipType: (() => {
-          const userPrimaryFamily = String(user?.userProfile?.familyCode || '').trim().toUpperCase();
-          return userPrimaryFamily === normalizedFamilyCode ? 'member' : 'associated';
-        })(),
-        familyRole: (() => {
-          const isFamilyAdmin =
-            user?.role >= 2 &&
-            String(user?.userProfile?.familyCode || '').trim().toUpperCase() === normalizedFamilyCode;
-
-          if (!isFamilyAdmin) {
-            return 'Member';
-          }
-          return user.role === 3 ? 'Superadmin' : 'Admin';
-        })(),
-        isFamilyAdmin:
-          user?.role >= 2 &&
-          String(user?.userProfile?.familyCode || '').trim().toUpperCase() === normalizedFamilyCode,
-      };
-    }));
-
-    // Include cross-family linked users (e.g. spouse associations) that have this familyCode
-    // in their associatedFamilyCodes, even if they are not ft_family_members for this family.
-    // Exclude users already in baseResult to prevent duplicates.
-    const baseUserIds = new Set<number>(
-      baseResult
-        .map((m: any) => Number(m?.user?.id))
-        .filter((id: any) => Number.isFinite(id) && id > 0),
-    );
-
-    const associatedRows = await this.sequelize.query(
-      `
-        SELECT "userId"
-        FROM public.ft_user_profile
-        WHERE "associatedFamilyCodes"::jsonb @> :needle::jsonb
-          AND COALESCE(UPPER(TRIM("familyCode")), '') <> :familyCode
-      `,
-      {
-        replacements: {
-          needle: JSON.stringify([normalizedFamilyCode]),
-          familyCode: normalizedFamilyCode,
-        },
-        type: QueryTypes.SELECT,
-      },
-    );
-    const associatedUserIds = Array.from(
-      new Set(
-        (associatedRows || [])
-          .map((r) => Number((r as any)?.userId))
-          .filter((id) => Number.isFinite(id) && id > 0 && !baseUserIds.has(id)),
-      ),
-    );
-
-    let associatedResult: any[] = [];
-    if (associatedUserIds.length > 0) {
-      const associatedUsers = await this.userModel.findAll({
-        where: { id: { [Op.in]: associatedUserIds } } as any,
-        attributes: ['id', 'email', 'mobile', 'countryCode', 'status', 'role', 'isAppUser'],
-        include: [
-          {
-            model: this.userProfileModel,
-            as: 'userProfile',
-            attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'familyCode', 'contactNumber', 'emailPrivacy', 'addressPrivacy', 'phonePrivacy'],
-          },
-        ],
-        order: [['id', 'DESC']],
-      });
-
-      associatedResult = await Promise.all(
-        (associatedUsers as any[]).map(async (u: any) => {
-          let profileImage = null;
-          if (u?.userProfile?.profile) {
-            try {
-              profileImage = this.uploadService.getFileUrl(u.userProfile.profile, 'profile');
-            } catch (error) {
-              console.error('Error getting S3 URL for profile image:', error);
-              const baseUrl = process.env.BASE_URL || '';
-              const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
-              profileImage = `${baseUrl.replace(/\/$/, '')}/${profilePath}/${u.userProfile.profile}`;
-            }
-          }
-
-          // Get block status for this member relative to requesting user
-          let blockStatus = { isBlockedByMe: false, isBlockedByThem: false };
-          if (requestingUserId && u?.id && requestingUserId !== u.id) {
-            try {
-              blockStatus = await this.blockingService.getBlockStatus(requestingUserId, u.id);
-            } catch (e) {
-              // Non-blocking: if block check fails, assume not blocked
-            }
-          }
-
-          return {
-            // Negative id prevents collision with ft_family_members serial ids.
-            id: -Number(u.id),
-            memberId: null,
-            familyCode,
-            creatorId: null,
-            approveStatus: 'associated',
-            isLinkedUsed: false,
-            createdAt: null,
-            updatedAt: null,
-            user: this.applyFamilyVisibility({
-              ...u.toJSON(),
-              fullName: u?.userProfile
-                ? `${u.userProfile.firstName || ''} ${u.userProfile.lastName || ''}`.trim()
-                : null,
-              profileImage,
-            }),
-            blockStatus,
-            membershipType: 'associated',
-            familyRole: 'Member',
-            isFamilyAdmin: false,
-          };
-        }),
+      uniqueMembers.set(
+        dedupeKey,
+        await this.mapTreeNodeToMemberResponse(node, normalizedFamilyCode, requestingUserId),
       );
     }
 
-    // Include linked-family members (tree link connections) in All Members list.
-    let linkedResult: any[] = [];
-    try {
-      const linkedRows = await this.sequelize.query(
-        `
-          SELECT
-            CASE
-              WHEN "familyCodeLow" = :code THEN "familyCodeHigh"
-              ELSE "familyCodeLow"
-            END AS "linkedCode"
-          FROM public.ft_family_link
-          WHERE "status" = 'active'
-            AND (source = 'tree' OR source IS NULL)
-            AND (:code = "familyCodeLow" OR :code = "familyCodeHigh")
-        `,
-        {
-          replacements: { code: normalizedFamilyCode },
-          type: QueryTypes.SELECT,
-        },
-      );
-
-      const linkedCodes = Array.from(
-        new Set(
-          (linkedRows || [])
-            .map((r) => String((r as any)?.linkedCode || '').trim())
-            .filter(Boolean),
-        ),
-      );
-
-      if (linkedCodes.length > 0) {
-        const existingIds = new Set<number>([...baseUserIds, ...associatedUserIds]);
-        const linkedUsers = await this.userModel.findAll({
-          where: { '$userProfile.familyCode$': { [Op.in]: linkedCodes } } as any,
-          attributes: ['id', 'email', 'mobile', 'countryCode', 'status', 'role', 'isAppUser'],
-          include: [
-            {
-              model: this.userProfileModel,
-              as: 'userProfile',
-              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'familyCode', 'contactNumber', 'emailPrivacy', 'addressPrivacy', 'phonePrivacy'],
-            },
-          ],
-          order: [['id', 'DESC']],
-        });
-
-        linkedResult = await Promise.all(
-          (linkedUsers as any[])
-            .filter((u: any) => !existingIds.has(Number(u?.id)))
-            .map(async (u: any) => {
-              let profileImage = null;
-              if (u?.userProfile?.profile) {
-                try {
-                  profileImage = this.uploadService.getFileUrl(u.userProfile.profile, 'profile');
-                } catch (error) {
-                  console.error('Error getting S3 URL for profile image:', error);
-                  const baseUrl = process.env.BASE_URL || '';
-                  const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
-                  profileImage = `${baseUrl.replace(/\/$/, '')}/${profilePath}/${u.userProfile.profile}`;
-                }
-              }
-
-              // Get block status for this member relative to requesting user
-              let blockStatus = { isBlockedByMe: false, isBlockedByThem: false };
-              if (requestingUserId && u?.id && requestingUserId !== u.id) {
-                try {
-                  blockStatus = await this.blockingService.getBlockStatus(requestingUserId, u.id);
-                } catch (e) {
-                  // Non-blocking: if block check fails, assume not blocked
-                }
-              }
-
-              return {
-                id: -Number(u.id) * 10,
-                memberId: null,
-                familyCode,
-                creatorId: null,
-                approveStatus: 'linked',
-                isLinkedUsed: false,
-                createdAt: null,
-                updatedAt: null,
-                user: this.applyFamilyVisibility({
-                  ...u.toJSON(),
-                  fullName: u?.userProfile
-                    ? `${u.userProfile.firstName || ''} ${u.userProfile.lastName || ''}`.trim()
-                    : null,
-                  profileImage,
-                }),
-                blockStatus,
-                membershipType: 'linked',
-                familyRole: 'Member',
-                isFamilyAdmin: false,
-              };
-            }),
-        );
-      }
-    } catch (err) {
-      // Non-blocking: if linked-family query fails, still return base members.
-      console.error('Error loading linked family members:', err);
-    }
-
-    const result = [...baseResult, ...associatedResult, ...linkedResult];
-
+    const data = Array.from(uniqueMembers.values());
     return {
-      message: `${result.length} approved family members found.`,
-      data: result,
+      message: `${data.length} tree-derived family members found.`,
+      treeVersion: aggregate.treeVersion,
+      projection: aggregate.projection,
+      data,
     };
-
   }
 
-  async getUserIdsInFamily(familyCode: string): Promise<number[]> {
-    const members = await this.familyMemberModel.findAll({
+  async getMembersNotInTree(familyCode: string, actingUserId: number) {
+    await this.requireAdminMembership(actingUserId, familyCode);
+
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    const queue = await this.treeProjectionService.getNonTreeAdminQueue(normalizedFamilyCode);
+    const data = (queue || []).map((member: any) => ({
+      ...member,
+      user: this.applyFamilyVisibility(member?.user || {}),
+    }));
+
+    return {
+      message: `${data.length} members not in tree found`,
+      data,
+    };
+  }
+  async getPendingRequestsByUser(userId: number) {
+    const normalizedUserId = Number(userId);
+    if (!normalizedUserId) {
+      throw new BadRequestException('User ID is required');
+    }
+
+    const requests = await this.familyMemberModel.findAll({
       where: {
-        familyCode,
-        approveStatus: {
-          [Op.ne]: 'removed'
-        },
-        [Op.or]: [
-          { approveStatus: 'approved' },
-          { '$user.userProfile.familyCode$': familyCode }
-        ]
-      },
-      include: [{
-        model: this.userModel,
-        as: 'user',
-        include: [{
-          model: this.userProfileModel,
-          as: 'userProfile',
-          attributes: ['familyCode']
-        }]
-      }],
-      attributes: ['memberId']
+        memberId: normalizedUserId,
+        approveStatus: 'pending',
+      } as any,
+      order: [['updatedAt', 'DESC'], ['id', 'DESC']],
     });
-    return members.map(m => m.memberId);
+
+    const familyCodes = Array.from(
+      new Set(
+        (requests as any[])
+          .map((request) => String((request as any).familyCode || '').trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    );
+    const families = familyCodes.length
+      ? await this.familyModel.findAll({
+          where: { familyCode: familyCodes } as any,
+          attributes: ['familyCode', 'familyName'],
+        })
+      : [];
+    const familyNameByCode = new Map(
+      (families as any[]).map((family: any) => [String(family.familyCode || '').trim().toUpperCase(), family.familyName || null]),
+    );
+
+    return {
+      message: `${requests.length} pending family request(s) found`,
+      data: (requests as any[]).map((request: any) => ({
+        ...(request.toJSON ? request.toJSON() : request),
+        familyCode: String(request.familyCode || '').trim().toUpperCase(),
+        familyName: familyNameByCode.get(String(request.familyCode || '').trim().toUpperCase()) || null,
+        requestState: 'PENDING',
+      })),
+    };
   }
 
   async getMemberById(memberId: number) {
-    const member = await this.familyMemberModel.findOne({
-      where: { memberId },
+    const normalizedMemberId = Number(memberId);
+    if (!normalizedMemberId) {
+      throw new BadRequestException('Member ID is required');
+    }
+
+    const user = await this.userModel.findByPk(normalizedMemberId, {
       include: [
         {
-          model: this.userModel,
-          as: 'user', // explicitly specify alias
-          include: [
-            {
-              model: this.userProfileModel,
-              as: 'userProfile',
-            },
-          ],
-        },
-        {
-          model: this.userModel,
-          as: 'creator', // optionally include creator if needed
-          attributes: ['id', 'email'],
+          model: this.userProfileModel,
+          as: 'userProfile',
+          required: false,
         },
       ],
     });
-
-    if (!member) {
+    if (!user) {
       throw new NotFoundException('Family member not found');
     }
 
-    return member;
-  }
-
-  async getFamilyStatsByCode(familyCode: string) {
-    const members = await this.familyMemberModel.findAll({
-      where: { 
-        familyCode,
-        approveStatus: {
-          [Op.ne]: 'removed'
-        },
-        [Op.or]: [
-          { approveStatus: 'approved' },
-          { '$user.userProfile.familyCode$': familyCode }
-        ]
-      },
-      include: [
-        {
-          model: this.userModel,
-          as: 'user',
-          attributes: ['id'],
-          include: [
-            {
-              model: this.userProfileModel,
-              as: 'userProfile',
-              attributes: ['gender', 'dob'],
-            },
-          ],
-        },
-      ],
+    const memberships = await this.familyMemberModel.findAll({
+      where: { memberId: normalizedMemberId } as any,
+      order: [['updatedAt', 'DESC'], ['id', 'DESC']],
     });
-
-    let total = 0, males = 0, females = 0, totalAge = 0;
-
-    for (const member of members as any) {
-      const profile = member.user?.userProfile;
-      if (!profile) continue;
-
-      total++;
-
-      const gender = profile.gender?.toLowerCase();
-
-      if (gender === 'male') males++;
-      else if (gender === 'female') females++;
-
-      if (profile.dob) {
-        const dob = new Date(profile.dob);
-        const age = new Date().getFullYear() - dob.getFullYear();
-        totalAge += age;
-      }
-    }
-
-    const averageAge = total > 0 ? Number.parseFloat((totalAge / total).toFixed(1)) : 0;
-
-    return {
-      totalMembers: total,
-      males,
-      females,
-      averageAge,
-    };
-  }
-
-  async getPendingRequestsByUser(userId: number) {
-    // Step 1: Get the logged-in user's familyCode
-    const currentMember = await this.familyMemberModel.findOne({
-      where: { memberId: userId },
-    });
-
-    if (!currentMember) {
-      throw new Error('Family membership not found for current user.');
-    }
-
-    const familyCode = currentMember.familyCode;
-
-    // Step 2: Get all pending members for this familyCode
-    const members = await this.familyMemberModel.findAll({
-      where: {
-        familyCode,
-        approveStatus: 'pending',
-      },
-      include: [
-        {
-          model: this.userModel,
-          as: 'user',
-          attributes: ['id', 'email', 'mobile', 'countryCode', 'status', 'role', 'isAppUser'],
-          include: [
-            {
-              model: this.userProfileModel,
-              as: 'userProfile',
-              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'contactNumber', 'emailPrivacy', 'addressPrivacy', 'phonePrivacy'],
-            },
-          ],
-        },
-        {
-          model: this.userModel,
-          as: 'creator',
-          attributes: ['id', 'email'],
-        },
-      ],
-      order: [['createdAt', 'DESC']],
-    });
-
-    // Step 3: Format response
-    const baseUrl = process.env.BASE_URL || '';
-    const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
-
-    const result = members.map((memberInstance: any) => {
-      const member = memberInstance.get({ plain: true });
-
-      const user = member.user;
-      const profileImage = user?.userProfile?.profile
-        ? `${baseUrl.replace(/\/$/, '')}/${profilePath}/${user.userProfile.profile}`
-        : null;
-
-      return {
-        ...member,
-        user: this.applyFamilyVisibility({
-          ...user,
-          fullName: user?.userProfile
-            ? `${user.userProfile.firstName || ''} ${user.userProfile.lastName || ''}`.trim()
-            : null,
-          profileImage,
-        }),
-      };
+    const treeEntries = await this.familyTreeModel.findAll({
+      where: { userId: normalizedMemberId, isStructuralDummy: false } as any,
+      attributes: ['familyCode', 'personId', 'nodeUid', 'generation', 'nodeType', 'isStructuralDummy'],
+      order: [['familyCode', 'ASC'], ['generation', 'ASC']],
     });
 
     return {
-      message: `${result.length} pending family member request(s) found.`,
-      data: result,
+      message: 'Family member details fetched successfully',
+      data: this.applyFamilyVisibility({
+        ...(user.toJSON ? user.toJSON() : user),
+        memberships: (memberships as any[]).map((membership: any) => ({
+          ...(membership.toJSON ? membership.toJSON() : membership),
+          requestState: this.toRequestState(membership.approveStatus),
+        })),
+        treeEntries: (treeEntries as any[]).map((entry: any) =>
+          entry.toJSON ? entry.toJSON() : entry,
+        ),
+      }),
     };
   }
 
   async suggestFamilyByProfile(userId: number) {
-    // 1. Get user profile
-    const profile = await this.userProfileModel.findOne({ where: { userId } });
-    if (!profile) throw new NotFoundException('User profile not found');
-
-    const normalizeName = (v: any) =>
-      String(v || '')
-        .trim()
-        .replaceAll(/\s+/g, ' ')
-        .toLowerCase();
-
-    // 2. Collect all names to search
-    const names = this.collectProfileNames(profile);
-
-    // Remove falsy and duplicate names
-    const uniqueNames = Array.from(new Set(names.filter(Boolean)));
-    if (uniqueNames.length < 1) return { message: 'At least 1 name required to suggest families', data: [] };
-
-    // 3. Search for all families that have any matching names
-    const allMatches = await this.fetchMatchingProfiles(uniqueNames);
-    const familyMatchMap = this.buildFamilyMatchMap(uniqueNames, allMatches);
-
-    // 3b. Parent-name match (exact, case-insensitive). This specifically fixes the "same parents" use case.
-    await this.applyParentNameMatches(profile, normalizeName, familyMatchMap);
-
-    const foundFamilies = await this.buildFoundFamilies(familyMatchMap);
-
-    if (foundFamilies.length === 0) {
-      return { message: 'No matching families found', data: [] };
+    const normalizedUserId = Number(userId);
+    if (!normalizedUserId) {
+      throw new BadRequestException('User ID is required');
     }
+
+    const profile = await this.userProfileModel.findOne({ where: { userId: normalizedUserId } });
+    if (!profile) {
+      throw new NotFoundException('User profile not found');
+    }
+
+    const normalizeName = (value: any) => String(value || '').trim().toLowerCase();
+    const uniqueNames = Array.from(
+      new Set(
+        this.collectProfileNames(profile)
+          .map((name) => String(name || '').trim())
+          .filter(Boolean),
+      ),
+    );
+
+    if (!uniqueNames.length && !normalizeName((profile as any).fatherName) && !normalizeName((profile as any).motherName)) {
+      return {
+        message: 'No suggested families found',
+        data: [],
+      };
+    }
+
+    const matches = uniqueNames.length ? await this.fetchMatchingProfiles(uniqueNames) : [];
+    const familyMatchMap = this.buildFamilyMatchMap(uniqueNames, matches as any[]);
+    await this.applyParentNameMatches(profile, normalizeName, familyMatchMap);
+    const foundFamilies = await this.buildFoundFamilies(familyMatchMap);
+    foundFamilies.sort((a, b) => {
+      if (b.totalScore !== a.totalScore) return b.totalScore - a.totalScore;
+      if (b.matchCount !== a.matchCount) return b.matchCount - a.matchCount;
+      return String(a.familyCode).localeCompare(String(b.familyCode));
+    });
 
     const families = await this.attachMembersToFamilies(foundFamilies);
-
-    // 7. Sort by total score (best matches first), then by match count, then by family name
-    families.sort((a, b) => {
-      // First sort by total score (highest first)
-      if (b.totalScore !== a.totalScore) {
-        return b.totalScore - a.totalScore;
-      }
-      // Then by match count (highest first)
-      if (b.matchCount !== a.matchCount) {
-        return b.matchCount - a.matchCount;
-      }
-      // Finally by family name
-      return (a.familyName || '').localeCompare(b.familyName || '');
-    });
-
-    // Debug log to help verify results
-    console.log('User search names:', uniqueNames);
-    console.log('Found families:', families.map(f => ({
-      familyCode: f.familyCode,
-      familyName: f.familyName,
-      matchCount: f.matchCount,
-      totalScore: f.totalScore,
-      matchedNames: f.matchedNames
-    })));
-
-    return { message: `Matching families found`, data: families };
-  }
-
-// Enhanced validation method for link validation - checks member exists and link usage
-async checkMemberExists(familyCode: string, memberId: number) {
-  try {
-    const member = await this.familyMemberModel.findOne({
-      where: {
-        familyCode,
-        memberId
-      },
-      include: [
-        {
-          model: this.userModel,
-          as: 'user',
-          include: [
-            {
-              model: this.userProfileModel,
-              as: 'userProfile'
-            }
-          ]
-        }
-      ]
-    });
-
-    if (!member) {
-      throw new NotFoundException('Member not found in this family');
-    }
-
-    // Type assertion to access included associations
-    const memberData = member as any;
-    
     return {
-      message: 'Member validation successful',
-      data: {
-        exists: true,
-        isLinkUsed: member.isLinkedUsed || false,
-        member: {
-          id: member.memberId,
-          familyCode: member.familyCode,
-          approveStatus: member.approveStatus,
-          user: memberData.user ? this.applyPublicVisibility({
-            id: memberData.user.id,
-            email: memberData.user.email,
-            mobile: memberData.user.mobile,
-            countryCode: memberData.user.countryCode,
-            userProfile: memberData.user.userProfile,
-          }) : null
-        }
-      }
+      message: families.length ? 'Suggested families fetched successfully' : 'No suggested families found',
+      data: families,
     };
-  } catch (error) {
-    if (error instanceof NotFoundException) {
-      throw error;
-    }
-    console.error('Error validating member:', error);
-    throw new BadRequestException('Failed to validate member');
   }
-}
 
-// Mark invitation link as used
-async markLinkAsUsed(familyCode: string, memberId: number) {
-  try {
-    const member = await this.familyMemberModel.findOne({
+  async getFamilyStatsByCode(familyCode: string) {
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    await this.requireFamilyOrThrow(normalizedFamilyCode);
+
+    const aggregate = await this.treeProjectionService.getFamilyAggregate(normalizedFamilyCode, {
+      includeAdminQueue: false,
+    });
+    const members = (aggregate?.projection?.directoryMembers || []).filter(
+      (node) => !node?.isStructuralDummy,
+    );
+    const males = members.filter((node) => String(node?.gender || '').toLowerCase() === 'male').length;
+    const females = members.filter((node) => String(node?.gender || '').toLowerCase() === 'female').length;
+    const ages = members
+      .map((node) => Number(node?.age))
+      .filter((age) => Number.isFinite(age) && age > 0);
+
+    return {
+      totalMembers: members.length,
+      males,
+      females,
+      averageAge: ages.length
+        ? Math.round((ages.reduce((sum, age) => sum + age, 0) / ages.length) * 10) / 10
+        : 0,
+      treeVersion: aggregate?.treeVersion || 1,
+      associatedFamilies: (aggregate?.projection?.associatedFamilies || []).length,
+      linkedFamilies: (aggregate?.projection?.linkedFamilies || []).length,
+    };
+  }
+
+  async checkMemberExists(familyCode: string, memberId: number) {
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    const normalizedMemberId = Number(memberId);
+    if (!normalizedFamilyCode || !normalizedMemberId) {
+      throw new BadRequestException('familyCode and memberId are required');
+    }
+
+    const membership = await this.familyMemberModel.findOne({
+      where: { familyCode: normalizedFamilyCode, memberId: normalizedMemberId } as any,
+      order: [['updatedAt', 'DESC'], ['id', 'DESC']],
+    });
+    const treeNode = await this.familyTreeModel.findOne({
       where: {
-        familyCode,
-        memberId
-      }
+        familyCode: normalizedFamilyCode,
+        userId: normalizedMemberId,
+        isStructuralDummy: false,
+      } as any,
+      attributes: ['personId', 'nodeUid'],
+      order: [['id', 'DESC']],
     });
 
-    if (!member) {
-      throw new NotFoundException('Member not found in this family');
+    return {
+      message: membership || treeNode ? 'Member link is valid' : 'Member not found',
+      data: {
+        exists: Boolean(membership || treeNode),
+        isLinkUsed: Boolean((membership as any)?.isLinkedUsed),
+        approveStatus: membership ? (membership as any).approveStatus : null,
+        personId: Number((treeNode as any)?.personId || 0) || null,
+        nodeUid: (treeNode as any)?.nodeUid || null,
+      },
+    };
+  }
+
+  async markLinkAsUsed(familyCode: string, memberId: number) {
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    const normalizedMemberId = Number(memberId);
+    const membership = await this.familyMemberModel.findOne({
+      where: { familyCode: normalizedFamilyCode, memberId: normalizedMemberId } as any,
+      order: [['updatedAt', 'DESC'], ['id', 'DESC']],
+    });
+
+    if (!membership) {
+      throw new NotFoundException('Family member link not found');
     }
 
-    if (member.isLinkedUsed) {
-      throw new BadRequestException('This invitation link has already been used');
+    if (!(membership as any).isLinkedUsed) {
+      await membership.update({ isLinkedUsed: true } as any);
     }
-
-    await member.update({ isLinkedUsed: true });
 
     return {
       message: 'Invitation link marked as used successfully',
       data: {
-        memberId: member.memberId,
-        familyCode: member.familyCode,
-        isLinkUsed: true
-      }
+        familyCode: normalizedFamilyCode,
+        memberId: normalizedMemberId,
+        isLinkUsed: true,
+      },
     };
-  } catch (error) {
-    if (error instanceof NotFoundException || error instanceof BadRequestException) {
-      throw error;
-    }
-    console.error('Error marking link as used:', error);
-    throw new BadRequestException('Failed to mark link as used');
   }
-}
 
-  async addUserToFamily(userId: number, familyCode: string, addedBy: number) {
+  async addUserToFamily(userId: number, familyCode: string, addedBy?: number) {
+    const normalizedUserId = Number(userId);
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    const normalizedAddedBy = Number(addedBy || 0) || null;
+
+    if (!normalizedUserId || !normalizedFamilyCode) {
+      throw new BadRequestException('userId and familyCode are required');
+    }
+
+    if (normalizedAddedBy) {
+      await this.requireAdminMembership(normalizedAddedBy, normalizedFamilyCode);
+    }
+
+    const [user, family] = await Promise.all([
+      this.userModel.findByPk(normalizedUserId),
+      this.requireFamilyOrThrow(normalizedFamilyCode),
+    ]);
+    if (!user) {
+      throw new NotFoundException('User not found');
+    }
+
+    const existingApprovedMembership = await this.familyMemberModel.findOne({
+      where: { memberId: normalizedUserId, approveStatus: 'approved' } as any,
+      order: [['updatedAt', 'DESC'], ['id', 'DESC']],
+    });
+    if (
+      existingApprovedMembership &&
+      String((existingApprovedMembership as any).familyCode || '').trim().toUpperCase() !== normalizedFamilyCode
+    ) {
+      throw new BadRequestException('User already belongs to another family');
+    }
+
     const transaction = await this.sequelize.transaction();
     try {
-      // Check if user exists
-      const user = await this.userModel.findByPk(userId, {
-        include: [
+      let membership = await this.familyMemberModel.findOne({
+        where: { memberId: normalizedUserId, familyCode: normalizedFamilyCode } as any,
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+        order: [['updatedAt', 'DESC'], ['id', 'DESC']],
+      });
+
+      if (membership) {
+        await membership.update(
           {
-            model: this.userProfileModel,
-            as: 'userProfile',
-          },
-        ],
-        transaction,
-      });
-
-      if (!user) {
-        throw new NotFoundException('User not found');
-      }
-
-      // Check if family exists (do not rely on existing members)
-      const family = await this.familyModel.findOne({
-        where: { familyCode, status: 1 },
-        transaction,
-      });
-
-      if (!family) {
-        throw new NotFoundException('Family not found');
-      }
-
-      // If user is already in this family, stop
-      // But allow if the existing membership is pending (treat as approval)
-      const existingMemberSameFamily = await this.familyMemberModel.findOne({
-        where: {
-          memberId: userId,
-          familyCode,
-        },
-        transaction,
-      });
-
-      // Delete pending requests by this user to OTHER families (preserve same-family pending for update)
-      await this.familyMemberModel.destroy({
-        where: {
-          memberId: userId,
-          approveStatus: 'pending',
-          familyCode: { [Op.ne]: familyCode },
-        } as any,
-        transaction,
-      });
-
-      // NEW: Also delete pending requests where deleted user is the admin/approver (creatorId)
-      await this.familyMemberModel.destroy({
-        where: {
-          creatorId: userId,
-          approveStatus: 'pending',
-        } as any,
-        transaction,
-      });
-
-      // If user is already an APPROVED member, block. If pending/rejected, allow (will update to approved)
-      if (existingMemberSameFamily && existingMemberSameFamily.approveStatus === 'approved') {
-        throw new BadRequestException('User is already a member of this family');
-      }
-
-      // Ensure profile points to this family so the app can load the correct tree by default
-      const profile = user.userProfile || (await this.userProfileModel.findOne({ where: { userId }, transaction }));
-      if (profile) {
-        const prevFamilyCode = profile.familyCode;
-        const associated = Array.isArray(profile.associatedFamilyCodes) ? profile.associatedFamilyCodes : [];
-        const nextAssociated =
-          prevFamilyCode && prevFamilyCode !== familyCode && !associated.includes(prevFamilyCode)
-            ? [...associated, prevFamilyCode]
-            : associated;
-
-        await profile.update(
+            approveStatus: 'approved',
+            removedAt: null,
+            removedBy: null,
+            creatorId: normalizedAddedBy || (membership as any).creatorId || normalizedUserId,
+          } as any,
+          { transaction },
+        );
+      } else {
+        membership = await this.familyMemberModel.create(
           {
-            familyCode,
-            associatedFamilyCodes: nextAssociated,
+            memberId: normalizedUserId,
+            familyCode: normalizedFamilyCode,
+            creatorId: normalizedAddedBy || normalizedUserId,
+            approveStatus: 'approved',
           } as any,
           { transaction },
         );
       }
 
-      // Keep a single active membership row per user (consistent with requestToJoinFamily logic)
-      const existingAnyMembership = await this.familyMemberModel.findOne({
-        where: { memberId: userId },
+      const profile = await this.userProfileModel.findOne({
+        where: { userId: normalizedUserId },
         transaction,
+        lock: (transaction as any).LOCK.UPDATE,
       });
-
-      let membership: any;
-      if (existingAnyMembership) {
-        await existingAnyMembership.update(
-          {
-            familyCode,
-            approveStatus: 'approved',
-            creatorId: addedBy,
-          },
-          { transaction },
-        );
-        membership = existingAnyMembership;
-
-        // Remove any other stale memberships for this user
-        await this.familyMemberModel.destroy({
-          where: {
-            memberId: userId,
-            familyCode: { [Op.ne]: familyCode },
-          },
-          transaction,
-        });
-      } else {
-        membership = await this.familyMemberModel.create(
-          {
-            memberId: userId,
-            familyCode,
-            approveStatus: 'approved',
-            creatorId: addedBy,
-          },
-          { transaction },
-        );
+      if (profile && !profile.familyCode) {
+        await profile.update({ familyCode: normalizedFamilyCode } as any, { transaction });
       }
 
+      await this.contentVisibilityService.reconcileRecoveredFamilyContent(
+        normalizedUserId,
+        normalizedFamilyCode,
+        transaction,
+      );
       await transaction.commit();
 
-      return {
-        message: 'User added to family successfully',
-        data: {
-          memberId: membership.memberId,
-          userId,
-          familyCode,
-          approveStatus: membership.approveStatus,
-        },
-      };
+      return this.buildMembershipResponse(
+        'User added to family successfully',
+        membership,
+        normalizedFamilyCode,
+      );
     } catch (error) {
       await transaction.rollback();
-      if (error instanceof NotFoundException || error instanceof BadRequestException) {
-        throw error;
-      }
-      console.error('Error adding user to family:', error);
-      throw new BadRequestException('Failed to add user to family');
+      throw error;
     }
   }
-
-  /**
-   * Get approved family members who are not in the family tree
-   * This is used for the "Members Not In Tree" section
-   */
-  async getMembersNotInTree(familyCode: string, actingUserId: number) {
-    await this.requireAdminMembership(actingUserId, familyCode);
-
-    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
-
-    // Get all approved family members
-    const allMembers = await this.familyMemberModel.findAll({
-      where: {
-        familyCode: normalizedFamilyCode,
-        approveStatus: 'approved',
-      } as any,
-      include: [
-        {
-          model: this.userModel,
-          as: 'user',
-          attributes: ['id', 'email', 'mobile', 'countryCode', 'status', 'role', 'isAppUser'],
-          include: [
-            {
-              model: this.userProfileModel,
-              as: 'userProfile',
-              attributes: ['firstName', 'lastName', 'profile', 'dob', 'gender', 'address', 'familyCode', 'contactNumber', 'emailPrivacy', 'addressPrivacy', 'phonePrivacy'],
-            },
-          ],
-        },
-      ],
-    });
-
-    // Get all users currently in the tree
-    const treeEntries = await this.familyTreeModel.findAll({
-      where: { familyCode: normalizedFamilyCode } as any,
-      attributes: ['userId'],
-    });
-
-    const userIdsInTree = new Set(
-      (treeEntries as any[])
-        .map((e) => Number(e.userId))
-        .filter((id) => Number.isFinite(id) && id > 0),
-    );
-
-    // Filter members who are approved but not in tree
-    // Only include app users (not dummy users)
-    const membersNotInTree = (allMembers as any[]).filter((member) => {
-      const userId = Number(member?.memberId);
-      const isAppUser = member?.user?.isAppUser;
-      const isInTree = userIdsInTree.has(userId);
-      
-      // Include if: approved member, is app user, and NOT in tree
-      return isAppUser && !isInTree;
-    });
-
-    // Format the response
-    const result = membersNotInTree.map((member) => {
-      const user = member.user;
-      return {
-        id: member.id,
-        memberId: member.memberId,
-        familyCode: member.familyCode,
-        approveStatus: member.approveStatus,
-        user: this.applyFamilyVisibility({
-          id: user?.id,
-          email: user?.email,
-          mobile: user?.mobile,
-          countryCode: user?.countryCode,
-          isAppUser: user?.isAppUser,
-          role: user?.role,
-          fullName: user?.userProfile
-            ? `${user.userProfile.firstName || ''} ${user.userProfile.lastName || ''}`.trim()
-            : null,
-          profileImage: user?.userProfile?.profile || null,
-          userProfile: user?.userProfile
-            ? {
-                gender: user.userProfile.gender || null,
-                familyCode: user.userProfile.familyCode || null,
-                address: user.userProfile.address || null,
-                phonePrivacy: user.userProfile.phonePrivacy,
-                addressPrivacy: user.userProfile.addressPrivacy,
-                emailPrivacy: user.userProfile.emailPrivacy,
-                contactNumber: user.userProfile.contactNumber || null,
-              }
-            : null,
-        }),
-      };
-    });
-
-    return {
-      message: `${result.length} members not in tree found`,
-      data: result,
-    };
-  }
 }
-
 
 

@@ -18,6 +18,7 @@ import { NotificationModule } from '../notification/notification.module';
 import { RelationshipEdgeService } from './relationship-edge.service';
 import { UploadModule } from '../uploads/upload.module';
 import { RelationshipPathService } from './relationship-path.service';
+import { TreeProjectionService } from './tree-projection.service';
 import { UserModule } from '../user/user.module';
 import { BlockingModule } from '../blocking/blocking.module';
 import { Gallery } from '../gallery/model/gallery.model';
@@ -48,6 +49,7 @@ import { Event } from '../event/model/event.model';
   controllers: [FamilyController, FamilyMemberController],
   providers: [
     RelationshipPathService,
+    TreeProjectionService,
     FamilyService,
     MailService,
     FamilyMemberService,
@@ -61,7 +63,9 @@ import { Event } from '../event/model/event.model';
     FamilyService,
     RelationshipEdgeService,
     FamilyMemberService,
+    TreeProjectionService,
     SequelizeModule,
   ],
 })
 export class FamilyModule {}
+

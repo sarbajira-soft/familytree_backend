@@ -19,6 +19,7 @@ import { EventGateway } from './event.gateway';
 import { BlockingService } from '../blocking/blocking.service';
 import { FamilyLink } from '../family/model/family-link.model';
 import { canViewerAccessFamilyContentForType, isFamilyContentVisibleForType } from '../user/content-visibility-settings.util';
+import { TreeProjectionService } from '../family/tree-projection.service';
  
 @Injectable()
 export class EventService {
@@ -40,6 +41,7 @@ export class EventService {
 
     @InjectModel(FamilyLink)
     private readonly familyLinkModel: typeof FamilyLink,
+    private readonly treeProjectionService: TreeProjectionService,
 
     private readonly notificationService: NotificationService,
     private readonly eventGateway: EventGateway,
@@ -80,19 +82,15 @@ export class EventService {
     userId: number,
     familyCode: string,
   ): Promise<void> {
-    if (!userId || !familyCode) {
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    if (!userId || !normalizedFamilyCode) {
       throw new ForbiddenException('Not allowed to access this family content');
     }
 
-    const membership = await this.familyMemberModel.findOne({
-      where: { memberId: userId, familyCode },
-    });
-
-    if (!membership || (membership as any).approveStatus !== 'approved') {
+    const accessible = await this.getAccessibleFamilyCodesForUser(userId);
+    if (!accessible.includes(normalizedFamilyCode)) {
       throw new ForbiddenException('Not allowed to access this family content');
     }
-
-    // BLOCK OVERRIDE: Legacy family-member block flag removed; access checks no longer use ft_family_members.isBlocked.
   }
 
   private async getAccessibleFamilyCodesForUser(userId: number): Promise<string[]> {
@@ -100,72 +98,19 @@ export class EventService {
       return [];
     }
 
-    const memberships = await this.familyMemberModel.findAll({
-      where: { memberId: userId, approveStatus: 'approved' } as any,
-      // BLOCK OVERRIDE: Removed legacy blocked-membership projection.
-      attributes: ['familyCode'],
-    });
-
-    const profile = await this.userProfileModel.findOne({
-      where: { userId },
-      attributes: ['familyCode', 'associatedFamilyCodes'],
-    });
-
-    const primaryFamilyCode = String((profile as any)?.familyCode || '').trim().toUpperCase();
-
-    const associated = Array.isArray((profile as any)?.associatedFamilyCodes)
-      ? ((profile as any).associatedFamilyCodes as any[])
-          .filter(Boolean)
-          .map((code: any) => String(code).trim().toUpperCase())
-      : [];
-
-    const base = Array.from(
-      new Set(
-        [
-          ...(memberships as any[])
-            .filter((m: any) => !!(m as any).familyCode)
-            .map((m: any) => String((m as any).familyCode).trim().toUpperCase()),
-          ...(primaryFamilyCode ? [primaryFamilyCode] : []),
-          ...associated,
-        ].filter(Boolean),
-      ),
-    );
-
-    if (base.length === 0) {
-      return [];
-    }
-
-    const links = await this.familyLinkModel.findAll({
-      where: {
-        status: 'active',
-        [Op.or]: [
-          { familyCodeLow: { [Op.in]: base } },
-          { familyCodeHigh: { [Op.in]: base } },
-        ],
-      } as any,
-      attributes: ['familyCodeLow', 'familyCodeHigh'],
-    });
-
-    const candidate = new Set<string>(base);
-    for (const l of links as any[]) {
-      const low = String((l as any).familyCodeLow);
-      const high = String((l as any).familyCodeHigh);
-      if (base.includes(low)) candidate.add(high);
-      if (base.includes(high)) candidate.add(low);
-    }
-
-    return Array.from(candidate);
+    return this.treeProjectionService.getReachableFamilyCodesForUser(userId);
   }
 
   private async assertUserCanAccessFamilyOrLinked(
     userId: number,
     familyCode: string,
   ): Promise<void> {
-    if (!userId || !familyCode) {
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    if (!userId || !normalizedFamilyCode) {
       throw new ForbiddenException('Not allowed to access this family content');
     }
     const accessible = await this.getAccessibleFamilyCodesForUser(userId);
-    if (!accessible.includes(String(familyCode))) {
+    if (!accessible.includes(normalizedFamilyCode)) {
       throw new ForbiddenException('Not allowed to access this family content');
     }
   }
@@ -181,27 +126,23 @@ export class EventService {
       return true;
     }
 
-    const [creatorAudienceFamilyCodes, creatorProfile, viewerProfile] = await Promise.all([
+    const [creatorAudienceFamilyCodes, creatorProfile, viewerFamilyCodes] = await Promise.all([
       this.getAccessibleFamilyCodesForUser(creatorUserId),
       this.userProfileModel.findOne({
         where: { userId: creatorUserId },
         attributes: ['contentVisibilitySettings'],
       }),
-      this.userProfileModel.findOne({
-        where: { userId: viewerUserId },
-        attributes: ['familyCode'],
-      }),
+      this.getAccessibleFamilyCodesForUser(viewerUserId),
     ]);
 
-    const viewerPrimaryFamilyCodes = [String((viewerProfile as any)?.familyCode || '').trim().toUpperCase()].filter(Boolean);
-    if (!viewerPrimaryFamilyCodes.length) {
+    if (!viewerFamilyCodes.length) {
       return false;
     }
 
     return canViewerAccessFamilyContentForType(
       (creatorProfile as any)?.contentVisibilitySettings,
       'events',
-      viewerPrimaryFamilyCodes,
+      viewerFamilyCodes,
       creatorAudienceFamilyCodes,
     );
   }
@@ -227,12 +168,8 @@ export class EventService {
       return events;
     }
 
-    const viewerProfile = await this.userProfileModel.findOne({
-      where: { userId: viewerUserId },
-      attributes: ['familyCode'],
-    });
-    const viewerPrimaryFamilyCodes = [String((viewerProfile as any)?.familyCode || '').trim().toUpperCase()].filter(Boolean);
-    if (!viewerPrimaryFamilyCodes.length) {
+    const viewerFamilyCodes = await this.getAccessibleFamilyCodesForUser(viewerUserId);
+    if (!viewerFamilyCodes.length) {
       return events.filter(
         (event) => Number(event?.createdBy) === Number(viewerUserId) || !(event?.familyCode && event?.familyCode !== ''),
       );
@@ -277,7 +214,7 @@ export class EventService {
       return canViewerAccessFamilyContentForType(
         settingsByUserId.get(Number(event?.createdBy)),
         'events',
-        viewerPrimaryFamilyCodes,
+        viewerFamilyCodes,
         creatorAudienceByUserId.get(Number(event?.createdBy)) || [],
       );
     });
@@ -320,17 +257,14 @@ export class EventService {
       ? `events/${actorId}/${year}/${month}`
       : 'events';
 
-    // Save images if provided
     if (imageFiles && imageFiles.length > 0) {
       try {
-        // Upload files to S3 and get URLs
         const uploadPromises = imageFiles.map(file => 
           uploadService.uploadFileKey(file, uploadPrefix)
         );
-        
+
         const imageUrls = await Promise.all(uploadPromises);
-        
-        // Save image references to database
+
         await Promise.all(
           imageUrls.map(imageUrl => 
             this.eventImageModel.create({ 
@@ -341,27 +275,11 @@ export class EventService {
         );
       } catch (error) {
         console.error('Error uploading event images:', error);
-        // Clean up event if image upload fails
         await event.destroy();
         throw new Error('Failed to upload event images');
       }
     }
 
-    // Create notifications for all family members after event creation
-    // try {
-    //   await this.notificationService.createEventNotificationForFamily(
-    //     dto.familyCode,
-    //     dto.eventTitle,
-    //     dto.eventDate,
-    //     dto.eventDescription,
-    //     dto.createdBy || dto.userId,
-    //   );
-    // } catch (error) {
-    //   console.error('Failed to create event notifications:', error);
-    //   // Don't throw error here - event creation should succeed even if notifications fail
-    // }
-
-    // Broadcast new event via WebSocket
     if (dto.familyCode && event.isVisibleToFamily) {
       this.eventGateway.broadcastNewEvent(dto.familyCode, {
         id: event.id,
@@ -1284,3 +1202,6 @@ export class EventService {
   }
 
 }
+
+
+

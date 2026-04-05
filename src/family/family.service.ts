@@ -4,6 +4,9 @@ import {
   BadRequestException,
   NotFoundException,
   ForbiddenException,
+  ConflictException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectModel, InjectConnection } from '@nestjs/sequelize';
 import { Sequelize, Op, QueryTypes } from 'sequelize';
@@ -30,6 +33,12 @@ import { Relationship } from '../relationships/entities/relationship.model';
 import { RelationshipEdgeService } from './relationship-edge.service';
 import { repairFamilyTreeIntegrity } from './tree-integrity';
 import { canViewScopedField } from '../user/privacy.util';
+import { ContentVisibilityService } from '../user/content-visibility.service';
+import { TreeProjectionService } from './tree-projection.service';
+import {
+  filterFamilyContentVisibilitySettings,
+  normalizeFamilyContentVisibilitySettings,
+} from '../user/content-visibility-settings.util';
 
 @Injectable()
 export class FamilyService {
@@ -345,74 +354,316 @@ export class FamilyService {
     return Array.isArray(rows) && rows.length > 0;
   }
 
+  private async hasRemainingCrossFamilyTreeBridge(params: {
+    familyA: string;
+    familyB: string;
+    transaction?: any;
+  }): Promise<boolean> {
+    const familyA = String(params?.familyA || '').trim().toUpperCase();
+    const familyB = String(params?.familyB || '').trim().toUpperCase();
+    const transaction = params?.transaction;
+
+    if (!familyA || !familyB || familyA === familyB) {
+      return false;
+    }
+
+    const rows = await this.sequelize.query(
+      `
+      SELECT 1
+      FROM public.ft_family_tree ft
+      INNER JOIN public.ft_user_profile up
+        ON up."userId" = ft."userId"
+      WHERE COALESCE(ft."isExternalLinked", false) = false
+        AND COALESCE(ft."isStructuralDummy", false) = false
+        AND (
+          (UPPER(COALESCE(ft."familyCode", '')) = :familyA AND UPPER(COALESCE(up."familyCode", '')) = :familyB)
+          OR
+          (UPPER(COALESCE(ft."familyCode", '')) = :familyB AND UPPER(COALESCE(up."familyCode", '')) = :familyA)
+        )
+      LIMIT 1
+    `,
+      {
+        replacements: { familyA, familyB },
+        type: QueryTypes.SELECT,
+        ...(transaction ? { transaction } : {}),
+      },
+    );
+
+    return Array.isArray(rows) && rows.length > 0;
+  }
+
+  private async pruneAssociatedFamilyCodesForPair(params: {
+    familyA: string;
+    familyB: string;
+    transaction?: any;
+  }) {
+    const familyA = String(params?.familyA || '').trim().toUpperCase();
+    const familyB = String(params?.familyB || '').trim().toUpperCase();
+    const transaction = params?.transaction;
+
+    if (!familyA || !familyB || familyA === familyB) {
+      return;
+    }
+
+    const memberships = await this.familyMemberModel.findAll({
+      where: {
+        familyCode: { [Op.in]: [familyA, familyB] },
+        approveStatus: 'approved',
+      } as any,
+      attributes: ['memberId', 'familyCode'],
+      ...(transaction ? { transaction } : {}),
+    });
+
+    const membershipMap = new Map<number, Set<string>>();
+    (memberships as any[]).forEach((membership: any) => {
+      const memberId = Number(membership?.memberId);
+      const membershipFamilyCode = String(membership?.familyCode || '').trim().toUpperCase();
+      if (!memberId || !membershipFamilyCode) {
+        return;
+      }
+      const current = membershipMap.get(memberId) || new Set<string>();
+      current.add(membershipFamilyCode);
+      membershipMap.set(memberId, current);
+    });
+
+    const memberIds = Array.from(membershipMap.keys());
+    const profileFilters: any[] = [
+      { familyCode: { [Op.in]: [familyA, familyB] } } as any,
+    ];
+    if (memberIds.length > 0) {
+      profileFilters.push({ userId: { [Op.in]: memberIds } } as any);
+    }
+
+    const profiles = await this.userProfileModel.findAll({
+      where: { [Op.or]: profileFilters } as any,
+      attributes: ['userId', 'familyCode', 'associatedFamilyCodes'],
+      ...(transaction ? { transaction } : {}),
+    });
+
+    const updateOptions = transaction ? { transaction } : {};
+
+    await Promise.all(
+      (profiles as any[]).map(async (profile: any) => {
+        const associated = Array.isArray(profile.associatedFamilyCodes)
+          ? profile.associatedFamilyCodes.filter(Boolean)
+          : [];
+        if (associated.length === 0) {
+          return;
+        }
+
+        const profileFamilyCode = String(profile?.familyCode || '').trim().toUpperCase();
+        const membershipCodes = membershipMap.get(Number(profile?.userId)) || new Set<string>();
+        const belongsToA = profileFamilyCode === familyA || membershipCodes.has(familyA);
+        const belongsToB = profileFamilyCode === familyB || membershipCodes.has(familyB);
+
+        const nextAssociated = associated.filter((code: any) => {
+          const normalized = String(code || '').trim().toUpperCase();
+          if (belongsToA && normalized === familyB) {
+            return false;
+          }
+          if (belongsToB && normalized === familyA) {
+            return false;
+          }
+          return true;
+        });
+
+        if (nextAssociated.length === associated.length) {
+          return;
+        }
+
+        await profile.update({ associatedFamilyCodes: nextAssociated } as any, updateOptions as any);
+      }),
+    );
+  }
+
+  private async pruneContentVisibilitySettingsForPair(params: {
+    familyA: string;
+    familyB: string;
+    transaction?: any;
+  }) {
+    const familyA = String(params?.familyA || '').trim().toUpperCase();
+    const familyB = String(params?.familyB || '').trim().toUpperCase();
+    const transaction = params?.transaction;
+
+    if (!familyA || !familyB || familyA === familyB) {
+      return;
+    }
+
+    const memberships = await this.familyMemberModel.findAll({
+      where: {
+        familyCode: { [Op.in]: [familyA, familyB] },
+        approveStatus: 'approved',
+      } as any,
+      attributes: ['memberId', 'familyCode'],
+      ...(transaction ? { transaction } : {}),
+    });
+
+    const membershipMap = new Map<number, Set<string>>();
+    (memberships as any[]).forEach((membership: any) => {
+      const memberId = Number(membership?.memberId);
+      const membershipFamilyCode = String(membership?.familyCode || '').trim().toUpperCase();
+      if (!memberId || !membershipFamilyCode) {
+        return;
+      }
+      const current = membershipMap.get(memberId) || new Set<string>();
+      current.add(membershipFamilyCode);
+      membershipMap.set(memberId, current);
+    });
+
+    const memberIds = Array.from(membershipMap.keys());
+    const profileFilters: any[] = [
+      { familyCode: { [Op.in]: [familyA, familyB] } } as any,
+    ];
+    if (memberIds.length > 0) {
+      profileFilters.push({ userId: { [Op.in]: memberIds } } as any);
+    }
+
+    const profiles = await this.userProfileModel.findAll({
+      where: { [Op.or]: profileFilters } as any,
+      attributes: ['userId', 'familyCode', 'contentVisibilitySettings'],
+      ...(transaction ? { transaction } : {}),
+    });
+
+    for (const profile of profiles as any[]) {
+      const profileFamilyCode = String(profile?.familyCode || '').trim().toUpperCase();
+      const membershipCodes = membershipMap.get(Number(profile?.userId)) || new Set<string>();
+      const belongsToA = profileFamilyCode === familyA || membershipCodes.has(familyA);
+      const belongsToB = profileFamilyCode === familyB || membershipCodes.has(familyB);
+      if (!belongsToA && !belongsToB) {
+        continue;
+      }
+
+      const disallowed = new Set<string>();
+      if (belongsToA) {
+        disallowed.add(familyB);
+      }
+      if (belongsToB) {
+        disallowed.add(familyA);
+      }
+
+      const currentSettings = normalizeFamilyContentVisibilitySettings(
+        (profile as any).contentVisibilitySettings,
+      );
+      const currentCodes = new Set<string>([
+        ...currentSettings.posts.familyCodes,
+        ...currentSettings.albums.familyCodes,
+        ...currentSettings.events.familyCodes,
+      ]);
+      const allowedFamilyCodes = Array.from(currentCodes).filter(
+        (familyCode) => !disallowed.has(String(familyCode || '').trim().toUpperCase()),
+      );
+      const nextSettings = filterFamilyContentVisibilitySettings(
+        currentSettings,
+        allowedFamilyCodes,
+      );
+
+      if (JSON.stringify(nextSettings) === JSON.stringify(currentSettings)) {
+        continue;
+      }
+
+      await profile.update(
+        { contentVisibilitySettings: nextSettings } as any,
+        transaction ? { transaction } : undefined,
+      );
+    }
+  }
+
+  private async revokeFamilyConnectionIfUnbridged(params: {
+    familyA: string;
+    familyB: string;
+    transaction?: any;
+  }): Promise<boolean> {
+    const familyA = String(params?.familyA || '').trim().toUpperCase();
+    const familyB = String(params?.familyB || '').trim().toUpperCase();
+    const transaction = params?.transaction;
+
+    if (!familyA || !familyB || familyA === familyB) {
+      return false;
+    }
+
+    const { low, high } = this.normalizeFamilyPair(familyA, familyB);
+
+    const [remainingTreeLink, remainingExternalCard, remainingCrossFamilyTreeBridge] = await Promise.all([
+      this.treeLinkModel.findOne({
+        where: {
+          familyCodeLow: low,
+          familyCodeHigh: high,
+          status: 'active',
+        } as any,
+        ...(transaction ? { transaction } : {}),
+      }),
+      this.familyTreeModel.findOne({
+        where: {
+          isExternalLinked: true,
+          [Op.or]: [
+            {
+              familyCode: familyA,
+              canonicalFamilyCode: familyB,
+            } as any,
+            {
+              familyCode: familyB,
+              canonicalFamilyCode: familyA,
+            } as any,
+          ],
+        } as any,
+        ...(transaction ? { transaction } : {}),
+      }),
+      this.hasRemainingCrossFamilyTreeBridge({ familyA, familyB, transaction }),
+    ]);
+
+    if (remainingTreeLink || remainingExternalCard || remainingCrossFamilyTreeBridge) {
+      return false;
+    }
+
+    await this.familyLinkModel.update(
+      { status: 'inactive' } as any,
+      {
+        where: {
+          familyCodeLow: low,
+          familyCodeHigh: high,
+          status: 'active',
+        } as any,
+        ...(transaction ? { transaction } : {}),
+      },
+    );
+
+    await this.pruneAssociatedFamilyCodesForPair({ familyA, familyB, transaction });
+    await this.pruneContentVisibilitySettingsForPair({ familyA, familyB, transaction });
+    return true;
+  }
+
   async getLinkedFamiliesForCurrentUser(userId: number) {
     if (!userId) {
       throw new ForbiddenException('Unauthorized');
     }
 
-    const userProfile = await this.userProfileModel.findOne({ where: { userId } });
-    const viewerMembership = await this.familyMemberModel.findOne({
-      where: {
-        memberId: userId,
-        approveStatus: 'approved',
-      },
-      order: [['id', 'DESC']],
-    });
-
-    const viewerFamilyCode = userProfile?.familyCode || viewerMembership?.familyCode;
-    if (!viewerFamilyCode) {
+    const reachableFamilyCodes = await this.treeProjectionService.getReachableFamilyCodesForUser(userId);
+    if (!reachableFamilyCodes.length) {
       return [];
     }
 
-    const links = await this.sequelize.query(
-      `
-      SELECT "familyCodeLow", "familyCodeHigh"
-      FROM public.ft_family_link
-      WHERE ("familyCodeLow" = :code OR "familyCodeHigh" = :code)
-        AND status = 'active'
-        AND source = 'tree'
-      ORDER BY id DESC
-    `,
-      {
-        replacements: { code: String(viewerFamilyCode).trim().toUpperCase() },
-        type: QueryTypes.SELECT,
-      },
-    );
-
-    const linkedCodes = Array.from(
-      new Set(
-        (links as any[])
-          .map((r: any) => {
-            const low = String(r?.familyCodeLow || '').trim().toUpperCase();
-            const high = String(r?.familyCodeHigh || '').trim().toUpperCase();
-            return low === String(viewerFamilyCode).trim().toUpperCase() ? high : low;
-          })
-          .filter((c) => c && c !== String(viewerFamilyCode).trim().toUpperCase()),
-      ),
-    );
-
-    if (linkedCodes.length === 0) {
-      return [];
+    const projectionFamilies = new Map<string, any>();
+    for (const familyCode of reachableFamilyCodes) {
+      const aggregate = await this.treeProjectionService.getFamilyAggregate(familyCode, {
+        requestingUserId: userId,
+      });
+      (aggregate?.projection?.linkedFamilies || []).forEach((family) => {
+        const code = String(family?.familyCode || '').trim().toUpperCase();
+        if (!code || code === familyCode || projectionFamilies.has(code)) {
+          return;
+        }
+        projectionFamilies.set(code, {
+          familyCode: code,
+          familyName: family.familyName || code,
+          memberCount: Number(family.memberCount || 0),
+          nodeType: 'linked',
+        });
+      });
     }
 
-    const families = await this.familyModel.findAll({
-      where: { familyCode: { [Op.in]: linkedCodes } } as any,
-      attributes: ['familyCode', 'familyName', 'familyPhoto'],
-    });
-
-    const byCode = new Map(
-      (families as any[]).map((f: any) => [String(f?.familyCode).trim().toUpperCase(), f]),
-    );
-
-    return linkedCodes.map((code) => {
-      const f = byCode.get(String(code).trim().toUpperCase());
-      return {
-        familyCode: code,
-        familyName: f ? f.familyName : null,
-        familyPhoto: f ? f.familyPhoto : null,
-      };
-    });
+    return Array.from(projectionFamilies.values());
   }
+
   constructor(
     @InjectModel(User)
     private readonly userModel: typeof User,
@@ -431,149 +682,138 @@ export class FamilyService {
     @InjectModel(TreeLink)
     private readonly treeLinkModel: typeof TreeLink,
     private readonly mailService: MailService,
+    @Inject(forwardRef(() => NotificationService))
     private readonly notificationService: NotificationService,
     private readonly relationshipEdgeService: RelationshipEdgeService,
     private readonly relationshipPathService: RelationshipPathService,
     private readonly uploadService: UploadService,
-  ) { }
+    private readonly contentVisibilityService: ContentVisibilityService,
+    private readonly treeProjectionService: TreeProjectionService,
+  ) {}
 
   async unlinkTreeLinkExternalCard(params: {
     actingUserId: number;
     familyCode: string;
     nodeUid: string;
   }) {
-    const { familyCode, nodeUid } = await this.requireAdminActorForFamilyAction(params);
+    const { actingUserId, familyCode, nodeUid } =
+      await this.requireAdminActorForFamilyAction(params);
 
-    const externalCard = await this.familyTreeModel.findOne({
-      where: {
-        familyCode,
-        nodeUid,
-        isExternalLinked: true,
-      } as any,
-    });
-    if (!externalCard) {
-      throw new NotFoundException('Linked card not found');
-    }
-
-    const canonicalFamilyCode = String((externalCard as any).canonicalFamilyCode || '')
-      .trim()
-      .toUpperCase();
-    const canonicalNodeUid = String((externalCard as any).canonicalNodeUid || '').trim();
-
-    const cardsToDelete = await this.familyTreeModel.findAll({
-      where: {
-        familyCode,
-        isExternalLinked: true,
-        ...(canonicalFamilyCode && canonicalNodeUid
-          ? {
-            canonicalFamilyCode,
-            canonicalNodeUid,
-          }
-          : { nodeUid }),
-      } as any,
-    });
-
-    const deletedPersonIds = cardsToDelete
-      .map((c: any) => Number(c.personId))
-      .filter((id) => Number.isFinite(id));
-
-    // Delete the external-linked cards
-    await this.familyTreeModel.destroy({
-      where: {
-        familyCode,
-        isExternalLinked: true,
-        ...(canonicalFamilyCode && canonicalNodeUid
-          ? {
-            canonicalFamilyCode,
-            canonicalNodeUid,
-          }
-          : { nodeUid }),
-      } as any,
-    });
-
-    // Clean up orphaned relationship references inside this family
-    await this.cleanupOrphanedRelationshipReferences(familyCode);
-
-    // Deactivate tree links if we can map to canonical
-    let deactivatedTreeLinks = 0;
-    let deactivatedFamilyLink = false;
-
-    if (canonicalFamilyCode && canonicalNodeUid) {
-      const { low, high } = this.normalizeFamilyPair(familyCode, canonicalFamilyCode);
-
-      const where: any = {
-        familyCodeLow: low,
-        familyCodeHigh: high,
-        status: 'active',
-      };
-      if (canonicalFamilyCode === low) {
-        where.nodeUidLow = canonicalNodeUid;
-      } else {
-        where.nodeUidHigh = canonicalNodeUid;
-      }
-
-      const [updatedCount] = await this.treeLinkModel.update(
-        { status: 'inactive' } as any,
-        { where },
-      );
-      deactivatedTreeLinks = Number(updatedCount || 0);
-
-      const remainingActive = await this.treeLinkModel.findOne({
-        where: {
-          familyCodeLow: low,
-          familyCodeHigh: high,
-          status: 'active',
-        } as any,
+    const transaction = await this.sequelize.transaction();
+    try {
+      const familyRecord = await this.familyModel.findOne({
+        where: { familyCode } as any,
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
       });
 
-      if (!remainingActive) {
-        // Bug 66: If both sides removed their external cards (no remaining external-linked cards between these families),
-        // then family-to-family visibility should be revoked (events/posts/etc).
-        const remainingExternalCard = await this.familyTreeModel.findOne({
-          where: {
-            isExternalLinked: true,
-            [Op.or]: [
-              {
-                familyCode,
-                canonicalFamilyCode,
-              } as any,
-              {
-                familyCode: canonicalFamilyCode,
-                canonicalFamilyCode: familyCode,
-              } as any,
-            ],
-          } as any,
+      const externalCard = await this.familyTreeModel.findOne({
+        where: {
+          familyCode,
+          nodeUid,
+          isExternalLinked: true,
+          isStructuralDummy: false,
+        } as any,
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+      if (!externalCard) {
+        throw new NotFoundException('Linked card not found');
+      }
+
+      const canonicalFamilyCode = String(
+        (externalCard as any).canonicalFamilyCode || '',
+      )
+        .trim()
+        .toUpperCase();
+      const canonicalNodeUid = String(
+        (externalCard as any).canonicalNodeUid || '',
+      ).trim();
+
+      const cardsToConvert = await this.familyTreeModel.findAll({
+        where: {
+          familyCode,
+          isExternalLinked: true,
+          isStructuralDummy: false,
+          ...(canonicalFamilyCode && canonicalNodeUid
+            ? {
+              canonicalFamilyCode,
+              canonicalNodeUid,
+            }
+            : { nodeUid }),
+        } as any,
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      const convertedPersonIds = cardsToConvert
+        .map((c: any) => Number(c.personId))
+        .filter((id) => Number.isFinite(id));
+      const revokedFamilies = new Set<string>();
+
+      for (const treeEntry of cardsToConvert as any[]) {
+        const converted = await this.convertTreeEntryToStructuralDummy({
+          actingUserId,
+          familyCode,
+          treeEntry,
+          transaction,
         });
 
-        if (!remainingExternalCard) {
-          const [famUpdated] = await this.familyLinkModel.update(
-            { status: 'inactive' } as any,
-            {
-              where: {
-                familyCodeLow: low,
-                familyCodeHigh: high,
-                status: 'active',
-                source: { [Op.in]: ['tree', 'spouse'] } as any,
-              } as any,
-            },
+        (converted.revokedFamilies || []).forEach((code) => {
+          revokedFamilies.add(String(code || '').trim().toUpperCase());
+        });
+
+        if (converted.originalUserId) {
+          await this.contentVisibilityService.hideContentForRemovedFamily(
+            Number(converted.originalUserId),
+            familyCode,
+            'member_removed',
+            transaction,
           );
-          deactivatedFamilyLink = Number(famUpdated || 0) > 0;
         }
       }
+
+      await repairFamilyTreeIntegrity({
+        familyCode,
+        transaction,
+        lock: true,
+        fixExternalGenerations: true,
+      });
+
+      if (familyRecord) {
+        await familyRecord.increment('treeVersion', { by: 1, transaction });
+      }
+
+      await transaction.commit();
+
+      const aggregate = await this.treeProjectionService.getFamilyAggregate(familyCode, {
+        requestingUserId: actingUserId,
+      });
+
+      this.notificationService.emitFamilyEvent(familyCode, {
+        type: 'TREE_CHANGED',
+        treeVersion: aggregate.treeVersion,
+        unlinkedNodeUid: nodeUid,
+        unlinkedBy: actingUserId,
+        timestamp: new Date().toISOString(),
+      });
+
+      return {
+        success: true,
+        message: 'Linked card converted to structural dummy successfully',
+        convertedExternalCards: cardsToConvert.length,
+        removedExternalCards: cardsToConvert.length,
+        removedPersonIds: convertedPersonIds,
+        treeVersion: aggregate.treeVersion,
+        projection: aggregate.projection,
+        revokedFamilies: Array.from(revokedFamilies),
+        prunedPrivacyFamilies: Array.from(revokedFamilies),
+      };
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
     }
-
-    await this.repairFamilyTreeAfterMutation({ familyCode });
-
-    return {
-      success: true,
-      message: 'Unlinked successfully',
-      removedExternalCards: cardsToDelete.length,
-      removedPersonIds: deletedPersonIds,
-      deactivatedTreeLinks,
-      deactivatedFamilyLink,
-    };
   }
-
   async unlinkLinkedFamily(params: {
     actingUserId: number;
     otherFamilyCode: string;
@@ -652,66 +892,153 @@ export class FamilyService {
       throw new NotFoundException('No active linked family connection found');
     }
 
-    const [familyLinkUpdated] = await this.familyLinkModel.update(
-      { status: 'inactive' } as any,
-      {
+    const transaction = await this.sequelize.transaction();
+    try {
+      const familyRecords = await this.familyModel.findAll({
         where: {
-          familyCodeLow: low,
-          familyCodeHigh: high,
-          source: 'tree',
-          status: 'active',
+          familyCode: { [Op.in]: [actorFamilyCode, otherFamilyCode] },
         } as any,
-      },
-    );
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+      const familyRecordByCode = new Map(
+        familyRecords.map((record: any) => [
+          String(record.familyCode || '').trim().toUpperCase(),
+          record,
+        ]),
+      );
 
-    const [treeLinksUpdated] = await this.treeLinkModel.update(
-      { status: 'inactive' } as any,
-      {
-        where: {
-          familyCodeLow: low,
-          familyCodeHigh: high,
-          status: 'active',
-        } as any,
-      },
-    );
+      const [familyLinkUpdated] = await this.familyLinkModel.update(
+        { status: 'inactive' } as any,
+        {
+          where: {
+            familyCodeLow: low,
+            familyCodeHigh: high,
+            source: 'tree',
+            status: 'active',
+          } as any,
+          transaction,
+        },
+      );
 
-    // Remove external linked cards in the actor's family that came from the other family
-    const cardsToDelete = await this.familyTreeModel.findAll({
-      where: {
-        familyCode: actorFamilyCode,
-        isExternalLinked: true,
-        canonicalFamilyCode: otherFamilyCode,
-      } as any,
-    });
+      const [treeLinksUpdated] = await this.treeLinkModel.update(
+        { status: 'inactive' } as any,
+        {
+          where: {
+            familyCodeLow: low,
+            familyCodeHigh: high,
+            status: 'active',
+          } as any,
+          transaction,
+        },
+      );
 
-    const deletedPersonIds = cardsToDelete
-      .map((c: any) => Number(c.personId))
-      .filter((id) => Number.isFinite(id));
+      const linkCleanupPairs = [
+        { familyCode: actorFamilyCode, canonicalFamilyCode: otherFamilyCode },
+        { familyCode: otherFamilyCode, canonicalFamilyCode: actorFamilyCode },
+      ];
 
-    const removedExternalCards = await this.familyTreeModel.destroy({
-      where: {
-        familyCode: actorFamilyCode,
-        isExternalLinked: true,
-        canonicalFamilyCode: otherFamilyCode,
-      } as any,
-    });
+      const convertedCounts = new Map<string, number>();
+      const convertedPersonIds: number[] = [];
+      const revokedFamilies = new Set<string>();
 
-    if (removedExternalCards > 0) {
-      await this.cleanupOrphanedRelationshipReferences(actorFamilyCode);
+      for (const pair of linkCleanupPairs) {
+        const cardsToConvert = await this.familyTreeModel.findAll({
+          where: {
+            familyCode: pair.familyCode,
+            isExternalLinked: true,
+            isStructuralDummy: false,
+            canonicalFamilyCode: pair.canonicalFamilyCode,
+          } as any,
+          transaction,
+          lock: (transaction as any).LOCK.UPDATE,
+        });
+
+        convertedCounts.set(pair.familyCode, cardsToConvert.length);
+
+        for (const treeEntry of cardsToConvert as any[]) {
+          convertedPersonIds.push(Number((treeEntry as any).personId));
+          const converted = await this.convertTreeEntryToStructuralDummy({
+            actingUserId,
+            familyCode: pair.familyCode,
+            treeEntry,
+            transaction,
+          });
+
+          (converted.revokedFamilies || []).forEach((code) => {
+            revokedFamilies.add(String(code || '').trim().toUpperCase());
+          });
+
+          if (converted.originalUserId) {
+            await this.contentVisibilityService.hideContentForRemovedFamily(
+              Number(converted.originalUserId),
+              pair.familyCode,
+              'member_removed',
+              transaction,
+            );
+          }
+        }
+      }
+
+      const familiesToRepair = Array.from(
+        new Set([actorFamilyCode, otherFamilyCode].filter(Boolean)),
+      );
+      for (const familyCode of familiesToRepair) {
+        await repairFamilyTreeIntegrity({
+          familyCode,
+          transaction,
+          lock: true,
+          fixExternalGenerations: true,
+        });
+
+        const familyRecord = familyRecordByCode.get(familyCode);
+        if (familyRecord) {
+          await familyRecord.increment('treeVersion', { by: 1, transaction });
+        }
+      }
+
+      await transaction.commit();
+
+      const aggregate = await this.treeProjectionService.getFamilyAggregate(actorFamilyCode, {
+        requestingUserId: actingUserId,
+      });
+
+      familiesToRepair.forEach((familyCode) => {
+        this.notificationService.emitFamilyEvent(familyCode, {
+          type: 'TREE_CHANGED',
+          treeVersion:
+            familyCode === actorFamilyCode
+              ? aggregate.treeVersion
+              : familyRecordByCode.get(familyCode)?.treeVersion,
+          unlinkedFamilyCode: otherFamilyCode,
+          unlinkedBy: actingUserId,
+          timestamp: new Date().toISOString(),
+        });
+      });
+
+      const totalConverted = Array.from(convertedCounts.values()).reduce(
+        (sum, count) => sum + Number(count || 0),
+        0,
+      );
+
+      return {
+        success: true,
+        message: 'Linked family connection removed',
+        familyLinkUpdated: Number(familyLinkUpdated || 0),
+        treeLinksUpdated: Number(treeLinksUpdated || 0),
+        convertedExternalCards: totalConverted,
+        removedExternalCards: totalConverted,
+        removedPersonIds: convertedPersonIds.filter((id) => Number.isFinite(id)),
+        revokedFamilyVisibility: revokedFamilies.size > 0,
+        revokedFamilies: Array.from(revokedFamilies),
+        treeVersion: aggregate.treeVersion,
+        projection: aggregate.projection,
+      };
+    } catch (error) {
+      await transaction.rollback();
+      throw error;
     }
-
-    await this.repairFamilyTreeAfterMutation({ familyCode: actorFamilyCode });
-
-    return {
-      success: true,
-      message: 'Linked family connection removed',
-      familyLinkUpdated: Number(familyLinkUpdated || 0),
-      treeLinksUpdated: Number(treeLinksUpdated || 0),
-      removedExternalCards: Number(removedExternalCards || 0),
-      removedPersonIds: deletedPersonIds,
-    };
   }
-
   async repairFamilyTree(params: {
     actingUserId: number;
     familyCode: string;
@@ -809,40 +1136,51 @@ export class FamilyService {
   private async assertUserCanViewFamilyTree(
     userId: number,
     familyCode: string,
-    allowAdminPreview: boolean = false,
-  ): Promise<void> {
-    if (!userId || !familyCode) {
-      throw new ForbiddenException(
-        'Access denied: invalid user or family context',
-      );
+    allowAdminPreview = false,
+  ) {
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+
+    if (!normalizedFamilyCode) {
+      throw new BadRequestException('familyCode is required');
     }
 
-    const userProfile = await this.userProfileModel.findOne({ where: { userId } });
+    const [user, membership, reachableFamilyCodes] = await Promise.all([
+      this.userModel.findOne({
+        where: { id: userId },
+        include: [
+          {
+            model: UserProfile,
+            as: 'userProfile',
+            attributes: ['familyCode'],
+          },
+        ],
+      }),
+      this.familyMemberModel.findOne({
+        where: {
+          memberId: userId,
+          familyCode: normalizedFamilyCode,
+          approveStatus: 'approved',
+        } as any,
+      }),
+      this.treeProjectionService.getReachableFamilyCodesForUser(userId),
+    ]);
 
-    const membership = await this.familyMemberModel.findOne({
-      where: {
-        memberId: userId,
-        familyCode,
-      },
-    });
+    if (!user) {
+      throw new ForbiddenException('Unauthorized');
+    }
 
-    // BLOCK OVERRIDE: Legacy family-level block gate removed.
+    const userProfile = (user as any)?.userProfile;
+    await this.assertUserNotBlockedInFamily(userId, normalizedFamilyCode);
 
-    if (this.isCrossFamilyTreeViewEnabled()) {
+    if (membership) {
       return;
     }
 
-    // If user is an approved member of this family, allow
-    if (membership && (membership as any).approveStatus === 'approved') {
-      return;
-    }
-
-    // Allow if the user already has a visible card in this family's tree (cross-family spouse cards).
-    // This is a strong signal that the user should be able to view this family even without membership.
     const viewerTreeEntry = await this.familyTreeModel.findOne({
       where: {
-        familyCode,
+        familyCode: normalizedFamilyCode,
         userId,
+        isStructuralDummy: false,
       } as any,
     });
 
@@ -850,62 +1188,13 @@ export class FamilyService {
       return;
     }
 
-    if (await this.hasTreeLinkFamilyVisibility(userId, familyCode, userProfile)) {
+    if (reachableFamilyCodes.includes(normalizedFamilyCode)) {
       return;
     }
 
-    // Allow associated-family access (e.g., spouse-connected families)
-    // Users may have access via associatedFamilyCodes without being a direct member.
-    const associated = Array.isArray((userProfile as any)?.associatedFamilyCodes)
-      ? ((userProfile as any)?.associatedFamilyCodes as any[])
-      : [];
-
-    const hasAssociatedFamilyAccess = this.hasAssociatedFamilyAccess(
-      associated,
-      familyCode,
-    );
-    if (hasAssociatedFamilyAccess) {
-      return;
-    }
-
-    // Family-level visibility (members): if the viewer belongs to a family,
-    // allow viewing other families that are connected to ANY approved member in their family.
-    // This is required so regular members (not only admins) can view spouse/associated family trees.
-    if (await this.hasFamilyLevelVisibilityViaMembers(userId, familyCode, userProfile)) {
-      return;
-    }
-
-    // Acting admin visibility: if the viewer is an admin of their own family,
-    // allow viewing other families that are connected to ANY approved member in their family.
-    // This is required when an admin sends a spouse/association request on behalf of a non-app member
-    // (the admin may not be the direct relationship participant).
-    if (await this.hasActingAdminVisibility(userId, familyCode, userProfile)) {
-      return;
-    }
-
-    // Allow spouse-linked access even if associatedFamilyCodes wasn't populated (common for non-app users).
-    // If the viewer has a spouse relationship edge with any user that belongs to this family,
-    // allow viewing this family's tree.
-    if (await this.hasSpouseLinkedAccess(userId, familyCode)) {
-      return;
-    }
-
-    // No approved membership
     if (!allowAdminPreview) {
-      // eslint-disable-next-line no-console
-      console.log('🔒 Tree access denied', {
-        userId,
-        familyCode,
-        hasApprovedMembership: Boolean(
-          membership && (membership as any).approveStatus === 'approved',
-        ),
-        hasViewerTreeEntry: Boolean(viewerTreeEntry),
-        associatedCount: associated.length,
-        associatedCodes: associated,
-        hasAssociatedFamilyAccess,
-      });
       throw new ForbiddenException(
-        'Access denied: you are not a member of this family',
+        'Access denied: you are not a visible member of this family tree',
       );
     }
 
@@ -1603,27 +1892,9 @@ export class FamilyService {
     const { familyCode, members } = params;
     const personIdsInPayload = members.map((m) => m.id);
     console.log('📋 PersonIds in payload:', personIdsInPayload);
-
-    const isFullTreeReset = Array.isArray(members) && members.length === 1;
-    const deletedEntries = await this.familyTreeModel.destroy({
-      where: {
-        familyCode,
-        personId: { [Op.notIn]: personIdsInPayload },
-        ...(isFullTreeReset
-          ? {}
-          : {
-            isExternalLinked: { [Op.ne]: true },
-          }),
-      },
-    });
     console.log(
-      `🗑️ Deleted ${deletedEntries} family_tree entries not in payload`,
+      `ℹ️ Skipping destructive tree pruning during save for ${familyCode}. Nodes omitted from the payload remain in the tree until an explicit delete converts them to structural dummies.`,
     );
-
-    if (deletedEntries > 0) {
-      await this.cleanupOrphanedRelationshipReferences(familyCode);
-      console.log(`🧹 Cleaned up orphaned relationships in remaining entries`);
-    }
   }
 
   private getMemberIdsInTree(members: FamilyTreeMemberDto[]): number[] {
@@ -1691,93 +1962,8 @@ export class FamilyService {
     memberIdsInTree: number[];
   }) {
     const { familyCode, memberIdsInTree } = params;
-
-    if (memberIdsInTree.length > 0) {
-      const membershipsToDelete = await this.familyMemberModel.findAll({
-        where: {
-          familyCode,
-          memberId: { [Op.notIn]: memberIdsInTree },
-        },
-        include: [
-          {
-            model: this.userModel,
-            as: 'user',
-            required: false,
-          },
-        ],
-      });
-
-      const memberIdsToDelete = membershipsToDelete
-        .filter((m: any) => !m.user || (m.user.role !== 2 && m.user.role !== 3))
-        .map((m: any) => m.memberId);
-
-      const deletedMembers = memberIdsToDelete.length
-        ? await this.familyMemberModel.destroy({
-          where: {
-            familyCode,
-            memberId: { [Op.in]: memberIdsToDelete },
-          },
-        })
-        : 0;
-
-      if (memberIdsToDelete.length > 0) {
-        await this.cleanupRemovedMemberProfilesForTreeSave({
-          familyCode,
-          removedMemberIds: memberIdsToDelete,
-        });
-      }
-
-      console.log(
-        `✅ Removed ${deletedMembers} non-admin family members not in new tree`,
-      );
-      return;
-    }
-
-    const familyCreator = await this.familyModel.findOne({
-      where: { familyCode },
-      attributes: ['createdBy'],
-    });
-
-    if (!familyCreator) {
-      return;
-    }
-
-    const membershipsToDelete = await this.familyMemberModel.findAll({
-      where: {
-        familyCode,
-        memberId: { [Op.ne]: familyCreator.createdBy },
-      },
-      include: [
-        {
-          model: this.userModel,
-          as: 'user',
-          required: false,
-        },
-      ],
-    });
-
-    const memberIdsToDelete = membershipsToDelete
-      .filter((m: any) => !m.user || (m.user.role !== 2 && m.user.role !== 3))
-      .map((m: any) => m.memberId);
-
-    const deletedMembers = memberIdsToDelete.length
-      ? await this.familyMemberModel.destroy({
-        where: {
-          familyCode,
-          memberId: { [Op.in]: memberIdsToDelete },
-        },
-      })
-      : 0;
-
-    if (memberIdsToDelete.length > 0) {
-      await this.cleanupRemovedMemberProfilesForTreeSave({
-        familyCode,
-        removedMemberIds: memberIdsToDelete,
-      });
-    }
-
     console.log(
-      `✅ Removed ${deletedMembers} non-admin members from family_member table (keeping creator and admins)`,
+      `ℹ️ Skipping family_member/profile pruning during tree save for ${familyCode}. Active visibility is now derived from non-dummy tree nodes only. Payload member count: ${memberIdsInTree.length}.`,
     );
   }
 
@@ -1966,14 +2152,48 @@ export class FamilyService {
           ? bulkContext.existingEntriesByNodeUid.get(String(member.nodeUid))
           : null) || bulkContext.existingEntriesByPersonId.get(member.id);
 
+      const incomingIsStructuralDummy =
+        Boolean((member as any).isStructuralDummy) ||
+        String((member as any).nodeType || '').trim() === 'structural_dummy';
+
+      if (Boolean(existingEntry?.isStructuralDummy) && !incomingIsStructuralDummy) {
+        throw new ConflictException(
+          `Tree has changed for person ${member.id}. Please refresh before saving.`,
+        );
+      }
+
+      const isStructuralDummy =
+        Boolean(existingEntry?.isStructuralDummy) || incomingIsStructuralDummy;
       const isExternalLinked =
-        Boolean(member.isExternalLinked) || Boolean(existingEntry?.isExternalLinked);
+        !isStructuralDummy &&
+        (Boolean(member.isExternalLinked) || Boolean(existingEntry?.isExternalLinked));
 
       if (Boolean(existingEntry?.isExternalLinked) && !member.isExternalLinked) {
         member.isExternalLinked = true;
       }
 
-      if (userId && member.memberId && !isExternalLinked) {
+      if (Boolean(existingEntry?.isStructuralDummy)) {
+        userId = Number(existingEntry?.userId || 0) || userId;
+      }
+
+      const existingUserProfile = userId
+        ? bulkContext.existingProfilesMap.get(userId)
+        : null;
+      const resolvedPrimaryFamilyCode = String(
+        existingUserProfile?.familyCode || '',
+      )
+        .trim()
+        .toUpperCase();
+      const resolvedNodeType = isStructuralDummy
+        ? 'structural_dummy'
+        : isExternalLinked
+          ? 'linked'
+          : resolvedPrimaryFamilyCode &&
+              resolvedPrimaryFamilyCode !== String(familyCode || '').trim().toUpperCase()
+            ? 'associated'
+            : 'birth';
+
+      if (userId && member.memberId && !isExternalLinked && !isStructuralDummy) {
         const existingUser = bulkContext.existingUsersMap.get(userId);
         if (existingUser) {
           const profileImage = imageMap.get(memberIndex);
@@ -2036,7 +2256,7 @@ export class FamilyService {
         }
       }
 
-      if (userId && bulkContext.newUserIndexMap.has(memberIndex) && !isExternalLinked) {
+      if (userId && bulkContext.newUserIndexMap.has(memberIndex) && !isExternalLinked && !isStructuralDummy) {
         const profileImage = imageMap.get(memberIndex);
         const { firstName, lastName } = this.splitName(member.name);
         const parsedAge = this.parseAgeNullable(member.age);
@@ -2062,6 +2282,8 @@ export class FamilyService {
         userId,
         personId: member.id,
         nodeUid: member.nodeUid || existingEntry?.nodeUid,
+        isStructuralDummy: isStructuralDummy,
+        nodeType: resolvedNodeType,
         isExternalLinked: isExternalLinked,
         canonicalFamilyCode: isExternalLinked
           ? member.canonicalFamilyCode || existingEntry?.canonicalFamilyCode || null
@@ -2200,6 +2422,8 @@ export class FamilyService {
             {
               userId: entry.userId,
               nodeUid: entry.nodeUid,
+              isStructuralDummy: entry.isStructuralDummy,
+              nodeType: entry.nodeType,
               isExternalLinked: entry.isExternalLinked,
               canonicalFamilyCode: entry.canonicalFamilyCode,
               canonicalNodeUid: entry.canonicalNodeUid,
@@ -2325,633 +2549,38 @@ export class FamilyService {
     userId?: number,
     allowAdminPreview: boolean = false,
   ) {
-    // If user context is provided, ensure they are allowed to view this family's tree
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
     if (userId) {
       await this.assertUserCanViewFamilyTree(
         userId,
-        familyCode,
+        normalizedFamilyCode,
         allowAdminPreview,
       );
     }
 
-    // First, let's clean up any invalid data
     await this.cleanupInvalidUserIdData();
 
-    const familyTree = await this.familyTreeModel.findAll({
-      where: { familyCode },
-      include: [
-        {
-          model: this.userModel,
-          as: 'user',
-          required: false, // Make it a LEFT JOIN instead of INNER JOIN
-          attributes: ['id', 'email', 'mobile', 'countryCode', 'role', 'status', 'isAppUser', 'medusaCustomerId'],
-          include: [
-            {
-              model: this.userProfileModel,
-              as: 'userProfile',
-            },
-          ],
-        },
-      ],
+    const aggregate = await this.treeProjectionService.getFamilyAggregate(normalizedFamilyCode, {
+      requestingUserId: userId,
+      includeAdminQueue: false,
     });
 
-    // If family tree doesn't exist yet, do NOT auto-create cards from approved family members.
-    // Admin will place members in the tree and save the structure.
-    if (!familyTree.length) {
+    if (!aggregate.people.length) {
       return {
         message: 'Family tree not created yet',
+        treeVersion: aggregate.treeVersion,
         people: [],
+        nodes: [],
+        projection: aggregate.projection,
       };
     }
-
-    // Transform family tree data to the required format
-    // FIXED: Remove duplicate entries from database result
-    const uniqueFamilyTree = familyTree.reduce((unique, entry) => {
-      const existingIndex = unique.findIndex(
-        (u) => u.personId === entry.personId && u.userId === entry.userId,
-      );
-      if (existingIndex === -1) {
-        unique.push(entry);
-      } else {
-        // Merge relationship data from duplicates
-        const existing = unique[existingIndex];
-        existing.parents = [
-          ...new Set([...(existing.parents || []), ...(entry.parents || [])]),
-        ];
-        existing.children = [
-          ...new Set([...(existing.children || []), ...(entry.children || [])]),
-        ];
-        existing.spouses = [
-          ...new Set([...(existing.spouses || []), ...(entry.spouses || [])]),
-        ];
-        existing.siblings = [
-          ...new Set([...(existing.siblings || []), ...(entry.siblings || [])]),
-        ];
-      }
-      return unique;
-    }, []);
-
-    // Derive a stable "primary" (birth/home) family code.
-    // For app users this is stored on userProfile.familyCode.
-    // For non-app users (userProfile.familyCode is null), we infer it from the earliest
-    // FamilyTree card ever created for that userId across all families. This works because
-    // association creates new cards later in other families.
-    const userIdsNeedingPrimaryFamily = Array.from(
-      new Set(
-        uniqueFamilyTree
-          .filter((e) => {
-            const profileFamilyCode = e?.user?.userProfile?.familyCode;
-            return Boolean(e.userId) && !profileFamilyCode;
-          })
-          .map((e) => e.userId),
-      ),
-    );
-
-    const inferredPrimaryFamilyCodeByUserId = new Map<number, string>();
-
-    if (userIdsNeedingPrimaryFamily.length > 0) {
-      const normalizedUserIds = userIdsNeedingPrimaryFamily
-        .map(Number)
-        .filter((id) => Number.isFinite(id));
-
-      if (normalizedUserIds.length > 0) {
-        const memberships = await this.sequelize.query<
-          { userId: number; familyCode: string }[]
-        >(
-          `
-          SELECT
-            "memberId" as "userId",
-            "familyCode" as "familyCode"
-          FROM ft_family_members
-          WHERE "memberId" IN (:userIds)
-            AND "approveStatus" IN ('approved','associated')
-          ORDER BY id ASC
-        `,
-          {
-            replacements: { userIds: normalizedUserIds },
-            type: QueryTypes.SELECT,
-          },
-        );
-
-        memberships.forEach((row: any) => {
-          const uid = Number(row?.userId);
-          const fc = row?.familyCode ? String(row.familyCode) : '';
-          if (!Number.isFinite(uid) || !fc) return;
-          if (!inferredPrimaryFamilyCodeByUserId.has(uid)) {
-            inferredPrimaryFamilyCodeByUserId.set(uid, fc);
-          }
-        });
-
-        const remainingUserIds = normalizedUserIds.filter(
-          (uid) => !inferredPrimaryFamilyCodeByUserId.has(uid),
-        );
-
-        if (remainingUserIds.length > 0) {
-          const earliestCards = await this.familyTreeModel.findAll({
-            where: {
-              userId: { [Op.in]: remainingUserIds },
-            },
-            order: [['id', 'ASC']],
-          });
-
-          earliestCards.forEach((card) => {
-            const uid = Number((card as any)?.userId);
-            const fc = (card as any)?.familyCode ? String((card as any).familyCode) : '';
-            if (!Number.isFinite(uid) || !fc) return;
-            if (!inferredPrimaryFamilyCodeByUserId.has(uid)) {
-              inferredPrimaryFamilyCodeByUserId.set(uid, fc);
-            }
-          });
-        }
-      }
-    }
-
-    const people = await Promise.all(
-      uniqueFamilyTree.map(async (entry) => {
-        // If userId is undefined/null, skip this person or handle gracefully
-        if (!entry.userId) {
-          return {
-            id: entry.personId,
-            nodeUid: entry.nodeUid,
-            isExternalLinked: Boolean(entry.isExternalLinked),
-            canonicalFamilyCode: entry.canonicalFamilyCode || null,
-            canonicalNodeUid: entry.canonicalNodeUid || null,
-            memberId: null,
-            name: 'Unknown',
-            gender: 'unknown',
-            age: null,
-            contactNumber: null,
-            mobile: null,
-            countryCode: null,
-            generation: entry.generation,
-            parents: entry.parents || [],
-            children: entry.children || [],
-            spouses: entry.spouses || [],
-            siblings: entry.siblings || [],
-            img: null,
-            familyCode: entry.familyCode || familyCode, // Add familyCode field
-            treeFamilyCode: entry.familyCode || familyCode,
-            primaryFamilyCode: null,
-            isAppUser: false,
-          };
-        }
-        const userProfile = entry.user?.userProfile;
-        // Get profile image full S3 URL
-        let img = null;
-        if (userProfile?.profile) {
-          img = this.uploadService.getFileUrl(userProfile.profile, 'profile');
-        }
-        const phoneVisible = canViewScopedField(
-          userProfile?.phonePrivacy,
-          Number(entry.userId) === Number(userId) ? 'self' : 'family',
-        );
-        const mobile = phoneVisible ? entry.user?.mobile || null : null;
-        const countryCode = phoneVisible ? entry.user?.countryCode || null : null;
-        const contactNumber = phoneVisible
-          ? userProfile?.contactNumber ||
-            (countryCode && mobile ? `${countryCode}${mobile}` : mobile) ||
-            null
-          : null;
-
-        return {
-          id: entry.personId, // Use personId as id
-          nodeUid: entry.nodeUid,
-          isExternalLinked: Boolean(entry.isExternalLinked),
-          canonicalFamilyCode: entry.canonicalFamilyCode || null,
-          canonicalNodeUid: entry.canonicalNodeUid || null,
-          memberId: entry.userId, // Include userId as memberId
-          name: userProfile
-            ? [userProfile.firstName, userProfile.lastName]
-                .filter(Boolean)
-                .join(' ') || 'Unknown'
-            : 'Unknown',
-          gender: this.normalizeGender(userProfile?.gender),
-          age: userProfile?.age || null,
-          contactNumber,
-          mobile,
-          countryCode,
-          generation: entry.generation,
-          lifeStatus: entry.lifeStatus || 'living',
-          parents: entry.parents || [],
-          children: entry.children || [],
-          spouses: entry.spouses || [],
-          siblings: entry.siblings || [],
-          img: img,
-          familyCode: userProfile?.familyCode || entry.familyCode || familyCode, // Add familyCode field
-          treeFamilyCode: entry.familyCode || familyCode,
-          primaryFamilyCode:
-            userProfile?.familyCode ||
-            inferredPrimaryFamilyCodeByUserId.get(Number(entry.userId)) ||
-            null,
-          associatedFamilyCodes: userProfile?.associatedFamilyCodes || [],
-          isAppUser: entry.user ? !!entry.user.isAppUser : false,
-        };
-      }),
-    );
-
-    // ENRICH: Fetch relationships for associated members from their primary families
-    // This fixes the issue where associated members show "UNRELATED" in the tree
-    const primaryFamilyCodesToFetch = new Set<string>();
-    const personIdByUserId = new Map<number, number>();
-    const userIdByPersonId = new Map<number, number>();
-    
-    people.forEach((person) => {
-      if (person.memberId && person.primaryFamilyCode && person.primaryFamilyCode !== familyCode) {
-        // This is an associated member - fetch their primary family tree
-        primaryFamilyCodesToFetch.add(person.primaryFamilyCode);
-        personIdByUserId.set(person.memberId, person.id);
-        userIdByPersonId.set(person.id, person.memberId);
-      }
-    });
-
-    if (primaryFamilyCodesToFetch.size > 0) {
-      try {
-        // Fetch primary family tree entries for associated members
-        const primaryFamilyTrees = await this.familyTreeModel.findAll({
-          where: {
-            familyCode: { [Op.in]: Array.from(primaryFamilyCodesToFetch) },
-          },
-          include: [
-            {
-              model: this.userModel,
-              as: 'user',
-              required: false,
-              attributes: ['id'],
-            },
-          ],
-        });
-
-        // Build a map of userId to their relationships in primary family
-        const relationshipsByUserId = new Map<number, { spouses: number[], parents: number[], children: number[] }>();
-        const personIdByUserIdInPrimary = new Map<number, number>();
-
-        primaryFamilyTrees.forEach((entry: any) => {
-          const entryUserId = entry.userId ? Number(entry.userId) : null;
-          if (entryUserId) {
-            personIdByUserIdInPrimary.set(entryUserId, entry.personId);
-            relationshipsByUserId.set(entryUserId, {
-              spouses: entry.spouses || [],
-              parents: entry.parents || [],
-              children: entry.children || [],
-            });
-          }
-        });
-
-        // Map relationships from primary family to current tree
-        people.forEach((person) => {
-          if (!person.memberId) return;
-          
-          const primaryRels = relationshipsByUserId.get(person.memberId);
-          if (!primaryRels) return;
-
-          const currentPersonId = person.id;
-
-          // Map spouse relationships - look for people in current tree with matching userIds
-          primaryRels.spouses.forEach((spousePersonIdInPrimary: number) => {
-            // Find which userId this spouse personId corresponds to in primary family
-            let spouseUserId: number | null = null;
-            for (const [uid, pid] of personIdByUserIdInPrimary.entries()) {
-              if (pid === spousePersonIdInPrimary) {
-                spouseUserId = uid;
-                break;
-              }
-            }
-            
-            if (spouseUserId) {
-              // Check if this spouse is in the current tree
-              const spouseInCurrentTree = people.find(
-                (p) => p.memberId === spouseUserId && p.id !== currentPersonId
-              );
-              if (spouseInCurrentTree && !person.spouses.includes(spouseInCurrentTree.id)) {
-                person.spouses.push(spouseInCurrentTree.id);
-                // Ensure bidirectional
-                if (!spouseInCurrentTree.spouses.includes(currentPersonId)) {
-                  spouseInCurrentTree.spouses.push(currentPersonId);
-                }
-              }
-            }
-          });
-
-          // Map parent relationships
-          primaryRels.parents.forEach((parentPersonIdInPrimary: number) => {
-            let parentUserId: number | null = null;
-            for (const [uid, pid] of personIdByUserIdInPrimary.entries()) {
-              if (pid === parentPersonIdInPrimary) {
-                parentUserId = uid;
-                break;
-              }
-            }
-            
-            if (parentUserId) {
-              const parentInCurrentTree = people.find(
-                (p) => p.memberId === parentUserId
-              );
-              if (parentInCurrentTree && !person.parents.includes(parentInCurrentTree.id)) {
-                person.parents.push(parentInCurrentTree.id);
-              }
-            }
-          });
-
-          // Map children relationships
-          primaryRels.children.forEach((childPersonIdInPrimary: number) => {
-            let childUserId: number | null = null;
-            for (const [uid, pid] of personIdByUserIdInPrimary.entries()) {
-              if (pid === childPersonIdInPrimary) {
-                childUserId = uid;
-                break;
-              }
-            }
-            
-            if (childUserId) {
-              const childInCurrentTree = people.find(
-                (p) => p.memberId === childUserId
-              );
-              if (childInCurrentTree && !person.children.includes(childInCurrentTree.id)) {
-                person.children.push(childInCurrentTree.id);
-              }
-            }
-          });
-        });
-      } catch (err) {
-        console.error('Error enriching relationships for associated members:', err);
-        // Continue without enrichment - don't break the tree loading
-      }
-    }
-
-    // Get all valid personIds for cleanup
-    const validPersonIds = new Set<number>(people.map((p) => p.id));
-
-    // Fix ID reference issues first (convert memberIds to person ids in relationships)
-    const memberIdToPersonIdMap = new Map();
-    people.forEach((person) => {
-      if (person.memberId) {
-        memberIdToPersonIdMap.set(person.memberId, person.id);
-      }
-    });
-
-    // Fix relationship arrays to use person ids instead of member ids
-    // AND remove references to non-existent persons
-    const processedSpousePairs = new Set<string>();
-
-    people.forEach((person) => {
-      const cleanArray = (arr: any[]) => {
-        if (!arr || !Array.isArray(arr)) return [];
-        // Convert to numbers and filter out invalid IDs, remove duplicates
-        const cleanedIds = arr
-          .map((ref) => {
-            // IMPORTANT: Relationship arrays in ft_family_tree are expected to store personIds.
-            // Some historical data stored memberIds (userIds) instead. We only map memberId -> personId
-            // when the reference is NOT already a valid personId in this tree.
-            const raw = typeof ref === 'string' ? Number.parseInt(ref, 10) : ref;
-            if (!Number.isFinite(raw)) return Number.NaN;
-            if (validPersonIds.has(raw)) return raw;
-            const mapped = memberIdToPersonIdMap.get(raw);
-            return mapped ?? raw;
-          })
-          .filter((id) => !Number.isNaN(id) && validPersonIds.has(id));
-
-        // FIXED: Remove duplicates using Set
-        return [...new Set(cleanedIds)];
-      };
-
-      const selfId = person.id;
-
-      // Remove any self-references from relationship arrays to avoid
-      // corrupt parent/child cycles (e.g. a person listed as their own child)
-      person.parents = cleanArray(person.parents).filter((id) => id !== selfId);
-      person.children = cleanArray(person.children).filter((id) => id !== selfId);
-      person.spouses = cleanArray(person.spouses).filter((id) => id !== selfId);
-      person.siblings = cleanArray(person.siblings).filter((id) => id !== selfId);
-      // FIXED: Ensure bidirectional parent-child relationships
-      person.parents.forEach((parentId) => {
-        const parent = people.find((p) => p.id === parentId);
-        if (parent && !parent.children.includes(person.id)) {
-          parent.children.push(person.id);
-        }
-      });
-
-      person.children.forEach((childId) => {
-        const child = people.find((p) => p.id === childId);
-        if (child && !child.parents.includes(person.id)) {
-          child.parents.push(person.id);
-        }
-      });
-
-      // Ensure bidirectional spouse relationships
-      person.spouses.forEach((spouseId) => {
-        const spouse = people.find((p) => p.id === spouseId);
-        if (spouse && !spouse.spouses.includes(person.id)) {
-          spouse.spouses.push(person.id);
-        }
-      });
-
-      // FIXED: Ensure shared children between spouses - PREVENT DUPLICATE PROCESSING
-      person.spouses.forEach((spouseId) => {
-        const spouse = people.find((p) => p.id === spouseId);
-        if (spouse) {
-          // Create unique pair key to prevent duplicate processing
-          const pairKey = [person.id, spouseId].sort((a, b) => a - b).join('-');
-
-          if (!processedSpousePairs.has(pairKey)) {
-            processedSpousePairs.add(pairKey);
-
-            // Collect all unique children from both parents
-            const personChildrenSet = new Set(
-              person.children.map(Number),
-            );
-            const spouseChildrenSet = new Set(
-              spouse.children.map(Number),
-            );
-            const allChildrenSet = new Set([
-              ...personChildrenSet,
-              ...spouseChildrenSet,
-            ]);
-
-            // Prevent self-references from being treated as children
-            allChildrenSet.delete(person.id);
-            allChildrenSet.delete(spouseId);
-
-            // Update both parents with clean arrays
-            person.children = Array.from(allChildrenSet);
-            spouse.children = Array.from(allChildrenSet);
-
-            // Ensure each child has both parents
-            allChildrenSet.forEach((childId) => {
-              const child = people.find((p) => p.id === childId);
-              if (child) {
-                const childParentsSet = new Set(
-                  child.parents.map(Number),
-                );
-                childParentsSet.add(Number(person.id));
-                childParentsSet.add(Number(spouseId));
-                child.parents = Array.from(childParentsSet);
-              }
-            });
-          }
-        }
-      });
-
-      // CLEANUP: Prevent impossible relationships where a person is both
-      // a spouse and a parent/child of the same person. This can happen
-      // when corrupted data is saved and would otherwise create invalid
-      // edges in the tree.
-      if (person.spouses && person.spouses.length > 0) {
-        const parentsSet = new Set(person.parents || []);
-        const childrenSet = new Set(person.children || []);
-
-        person.spouses = person.spouses.filter((spouseId) => {
-          const isInvalid =
-            parentsSet.has(spouseId) || childrenSet.has(spouseId);
-
-          if (isInvalid) {
-            const spouse = people.find((p) => p.id === spouseId);
-            if (spouse && Array.isArray(spouse.spouses)) {
-              spouse.spouses = spouse.spouses.filter(
-                (id) => id !== person.id,
-              );
-            }
-          }
-
-          return !isInvalid;
-        });
-      }
-    });
-
-    // Ensure no person ends up with more than two parents. When there are
-    // more than two, prefer parents whose generations are closest to one
-    // level above the child.
-    people.forEach((person) => {
-      if (!Array.isArray(person.parents) || person.parents.length <= 2) {
-        return;
-      }
-
-      const childGeneration =
-        typeof person.generation === 'number' ? person.generation : null;
-
-      const parentInfos = person.parents
-        .map((parentId) => {
-          const parent = people.find((p) => p.id === parentId);
-          return parent
-            ? { id: parentId, generation: parent.generation as number | null }
-            : null;
-        })
-        .filter((p) => p !== null) as { id: number; generation: number | null }[];
-
-      if (parentInfos.length <= 2) {
-        return;
-      }
-
-      const score = (parentGen: number | null): number => {
-        if (childGeneration === null || parentGen === null) {
-          return 1000;
-        }
-
-        const diff = childGeneration - parentGen;
-
-        if (diff < 0) {
-          // Parent appears younger than child, heavily penalize
-          return 500 + Math.abs(diff);
-        }
-
-        // Ideal is one generation above the child (diff === 1)
-        return Math.abs(diff - 1);
-      };
-
-      parentInfos.sort((a, b) => score(a.generation) - score(b.generation));
-
-      const keepIds = new Set(parentInfos.slice(0, 2).map((p) => p.id));
-      const removeIds = parentInfos.slice(2).map((p) => p.id);
-
-      person.parents = person.parents.filter((id) => keepIds.has(id));
-
-      // Remove the child from dropped parents' children arrays so that the
-      // second pass does not re-introduce the relationship.
-      removeIds.forEach((parentId) => {
-        const parent = people.find((p) => p.id === parentId);
-        if (parent && Array.isArray(parent.children)) {
-          parent.children = parent.children.filter(
-            (childId) => childId !== person.id,
-          );
-        }
-      });
-    });
-
-    // Second pass to ensure all bidirectional relationships
-    people.forEach((person) => {
-      // Fix spouse relationships in second pass
-      person.spouses.forEach((spouseId) => {
-        const spouse = people.find((p) => p.id === spouseId);
-        if (spouse && !spouse.spouses.includes(person.id)) {
-          spouse.spouses.push(person.id);
-        }
-      });
-
-      // Fix parent-child relationships in second pass
-      person.children.forEach((childId) => {
-        const child = people.find((p) => p.id === childId);
-        if (child && !child.parents.includes(person.id)) {
-          child.parents.push(person.id);
-        }
-      });
-    });
-
-    // Convert to Map format for relationship cleanup and final deduplication
-    // IMPORTANT: We intentionally do NOT call fixGenerationConsistency here.
-    // The frontend is the source of truth for generation values when saving
-    // the tree (via createFamilyTree), so we preserve the stored generations
-    // as-is to keep the visual layout stable across reloads.
-    const allPeople = new Map();
-    people.forEach((person) => {
-      allPeople.set(person.id, {
-        ...person,
-        parents: new Set(person.parents || []),
-        children: new Set(person.children || []),
-        spouses: new Set(person.spouses || []),
-        siblings: new Set(person.siblings || []),
-      });
-    });
-
-    // Convert back to array format with cleaned relationship sets but
-    // original generation values from the database
-    const correctedPeople = Array.from(allPeople.values()).map((person) => ({
-      ...person,
-      parents: [...new Set(Array.from(person.parents))],
-      children: [...new Set(Array.from(person.children))],
-      spouses: [...new Set(Array.from(person.spouses))],
-      siblings: [...new Set(Array.from(person.siblings))],
-    }));
-
-    // FINAL DEDUPLICATION: Remove duplicate people by ID while preserving generation
-    const finalPeople = correctedPeople.reduce((unique, person) => {
-      const existingIndex = unique.findIndex((u) => u.id === person.id);
-      if (existingIndex === -1) {
-        unique.push(person);
-      } else {
-        // Merge relationships from duplicates
-        const existing = unique[existingIndex];
-        existing.parents = [
-          ...new Set([...existing.parents, ...person.parents]),
-        ];
-        existing.children = [
-          ...new Set([...existing.children, ...person.children]),
-        ];
-        existing.spouses = [
-          ...new Set([...existing.spouses, ...person.spouses]),
-        ];
-        existing.siblings = [
-          ...new Set([...existing.siblings, ...person.siblings]),
-        ];
-      }
-      return unique;
-    }, []);
-
-    // PERFORMANCE: Remove backend calculation - let frontend handle it
-    // Frontend RelationshipCalculator is faster and more efficient
-    // Backend only ensures data integrity
 
     return {
       message: 'Family tree retrieved successfully',
-      people: finalPeople,
+      treeVersion: aggregate.treeVersion,
+      people: aggregate.people,
+      nodes: aggregate.nodes,
+      projection: aggregate.projection,
     };
   }
 
@@ -3794,6 +3423,284 @@ export class FamilyService {
    * - Preserves tree integrity by cleaning up relationship references
    * - Emits WebSocket event for real-time synchronization
    */
+  private async createStructuralDummyCarrier(params: {
+    sourceUserId?: number | null;
+    actingUserId: number;
+    transaction: any;
+  }) {
+    const sourceUserId = Number(params?.sourceUserId || 0);
+    const sourceProfile = sourceUserId
+      ? await this.userProfileModel.findOne({
+          where: { userId: sourceUserId } as any,
+          attributes: ['gender'],
+          transaction: params.transaction,
+        })
+      : null;
+
+    const dummyUser = await this.userModel.create(
+      {
+        email: null,
+        countryCode: null,
+        mobile: null,
+        password: null,
+        status: 1,
+        role: 1,
+        isAppUser: false,
+        hasAcceptedTerms: false,
+        createdBy: params.actingUserId || 0,
+        lifecycleState: 'active',
+      } as any,
+      { transaction: params.transaction },
+    );
+
+    await this.userProfileModel.create(
+      {
+        userId: dummyUser.id,
+        firstName: 'Removed',
+        lastName: 'Member',
+        gender: (sourceProfile as any)?.gender || null,
+        familyCode: null,
+        associatedFamilyCodes: [],
+      } as any,
+      { transaction: params.transaction },
+    );
+
+    return dummyUser;
+  }
+
+  private async deactivateSyntheticDummyCarrierIfUnused(dummyUserId: number, transaction: any) {
+    const normalizedDummyUserId = Number(dummyUserId || 0);
+    if (!normalizedDummyUserId) {
+      return;
+    }
+
+    const dummyUser = await this.userModel.findByPk(normalizedDummyUserId, {
+      transaction,
+      lock: (transaction as any).LOCK.UPDATE,
+    });
+    if (!dummyUser || (dummyUser as any).isAppUser) {
+      return;
+    }
+
+    const remainingTreeRefs = await this.familyTreeModel.count({
+      where: { userId: normalizedDummyUserId } as any,
+      transaction,
+    });
+    if (remainingTreeRefs > 0) {
+      return;
+    }
+
+    const isSyntheticDummy =
+      !(dummyUser as any).email &&
+      !(dummyUser as any).mobile &&
+      !(dummyUser as any).password;
+
+    if (isSyntheticDummy && Number((dummyUser as any).status) !== 2) {
+      await dummyUser.update({ status: 2 } as any, { transaction });
+    }
+  }
+
+  private async deactivateTreeLinksForNode(params: {
+    nodeUid: string;
+    transaction: any;
+  }) {
+    const nodeUid = String(params?.nodeUid || '').trim();
+    if (!nodeUid) {
+      return;
+    }
+
+    await this.treeLinkModel.update(
+      { status: 'inactive' } as any,
+      {
+        where: {
+          status: 'active',
+          [Op.or]: [{ nodeUidLow: nodeUid }, { nodeUidHigh: nodeUid }],
+        } as any,
+        transaction: params.transaction,
+      },
+    );
+  }
+
+  async convertFamilyUserNodesToStructuralDummy(params: {
+    actingUserId: number;
+    familyCode: string;
+    memberUserId: number;
+    transaction: any;
+  }) {
+    const normalizedFamilyCode = String(params?.familyCode || '').trim().toUpperCase();
+    const memberUserId = Number(params?.memberUserId || 0);
+    if (!normalizedFamilyCode || !memberUserId) {
+      return { updatedNodes: 0, dummyUserId: null, revokedFamilies: [] as string[] };
+    }
+
+    const treeEntries = await this.familyTreeModel.findAll({
+      where: {
+        familyCode: normalizedFamilyCode,
+        userId: memberUserId,
+        isStructuralDummy: false,
+      } as any,
+      transaction: params.transaction,
+      lock: (params.transaction as any).LOCK.UPDATE,
+    });
+
+    if (!treeEntries.length) {
+      return { updatedNodes: 0, dummyUserId: null, revokedFamilies: [] as string[] };
+    }
+
+    const sourceProfile = await this.userProfileModel.findOne({
+      where: { userId: memberUserId } as any,
+      attributes: ['familyCode'],
+      transaction: params.transaction,
+    });
+    const sourceFamilyCode = String((sourceProfile as any)?.familyCode || '').trim().toUpperCase();
+    const impactedFamilies = new Set<string>();
+    const dummyCarrier = await this.createStructuralDummyCarrier({
+      sourceUserId: memberUserId,
+      actingUserId: params.actingUserId,
+      transaction: params.transaction,
+    });
+
+    for (const treeEntry of treeEntries as any[]) {
+      const previousNodeType = this.treeProjectionService.resolveNodeType({
+        entry: treeEntry,
+        treeFamilyCode: normalizedFamilyCode,
+        primaryFamilyCode: sourceFamilyCode,
+      });
+      const linkedFamilyCode =
+        previousNodeType === 'linked'
+          ? String(treeEntry?.canonicalFamilyCode || '').trim().toUpperCase()
+          : previousNodeType === 'associated'
+            ? sourceFamilyCode
+            : '';
+
+      if (linkedFamilyCode && linkedFamilyCode !== normalizedFamilyCode) {
+        impactedFamilies.add(linkedFamilyCode);
+      }
+      if (previousNodeType === 'linked') {
+        await this.deactivateTreeLinksForNode({
+          nodeUid: treeEntry?.nodeUid,
+          transaction: params.transaction,
+        });
+      }
+
+      await treeEntry.update(
+        {
+          userId: dummyCarrier.id,
+          isStructuralDummy: true,
+          nodeType: 'structural_dummy',
+          dummyReason: 'member_deleted',
+          dummyCreatedAt: new Date(),
+          dummyCreatedBy: params.actingUserId,
+          isExternalLinked: false,
+          canonicalFamilyCode: null,
+          canonicalNodeUid: null,
+        } as any,
+        { transaction: params.transaction },
+      );
+    }
+
+    const revokedFamilies: string[] = [];
+    for (const impactedFamilyCode of impactedFamilies) {
+      const revoked = await this.revokeFamilyConnectionIfUnbridged({
+        familyA: normalizedFamilyCode,
+        familyB: impactedFamilyCode,
+        transaction: params.transaction,
+      });
+      if (revoked) {
+        revokedFamilies.push(impactedFamilyCode);
+      }
+    }
+
+    return {
+      updatedNodes: treeEntries.length,
+      dummyUserId: Number(dummyCarrier.id),
+      revokedFamilies,
+    };
+  }
+
+  private async convertTreeEntryToStructuralDummy(params: {
+    actingUserId: number;
+    familyCode: string;
+    treeEntry: any;
+    transaction: any;
+  }) {
+    const normalizedFamilyCode = String(params?.familyCode || '').trim().toUpperCase();
+    const treeEntry = params?.treeEntry;
+    if (!treeEntry) {
+      return { dummyUserId: null, revokedFamilies: [] as string[], originalUserId: null, originalNodeType: 'birth' };
+    }
+
+    const originalUserId = Number((treeEntry as any)?.userId || 0) || null;
+    const sourceProfile = originalUserId
+      ? await this.userProfileModel.findOne({
+          where: { userId: originalUserId } as any,
+          attributes: ['familyCode'],
+          transaction: params.transaction,
+        })
+      : null;
+    const sourceFamilyCode = String((sourceProfile as any)?.familyCode || '').trim().toUpperCase();
+    const originalNodeType = this.treeProjectionService.resolveNodeType({
+      entry: treeEntry,
+      treeFamilyCode: normalizedFamilyCode,
+      primaryFamilyCode: sourceFamilyCode,
+    });
+    const impactedFamilyCode =
+      originalNodeType === 'linked'
+        ? String((treeEntry as any)?.canonicalFamilyCode || '').trim().toUpperCase()
+        : originalNodeType === 'associated'
+          ? sourceFamilyCode
+          : '';
+
+    const dummyCarrier = originalUserId
+      ? await this.createStructuralDummyCarrier({
+          sourceUserId: originalUserId,
+          actingUserId: params.actingUserId,
+          transaction: params.transaction,
+        })
+      : null;
+
+    if (originalNodeType === 'linked') {
+      await this.deactivateTreeLinksForNode({
+        nodeUid: (treeEntry as any)?.nodeUid,
+        transaction: params.transaction,
+      });
+    }
+
+    await (treeEntry as any).update(
+      {
+        userId: dummyCarrier ? dummyCarrier.id : (treeEntry as any).userId,
+        isStructuralDummy: true,
+        nodeType: 'structural_dummy',
+        dummyReason: 'member_deleted',
+        dummyCreatedAt: new Date(),
+        dummyCreatedBy: params.actingUserId,
+        isExternalLinked: false,
+        canonicalFamilyCode: null,
+        canonicalNodeUid: null,
+      } as any,
+      { transaction: params.transaction },
+    );
+
+    const revokedFamilies: string[] = [];
+    if (impactedFamilyCode && impactedFamilyCode !== normalizedFamilyCode) {
+      const revoked = await this.revokeFamilyConnectionIfUnbridged({
+        familyA: normalizedFamilyCode,
+        familyB: impactedFamilyCode,
+        transaction: params.transaction,
+      });
+      if (revoked) {
+        revokedFamilies.push(impactedFamilyCode);
+      }
+    }
+
+    return {
+      dummyUserId: dummyCarrier ? Number(dummyCarrier.id) : null,
+      revokedFamilies,
+      originalUserId,
+      originalNodeType,
+    };
+  }
+
   async deleteTreePerson(params: {
     actingUserId: number;
     familyCode: string;
@@ -3808,7 +3715,12 @@ export class FamilyService {
 
     const transaction = await this.sequelize.transaction();
     try {
-      // Find the tree entry for this person
+      const familyRecord = await this.familyModel.findOne({
+        where: { familyCode: normalizedFamilyCode } as any,
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
       const treeEntry = await this.familyTreeModel.findOne({
         where: {
           familyCode: normalizedFamilyCode,
@@ -3824,12 +3736,7 @@ export class FamilyService {
       }
 
       const entryData = treeEntry as any;
-      const userId = entryData.userId;
-
-      // Check permissions
-      const isSelfDeletion = Number(userId) === Number(actingUserId);
-      
-      // Get actor details for admin check
+      const userId = Number(entryData.userId || 0) || null;
       const actorUser = await this.userModel.findOne({
         where: { id: actingUserId },
         include: [
@@ -3843,7 +3750,6 @@ export class FamilyService {
       });
 
       if (!actorUser) {
-        await transaction.rollback();
         throw new ForbiddenException('Unauthorized');
       }
 
@@ -3852,8 +3758,6 @@ export class FamilyService {
       const actorFamilyCode = String((actorUser as any)?.userProfile?.familyCode || '')
         .trim()
         .toUpperCase();
-
-      // Check if actor is admin of this family
       const actorMembership = await this.familyMemberModel.findOne({
         where: {
           memberId: actingUserId,
@@ -3862,31 +3766,52 @@ export class FamilyService {
         } as any,
         transaction,
       });
-      const isAdminOfThisFamily = actorIsAdmin && 
-        (actorFamilyCode === normalizedFamilyCode || !!actorMembership);
+      const isAdminOfThisFamily =
+        actorIsAdmin && (actorFamilyCode === normalizedFamilyCode || !!actorMembership);
+      const isSelfDeletion = userId && Number(userId) === Number(actingUserId);
 
-      // Allow if self-deletion or admin deletion
       if (!isSelfDeletion && !isAdminOfThisFamily) {
         await transaction.rollback();
         throw new ForbiddenException('Not authorized to delete this person');
       }
 
-      // Prevent deletion of external linked cards
-      if (entryData.isExternalLinked) {
-        await transaction.rollback();
-        throw new BadRequestException('Cannot delete external linked cards directly. Use unlink instead.');
+      if (entryData.isStructuralDummy) {
+        await transaction.commit();
+        const aggregate = await this.treeProjectionService.getFamilyAggregate(normalizedFamilyCode, {
+          requestingUserId: actingUserId,
+        });
+        return {
+          success: true,
+          message: 'Person is already a structural dummy',
+          treeVersion: aggregate.treeVersion,
+          deletedNode: {
+            personId,
+            userId,
+            nodeUid: entryData.nodeUid,
+            nodeType: 'structural_dummy',
+          },
+          projection: aggregate.projection,
+          revokedFamilies: [],
+          prunedPrivacyFamilies: [],
+        };
       }
 
-      // Delete the tree entry
-      await treeEntry.destroy({ transaction });
-
-      // Clean up orphaned relationship references
-      await this.cleanupOrphanedRelationshipReferencesInTransaction(
-        normalizedFamilyCode,
+      const converted = await this.convertTreeEntryToStructuralDummy({
+        actingUserId,
+        familyCode: normalizedFamilyCode,
+        treeEntry,
         transaction,
-      );
+      });
 
-      // Repair tree integrity
+      if (converted.originalUserId) {
+        await this.contentVisibilityService.hideContentForRemovedFamily(
+          Number(converted.originalUserId),
+          normalizedFamilyCode,
+          'member_removed',
+          transaction,
+        );
+      }
+
       await repairFamilyTreeIntegrity({
         familyCode: normalizedFamilyCode,
         transaction,
@@ -3894,22 +3819,39 @@ export class FamilyService {
         fixExternalGenerations: true,
       });
 
+      if (familyRecord) {
+        await familyRecord.increment('treeVersion', { by: 1, transaction });
+      }
+
       await transaction.commit();
 
-      // Emit WebSocket event for real-time synchronization
+      const aggregate = await this.treeProjectionService.getFamilyAggregate(normalizedFamilyCode, {
+        requestingUserId: actingUserId,
+      });
+
       this.notificationService.emitFamilyEvent(normalizedFamilyCode, {
-        type: 'TREE_PERSON_DELETED',
-        personId,
-        userId,
+        type: 'TREE_CHANGED',
+        treeVersion: aggregate.treeVersion,
+        deletedPersonId: personId,
+        deletedUserId: converted.originalUserId,
         deletedBy: actingUserId,
+        deletedNodeType: converted.originalNodeType,
         timestamp: new Date().toISOString(),
       });
 
       return {
         success: true,
-        message: 'Person deleted from tree successfully',
-        deletedPersonId: personId,
-        deletedUserId: userId,
+        message: 'Person converted to structural dummy successfully',
+        treeVersion: aggregate.treeVersion,
+        deletedNode: {
+          personId,
+          userId: converted.originalUserId,
+          nodeUid: entryData.nodeUid,
+          nodeType: 'structural_dummy',
+        },
+        projection: aggregate.projection,
+        revokedFamilies: converted.revokedFamilies,
+        prunedPrivacyFamilies: converted.revokedFamilies,
       };
     } catch (error) {
       await transaction.rollback();
@@ -3917,9 +3859,328 @@ export class FamilyService {
     }
   }
 
-  /**
-   * Clean up orphaned relationship references within a transaction
-   */
+  async replaceStructuralDummy(params: {
+    actingUserId: number;
+    familyCode: string;
+    personId: number;
+    replacementUserId: number;
+  }) {
+    const { actingUserId, familyCode, personId, replacementUserId } = params;
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    const normalizedReplacementUserId = Number(replacementUserId || 0);
+
+    if (!actingUserId || !normalizedFamilyCode || !personId || !normalizedReplacementUserId) {
+      throw new BadRequestException('Missing required parameters');
+    }
+
+    const transaction = await this.sequelize.transaction();
+    try {
+      const familyRecord = await this.familyModel.findOne({
+        where: { familyCode: normalizedFamilyCode } as any,
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      const treeEntry = await this.familyTreeModel.findOne({
+        where: { familyCode: normalizedFamilyCode, personId } as any,
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      if (!treeEntry) {
+        throw new NotFoundException('Person not found in tree');
+      }
+
+      const entryData: any = treeEntry.get({ plain: true });
+      if (
+        !Boolean(entryData?.isStructuralDummy) &&
+        String(entryData?.nodeType || '').trim() !== 'structural_dummy'
+      ) {
+        throw new BadRequestException('Only removed placeholders can be replaced');
+      }
+
+      const actorUser = await this.userModel.findOne({
+        where: { id: actingUserId },
+        include: [
+          {
+            model: this.userProfileModel,
+            as: 'userProfile',
+            attributes: ['familyCode'],
+          },
+        ],
+        transaction,
+      });
+      if (!actorUser) {
+        throw new ForbiddenException('Unauthorized');
+      }
+
+      const actorRole = Number((actorUser as any).role);
+      const actorIsAdmin = actorRole === 2 || actorRole === 3;
+      const actorFamilyCode = String((actorUser as any)?.userProfile?.familyCode || '')
+        .trim()
+        .toUpperCase();
+      const actorMembership = await this.familyMemberModel.findOne({
+        where: {
+          memberId: actingUserId,
+          familyCode: normalizedFamilyCode,
+          approveStatus: 'approved',
+        } as any,
+        transaction,
+      });
+      const isAdminOfThisFamily =
+        actorIsAdmin && (actorFamilyCode === normalizedFamilyCode || !!actorMembership);
+      if (!isAdminOfThisFamily) {
+        throw new ForbiddenException('Not authorized to replace this placeholder');
+      }
+
+      const replacementMembership = await this.familyMemberModel.findOne({
+        where: {
+          memberId: normalizedReplacementUserId,
+          familyCode: normalizedFamilyCode,
+          approveStatus: 'approved',
+        } as any,
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+      if (!replacementMembership) {
+        throw new BadRequestException('Replacement member is not active in this family');
+      }
+
+      const replacementUser = await this.userModel.findByPk(normalizedReplacementUserId, {
+        include: [
+          {
+            model: this.userProfileModel,
+            as: 'userProfile',
+            attributes: ['familyCode'],
+          },
+        ],
+        transaction,
+      });
+      if (!replacementUser) {
+        throw new BadRequestException('Replacement user not found');
+      }
+
+      const existingTargetRows = await this.familyTreeModel.count({
+        where: {
+          familyCode: normalizedFamilyCode,
+          userId: normalizedReplacementUserId,
+          isStructuralDummy: false,
+          personId: { [Op.ne]: personId },
+        } as any,
+        transaction,
+      });
+      if (existingTargetRows > 0) {
+        throw new BadRequestException('Replacement member already exists in this family tree');
+      }
+
+      const replacementPrimaryFamilyCode = String(
+        (replacementUser as any)?.userProfile?.familyCode || '',
+      )
+        .trim()
+        .toUpperCase();
+      const resolvedNodeType = replacementPrimaryFamilyCode &&
+        replacementPrimaryFamilyCode !== normalizedFamilyCode
+        ? 'associated'
+        : 'birth';
+
+      const previousDummyUserId = Number(entryData?.userId || 0) || null;
+
+      await (treeEntry as any).update(
+        {
+          userId: normalizedReplacementUserId,
+          isStructuralDummy: false,
+          nodeType: resolvedNodeType,
+          dummyReason: null,
+          dummyCreatedAt: null,
+          dummyCreatedBy: null,
+          isExternalLinked: false,
+          canonicalFamilyCode: null,
+          canonicalNodeUid: null,
+        } as any,
+        { transaction },
+      );
+
+      await repairFamilyTreeIntegrity({
+        familyCode: normalizedFamilyCode,
+        transaction,
+        lock: true,
+        fixExternalGenerations: true,
+      });
+
+      if (familyRecord) {
+        await familyRecord.increment('treeVersion', { by: 1, transaction });
+      }
+
+      await this.deactivateSyntheticDummyCarrierIfUnused(previousDummyUserId, transaction);
+      await transaction.commit();
+
+      const aggregate = await this.treeProjectionService.getFamilyAggregate(normalizedFamilyCode, {
+        requestingUserId: actingUserId,
+      });
+
+      this.notificationService.emitFamilyEvent(normalizedFamilyCode, {
+        type: 'TREE_CHANGED',
+        treeVersion: aggregate.treeVersion,
+        replacedPersonId: personId,
+        replacementUserId: normalizedReplacementUserId,
+        replacedBy: actingUserId,
+        timestamp: new Date().toISOString(),
+      });
+
+      return {
+        success: true,
+        message: 'Structural placeholder replaced successfully',
+        treeVersion: aggregate.treeVersion,
+        replacedNode: {
+          personId,
+          userId: normalizedReplacementUserId,
+          nodeUid: entryData.nodeUid,
+          nodeType: resolvedNodeType,
+        },
+        projection: aggregate.projection,
+      };
+    } catch (error) {
+      if (!(transaction as any)?.finished) {
+        await transaction.rollback();
+      }
+      throw error;
+    }
+  }
+
+  async permanentlyDeleteStructuralDummy(params: {
+    actingUserId: number;
+    familyCode: string;
+    personId: number;
+  }) {
+    const { actingUserId, familyCode, personId } = params;
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+
+    if (!actingUserId || !normalizedFamilyCode || !personId) {
+      throw new BadRequestException('Missing required parameters');
+    }
+
+    const transaction = await this.sequelize.transaction();
+    try {
+      const familyRecord = await this.familyModel.findOne({
+        where: { familyCode: normalizedFamilyCode } as any,
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      const treeEntry = await this.familyTreeModel.findOne({
+        where: { familyCode: normalizedFamilyCode, personId } as any,
+        transaction,
+        lock: (transaction as any).LOCK.UPDATE,
+      });
+
+      if (!treeEntry) {
+        throw new NotFoundException('Person not found in tree');
+      }
+
+      const entryData: any = treeEntry.get({ plain: true });
+      if (
+        !Boolean(entryData?.isStructuralDummy) &&
+        String(entryData?.nodeType || '').trim() !== 'structural_dummy'
+      ) {
+        throw new BadRequestException('Only removed placeholders can be deleted permanently');
+      }
+
+      const actorUser = await this.userModel.findOne({
+        where: { id: actingUserId },
+        include: [
+          {
+            model: this.userProfileModel,
+            as: 'userProfile',
+            attributes: ['familyCode'],
+          },
+        ],
+        transaction,
+      });
+      if (!actorUser) {
+        throw new ForbiddenException('Unauthorized');
+      }
+
+      const actorRole = Number((actorUser as any).role);
+      const actorIsAdmin = actorRole === 2 || actorRole === 3;
+      const actorFamilyCode = String((actorUser as any)?.userProfile?.familyCode || '')
+        .trim()
+        .toUpperCase();
+      const actorMembership = await this.familyMemberModel.findOne({
+        where: {
+          memberId: actingUserId,
+          familyCode: normalizedFamilyCode,
+          approveStatus: 'approved',
+        } as any,
+        transaction,
+      });
+      const isAdminOfThisFamily =
+        actorIsAdmin && (actorFamilyCode === normalizedFamilyCode || !!actorMembership);
+      if (!isAdminOfThisFamily) {
+        throw new ForbiddenException('Not authorized to delete this placeholder');
+      }
+
+      const dummyUserId = Number(entryData?.userId || 0) || null;
+      const nodeUid = String(entryData?.nodeUid || '').trim();
+      if (nodeUid) {
+        await this.deactivateTreeLinksForNode({
+          nodeUid,
+          transaction,
+        });
+      }
+
+      await (treeEntry as any).destroy({ transaction });
+      await this.cleanupOrphanedRelationshipReferencesInTransaction(
+        normalizedFamilyCode,
+        transaction,
+      );
+      await repairFamilyTreeIntegrity({
+        familyCode: normalizedFamilyCode,
+        transaction,
+        lock: true,
+        fixExternalGenerations: true,
+      });
+
+      if (familyRecord) {
+        await familyRecord.increment('treeVersion', { by: 1, transaction });
+      }
+
+      await this.deactivateSyntheticDummyCarrierIfUnused(dummyUserId, transaction);
+      await transaction.commit();
+
+      const aggregate = await this.treeProjectionService.getFamilyAggregate(normalizedFamilyCode, {
+        requestingUserId: actingUserId,
+      });
+
+      this.notificationService.emitFamilyEvent(normalizedFamilyCode, {
+        type: 'TREE_CHANGED',
+        treeVersion: aggregate.treeVersion,
+        deletedPersonId: personId,
+        deletedBy: actingUserId,
+        deletedNodeType: 'structural_dummy',
+        permanent: true,
+        timestamp: new Date().toISOString(),
+      });
+
+      return {
+        success: true,
+        message: 'Structural placeholder deleted permanently',
+        treeVersion: aggregate.treeVersion,
+        deletedNode: {
+          personId,
+          userId: dummyUserId,
+          nodeUid,
+          nodeType: 'structural_dummy',
+        },
+        projection: aggregate.projection,
+      };
+    } catch (error) {
+      if (!(transaction as any)?.finished) {
+        await transaction.rollback();
+      }
+      throw error;
+    }
+  }
+
   private async cleanupOrphanedRelationshipReferencesInTransaction(
     familyCode: string,
     transaction: any,
@@ -3967,5 +4228,32 @@ export class FamilyService {
     }
   }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

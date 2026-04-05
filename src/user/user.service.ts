@@ -30,6 +30,7 @@ import { Post } from '../post/model/post.model';
 import { Event } from '../event/model/event.model';
 import { AccountRecoveryToken } from './model/account-recovery-token.model';
 import { FamilyMemberService } from '../family/family-member.service';
+import { TreeProjectionService } from '../family/tree-projection.service';
 import { ContentVisibilityService } from './content-visibility.service';
 import {
   buildEmailHash,
@@ -39,6 +40,7 @@ import {
 } from '../common/security/field-encryption.util';
 import { resolvePhoneNumber } from './privacy.util';
 import {
+  filterFamilyContentVisibilitySettings,
   mergeFamilyContentVisibilitySettings,
   normalizeFamilyContentVisibilitySettings,
 } from './content-visibility-settings.util';
@@ -97,6 +99,7 @@ export class UserService {
     @Inject(forwardRef(() => FamilyMemberService))
     private readonly familyMemberService: FamilyMemberService,
     private readonly contentVisibilityService: ContentVisibilityService,
+    private readonly treeProjectionService: TreeProjectionService,
 
   ) {}
 
@@ -768,15 +771,35 @@ export class UserService {
   }
 
 
+  private async getAllowedContentVisibilityFamilyCodes(userId: number): Promise<string[]> {
+    return this.treeProjectionService.getReachableFamilyCodesForUser(userId);
+  }
+
   async getContentVisibilitySettings(userId: number) {
     const profile = await this.userProfileModel.findOne({ where: { userId } });
     if (!profile) {
       throw new NotFoundException('User profile not found');
     }
 
+    const allowedFamilyCodes = await this.getAllowedContentVisibilityFamilyCodes(userId);
+    const currentSettings = normalizeFamilyContentVisibilitySettings(
+      (profile as any).contentVisibilitySettings,
+    );
+    const nextSettings = filterFamilyContentVisibilitySettings(
+      currentSettings,
+      allowedFamilyCodes,
+    );
+
+    if (JSON.stringify(nextSettings) !== JSON.stringify(currentSettings)) {
+      await profile.update({ contentVisibilitySettings: nextSettings } as any);
+    }
+
     return {
       message: 'Content visibility settings fetched successfully',
-      data: normalizeFamilyContentVisibilitySettings((profile as any).contentVisibilitySettings),
+      data: {
+        ...nextSettings,
+        availableFamilyCodes: allowedFamilyCodes,
+      },
     };
   }
 
@@ -789,9 +812,14 @@ export class UserService {
       throw new NotFoundException('User profile not found');
     }
 
-    const nextSettings = mergeFamilyContentVisibilitySettings(
+    const allowedFamilyCodes = await this.getAllowedContentVisibilityFamilyCodes(userId);
+    const mergedSettings = mergeFamilyContentVisibilitySettings(
       (profile as any).contentVisibilitySettings,
       dto,
+    );
+    const nextSettings = filterFamilyContentVisibilitySettings(
+      mergedSettings,
+      allowedFamilyCodes,
     );
 
     await profile.update({ contentVisibilitySettings: nextSettings } as any);
@@ -802,7 +830,10 @@ export class UserService {
 
     return {
       message: 'Content visibility settings updated successfully',
-      data: nextSettings,
+      data: {
+        ...nextSettings,
+        availableFamilyCodes: allowedFamilyCodes,
+      },
     };
   }
 
@@ -1960,6 +1991,9 @@ export class UserService {
     };
   }
 }
+
+
+
 
 
 

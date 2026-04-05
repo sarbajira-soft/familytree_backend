@@ -25,6 +25,7 @@ import { BlockingService } from '../blocking/blocking.service';
 import { FamilyMember } from '../family/model/family-member.model';
 import { FamilyLink } from '../family/model/family-link.model';
 import { canViewerAccessFamilyContentForType, isFamilyContentVisibleForType } from '../user/content-visibility-settings.util';
+import { TreeProjectionService } from '../family/tree-projection.service';
 
 type PostWithProfile = Post & { userProfile?: UserProfile };
 type PostCommentWithProfile = PostComment & { userProfile?: UserProfile; user?: User };
@@ -49,6 +50,7 @@ export class PostService {
 
     @InjectModel(FamilyLink)
     private readonly familyLinkModel: typeof FamilyLink,
+    private readonly treeProjectionService: TreeProjectionService,
 
     private readonly notificationService: NotificationService,
     private readonly notificationGateway: NotificationGateway,
@@ -81,18 +83,15 @@ export class PostService {
   }
 
   private async assertUserCanAccessFamilyContent(userId: number, familyCode: string): Promise<void> {
-    if (!userId || !familyCode) {
-      throw new ForbiddenException('Not allowed to access this family content');
-    }
-    const membership = await this.familyMemberModel.findOne({
-      where: { memberId: userId, familyCode },
-    });
-
-    if (membership?.approveStatus !== 'approved') {
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    if (!userId || !normalizedFamilyCode) {
       throw new ForbiddenException('Not allowed to access this family content');
     }
 
-    // BLOCK OVERRIDE: Legacy family-member block flag removed; access checks no longer use ft_family_members.isBlocked.
+    const accessible = await this.getAccessibleFamilyCodesForUser(userId);
+    if (!accessible.includes(normalizedFamilyCode)) {
+      throw new ForbiddenException('Not allowed to access this family content');
+    }
   }
 
   private async getAccessibleFamilyCodesForUser(userId: number): Promise<string[]> {
@@ -100,73 +99,20 @@ export class PostService {
       return [];
     }
 
-    const memberships = await this.familyMemberModel.findAll({
-      where: { memberId: userId, approveStatus: 'approved' },
-      // BLOCK OVERRIDE: Removed legacy blocked-membership projection.
-      attributes: ['familyCode'],
-    });
-
-    const profile = await this.userProfileModel.findOne({
-      where: { userId },
-      attributes: ['familyCode', 'associatedFamilyCodes'],
-    });
-
-    const primaryFamilyCode = String((profile as any)?.familyCode || '').trim().toUpperCase();
-
-    const associated = Array.isArray((profile as any)?.associatedFamilyCodes)
-      ? ((profile as any).associatedFamilyCodes as any[])
-          .filter(Boolean)
-          .map((code: any) => String(code).trim().toUpperCase())
-      : [];
-
-    const base = Array.from(
-      new Set(
-        [
-          ...memberships
-            .filter((member: any) => !!(member as any).familyCode)
-            .map((member: any) => String((member as any).familyCode).trim().toUpperCase()),
-          ...(primaryFamilyCode ? [primaryFamilyCode] : []),
-          ...associated,
-        ].filter(Boolean),
-      ),
-    );
-
-    if (base.length === 0) {
-      return [];
-    }
-
-    const links = await this.familyLinkModel.findAll({
-      where: {
-        status: 'active',
-        [Op.or]: [
-          { familyCodeLow: { [Op.in]: base } },
-          { familyCodeHigh: { [Op.in]: base } },
-        ],
-      },
-      attributes: ['familyCodeLow', 'familyCodeHigh'],
-    });
-
-    const candidate = new Set<string>(base);
-    for (const link of links) {
-      const low = String(link.familyCodeLow);
-      const high = String(link.familyCodeHigh);
-      if (base.includes(low)) candidate.add(high);
-      if (base.includes(high)) candidate.add(low);
-    }
-
-    return Array.from(candidate);
+    return this.treeProjectionService.getReachableFamilyCodesForUser(userId);
   }
 
   private async assertUserCanAccessFamilyOrLinked(
     userId: number,
     familyCode: string,
   ): Promise<void> {
-    if (!userId || !familyCode) {
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    if (!userId || !normalizedFamilyCode) {
       throw new ForbiddenException('Not allowed to access this family content');
     }
 
     const accessible = await this.getAccessibleFamilyCodesForUser(userId);
-    if (!accessible.includes(String(familyCode))) {
+    if (!accessible.includes(normalizedFamilyCode)) {
       throw new ForbiddenException('Not allowed to access this family content');
     }
   }
@@ -182,27 +128,23 @@ export class PostService {
       return true;
     }
 
-    const [creatorAudienceFamilyCodes, creatorProfile, viewerProfile] = await Promise.all([
+    const [creatorAudienceFamilyCodes, creatorProfile, viewerFamilyCodes] = await Promise.all([
       this.getAccessibleFamilyCodesForUser(creatorUserId),
       this.userProfileModel.findOne({
         where: { userId: creatorUserId },
         attributes: ['contentVisibilitySettings'],
       }),
-      this.userProfileModel.findOne({
-        where: { userId: viewerUserId },
-        attributes: ['familyCode'],
-      }),
+      this.getAccessibleFamilyCodesForUser(viewerUserId),
     ]);
 
-    const viewerPrimaryFamilyCodes = [String((viewerProfile as any)?.familyCode || '').trim().toUpperCase()].filter(Boolean);
-    if (!viewerPrimaryFamilyCodes.length) {
+    if (!viewerFamilyCodes.length) {
       return false;
     }
 
     return canViewerAccessFamilyContentForType(
       (creatorProfile as any)?.contentVisibilitySettings,
       'posts',
-      viewerPrimaryFamilyCodes,
+      viewerFamilyCodes,
       creatorAudienceFamilyCodes,
     );
   }
@@ -228,12 +170,8 @@ export class PostService {
       return posts;
     }
 
-    const viewerProfile = await this.userProfileModel.findOne({
-      where: { userId: viewerUserId },
-      attributes: ['familyCode'],
-    });
-    const viewerPrimaryFamilyCodes = [String((viewerProfile as any)?.familyCode || '').trim().toUpperCase()].filter(Boolean);
-    if (!viewerPrimaryFamilyCodes.length) {
+    const viewerFamilyCodes = await this.getAccessibleFamilyCodesForUser(viewerUserId);
+    if (!viewerFamilyCodes.length) {
       return posts.filter(
         (post) =>
           Number(post?.createdBy) === Number(viewerUserId) ||
@@ -280,7 +218,7 @@ export class PostService {
       return canViewerAccessFamilyContentForType(
         settingsByUserId.get(Number(post?.createdBy)),
         'posts',
-        viewerPrimaryFamilyCodes,
+        viewerFamilyCodes,
         creatorAudienceByUserId.get(Number(post?.createdBy)) || [],
       );
     });
@@ -294,7 +232,6 @@ export class PostService {
     }
 
     const cleaned = String(filename || '').trim().replace(/^\/+/, '');
-    // If stored value is already a full key (e.g. "posts/user-10/x.jpg"), use it as-is.
     if (cleaned.includes('/')) {
       if (process.env.S3_BUCKET_NAME && process.env.REGION) {
         return `https://${process.env.S3_BUCKET_NAME}.s3.${process.env.REGION}.amazonaws.com/${cleaned}`;
@@ -1591,3 +1528,6 @@ export class PostService {
     return formattedComment;
   }
 }
+
+
+

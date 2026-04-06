@@ -2008,17 +2008,23 @@ export class FamilyMemberService {
       order: [['createdAt', 'DESC']],
     });
 
-    // Step 3: Format response
-    const baseUrl = process.env.BASE_URL || '';
-    const profilePath = process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') || 'uploads/profile';
-
     const result = members.map((memberInstance: any) => {
       const member = memberInstance.get({ plain: true });
 
       const user = member.user;
-      const profileImage = user?.userProfile?.profile
-        ? `${baseUrl.replace(/\/$/, '')}/${profilePath}/${user.userProfile.profile}`
-        : null;
+      let profileImage = null;
+      if (user?.userProfile?.profile) {
+        try {
+          profileImage = this.uploadService.getFileUrl(user.userProfile.profile, 'profile');
+        } catch (error) {
+          console.error('Error getting S3 URL for profile image:', error);
+          const baseUrl = process.env.BASE_URL || '';
+          const profilePath =
+            process.env.USER_PROFILE_UPLOAD_PATH?.replace(/^\.\/?/, '') ||
+            'uploads/profile';
+          profileImage = `${baseUrl.replace(/\/$/, '')}/${profilePath}/${user.userProfile.profile}`;
+        }
+      }
 
       return {
         ...member,

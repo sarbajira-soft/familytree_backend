@@ -180,7 +180,8 @@ export class FamilyController {
       const fields = [
         'id', 'name', 'gender', 'age', 'generation', 'birthOrder', 'memberId',
         'parents', 'children', 'spouses', 'siblings', 'img', 'lifeStatus',
-        'nodeUid', 'isExternalLinked', 'canonicalFamilyCode', 'canonicalNodeUid'
+        'nodeUid', 'isExternalLinked', 'canonicalFamilyCode', 'canonicalNodeUid',
+        'isStructuralDummy', 'nodeType'
       ];
       for (const field of fields) {
         const key = prefix + field;
@@ -217,12 +218,14 @@ export class FamilyController {
       });
 
       // Convert boolean fields
-      if (person.isExternalLinked !== null && person.isExternalLinked !== undefined && person.isExternalLinked !== '') {
-        const raw = String(person.isExternalLinked).trim().toLowerCase();
-        person.isExternalLinked = raw === 'true' || raw === '1' || raw === 'yes';
-      } else {
-        person.isExternalLinked = false;
-      }
+      ['isExternalLinked', 'isStructuralDummy'].forEach((booleanField) => {
+        if (person[booleanField] !== null && person[booleanField] !== undefined && person[booleanField] !== '') {
+          const raw = String(person[booleanField]).trim().toLowerCase();
+          person[booleanField] = raw === 'true' || raw === '1' || raw === 'yes';
+        } else {
+          person[booleanField] = false;
+        }
+      });
       people.push(person);
     }
 

@@ -20,6 +20,13 @@ export class FamilyTreeMemberDto {
   @IsString()
   canonicalNodeUid?: string;
 
+  @IsOptional()
+  isStructuralDummy?: boolean;
+
+  @IsOptional()
+  @IsString()
+  nodeType?: string;
+
   @IsString()
   name: string;
 

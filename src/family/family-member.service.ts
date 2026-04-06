@@ -374,6 +374,16 @@ export class FamilyMemberService {
   private async isAdminOfFamily(actingUserId: number, familyCode: string) {
     if (!actingUserId || !familyCode) return false;
 
+    const targetFamilyCode = String(familyCode || '').trim().toUpperCase();
+    const family = await this.familyModel.findOne({
+      where: { familyCode: targetFamilyCode },
+      attributes: ['createdBy'],
+    });
+
+    if (Number((family as any)?.createdBy || 0) === Number(actingUserId)) {
+      return true;
+    }
+
     const actingUser = await this.userModel.findByPk(actingUserId);
     if (!actingUser || (actingUser.role !== 2 && actingUser.role !== 3)) {
       return false;
@@ -387,7 +397,6 @@ export class FamilyMemberService {
     const profileFamilyCode = String(profile?.familyCode || '')
       .trim()
       .toUpperCase();
-    const targetFamilyCode = String(familyCode || '').trim().toUpperCase();
 
     return Boolean(profileFamilyCode && profileFamilyCode === targetFamilyCode);
   }

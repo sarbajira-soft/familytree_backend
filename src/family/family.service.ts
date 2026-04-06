@@ -4096,6 +4096,23 @@ export class FamilyService {
       const isAdminOfThisFamily =
         actorIsAdmin && (actorFamilyCode === normalizedFamilyCode || !!actorMembership);
       const isSelfDeletion = userId && Number(userId) === Number(actingUserId);
+      const targetSourceFamilyCode = String(
+        entryData.sourceFamilyCode || entryData.primaryFamilyCode || entryData.familyCode || '',
+      )
+        .trim()
+        .toUpperCase();
+      const targetIsFamilyOwner =
+        Number(userId || 0) > 0 &&
+        Number(userId) === Number((familyRecord as any)?.createdBy || 0) &&
+        targetSourceFamilyCode === normalizedFamilyCode;
+      const targetIsCurrentFamilyAdmin =
+        targetSourceFamilyCode === normalizedFamilyCode &&
+        (Number(entryData.role || 0) >= 2 || targetIsFamilyOwner);
+
+      if (targetIsCurrentFamilyAdmin) {
+        await transaction.rollback();
+        throw new BadRequestException('Family owner/admin cannot be removed from the tree');
+      }
 
       if (!isSelfDeletion && !isAdminOfThisFamily) {
         await transaction.rollback();
@@ -4564,6 +4581,7 @@ export class FamilyService {
     }
   }
 }
+
 
 
 

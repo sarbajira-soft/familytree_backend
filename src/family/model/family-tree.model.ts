@@ -91,6 +91,38 @@ export class FamilyTree extends Model<FamilyTree> {
   isExternalLinked: boolean;
 
   @Column({
+    type: DataType.BOOLEAN,
+    allowNull: false,
+    defaultValue: false,
+  })
+  isStructuralDummy: boolean;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: false,
+    defaultValue: 'birth',
+  })
+  nodeType: string;
+
+  @Column({
+    type: DataType.STRING,
+    allowNull: true,
+  })
+  dummyReason: string;
+
+  @Column({
+    type: DataType.DATE,
+    allowNull: true,
+  })
+  dummyCreatedAt: Date;
+
+  @Column({
+    type: DataType.INTEGER,
+    allowNull: true,
+  })
+  dummyCreatedBy: number;
+
+  @Column({
     type: DataType.STRING,
     allowNull: true,
   })

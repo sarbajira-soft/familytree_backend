@@ -84,6 +84,26 @@ export function mergeFamilyContentVisibilitySettings(
   };
 }
 
+export function filterFamilyContentVisibilitySettings(
+  value: unknown,
+  allowedFamilyCodes: string[],
+): FamilyContentVisibilitySettings {
+  const normalizedAllowed = normalizeFamilyCodes(allowedFamilyCodes);
+  const settings = normalizeFamilyContentVisibilitySettings(value);
+  const filterEntry = (entry: FamilyContentVisibilityEntry): FamilyContentVisibilityEntry => ({
+    visibility: entry.visibility,
+    familyCodes:
+      entry.visibility === 'specific-family'
+        ? entry.familyCodes.filter((code) => normalizedAllowed.includes(code))
+        : [],
+  });
+
+  return {
+    posts: filterEntry(settings.posts),
+    albums: filterEntry(settings.albums),
+    events: filterEntry(settings.events),
+  };
+}
 export function isFamilyContentVisibleForType(
   value: unknown,
   type: FamilyContentVisibilityType,
@@ -133,3 +153,5 @@ export function canViewerAccessFamilyContentForType(
 
   return normalizedViewerCodes.some((code) => creatorAllowedCodes.includes(code));
 }
+
+

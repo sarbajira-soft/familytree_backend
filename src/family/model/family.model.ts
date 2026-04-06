@@ -39,4 +39,9 @@ export class Family extends Model<Family> {
   @Default(0)
   @Column(DataType.INTEGER)
   createdBy: number;
+
+  @Default(0)
+  @Column(DataType.INTEGER)
+  treeVersion: number;
 }
+

@@ -280,9 +280,9 @@ export class AdminUsersService {
 
     const avgPostsPerUser = totalUsers ? Number(totalPosts || 0) / Number(totalUsers || 1) : 0;
 
-    const weeklyGrowthPct = newUsersPrev7Days
-      ? ((Number(newUsersLast7Days || 0) - Number(newUsersPrev7Days || 0)) / Number(newUsersPrev7Days)) * 100
-      : null;
+    const prev7 = Number(newUsersPrev7Days || 0);
+    const last7 = Number(newUsersLast7Days || 0);
+    const weeklyGrowthPct = prev7 > 0 ? ((last7 - prev7) / prev7) * 100 : last7 > 0 ? 100 : 0;
 
     const recentPosters = await this.postModel.findAll({
       where: { status: 1, createdAt: { [Op.gte]: last7Days } } as any,

@@ -272,6 +272,15 @@ export class FamilyController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Get('tree-link-candidates/:familyCode')
+  @ApiBearerAuth()
+  @ApiOperation({ summary: 'Get minimal app-user tree candidates for cross-family linking' })
+  @ApiResponse({ status: 200, description: 'Link candidates retrieved successfully' })
+  async getTreeLinkCandidates(@Param('familyCode') familyCode: string, @Req() req) {
+    const actingUserId = Number(req.user?.userId || req.user?.id);
+    return this.familyService.getTreeLinkCandidates(familyCode, actingUserId);
+  }
+  @UseGuards(JwtAuthGuard)
   @Get('linked-families')
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Get linked families for the logged-in user (Link Family Tree)' })
@@ -847,4 +856,5 @@ export class FamilyController {
   // }
 
 }
+
 

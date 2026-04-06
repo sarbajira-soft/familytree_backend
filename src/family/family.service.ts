@@ -439,9 +439,6 @@ export class FamilyService {
       attributes: ['userId', 'familyCode', 'associatedFamilyCodes'],
       ...(transaction ? { transaction } : {}),
     });
-
-    const updateOptions = transaction ? { transaction } : {};
-
     await Promise.all(
       (profiles as any[]).map(async (profile: any) => {
         const associated = Array.isArray(profile.associatedFamilyCodes)
@@ -471,7 +468,18 @@ export class FamilyService {
           return;
         }
 
-        await profile.update({ associatedFamilyCodes: nextAssociated } as any, updateOptions as any);
+        const profileUserId = Number(profile?.userId || 0);
+        if (!profileUserId) {
+          return;
+        }
+
+        await this.userProfileModel.update(
+          { associatedFamilyCodes: nextAssociated } as any,
+          {
+            where: { userId: profileUserId } as any,
+            ...(transaction ? { transaction } : {}),
+          } as any,
+        );
       }),
     );
   }
@@ -560,10 +568,17 @@ export class FamilyService {
       if (JSON.stringify(nextSettings) === JSON.stringify(currentSettings)) {
         continue;
       }
+      const profileUserId = Number(profile?.userId || 0);
+      if (!profileUserId) {
+        continue;
+      }
 
-      await profile.update(
+      await this.userProfileModel.update(
         { contentVisibilitySettings: nextSettings } as any,
-        transaction ? { transaction } : undefined,
+        {
+          where: { userId: profileUserId } as any,
+          ...(transaction ? { transaction } : {}),
+        } as any,
       );
     }
   }
@@ -1781,6 +1796,7 @@ export class FamilyService {
       familyCode,
     );
     await this.assertFamilyExistsForTreeSave(familyCode);
+    this.validateFamilyTreeSaveOrThrow(familyCode, members);
 
     await this.deleteStaleFamilyTreeEntriesAndCleanup({
       familyCode,
@@ -1826,6 +1842,10 @@ export class FamilyService {
     );
 
     await this.repairFamilyTreeAfterMutation({ familyCode });
+    await this.familyModel.increment('treeVersion', {
+      by: 1,
+      where: { familyCode } as any,
+    });
 
     await this.ensureRelationshipCodesExist(members);
 
@@ -1840,7 +1860,7 @@ export class FamilyService {
     );
 
     return {
-      message: 'Family tree created successfully',
+      message: 'Family tree saved successfully',
       data: createdMembers,
       performanceStats: {
         totalTimeMs: totalTime,
@@ -1882,6 +1902,218 @@ export class FamilyService {
     const family = await this.familyModel.findOne({ where: { familyCode } });
     if (!family) {
       throw new NotFoundException('Family not found');
+    }
+  }
+
+  private normalizeTreeRelationIdsForValidation(list: any): number[] {
+    const arr = Array.isArray(list) ? list : [];
+    const seen = new Set<number>();
+    const out: number[] = [];
+    for (const raw of arr) {
+      const value = Number(raw);
+      if (!Number.isFinite(value) || value <= 0 || seen.has(value)) {
+        continue;
+      }
+      seen.add(value);
+      out.push(value);
+    }
+    return out;
+  }
+
+  private getTreeValidationDisplayName(member: Partial<FamilyTreeMemberDto> | any, fallbackId?: number) {
+    const name = String(member?.name || '').trim();
+    if (name) {
+      return name;
+    }
+    return fallbackId ? `Member #${fallbackId}` : 'This member';
+  }
+
+  private validateFamilyTreeSaveOrThrow(
+    familyCode: string,
+    members: FamilyTreeMemberDto[],
+  ) {
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    if (!normalizedFamilyCode) {
+      throw new BadRequestException('Family code is required to save the tree.');
+    }
+    if (!Array.isArray(members) || members.length === 0) {
+      throw new BadRequestException('Add at least one member before saving the tree.');
+    }
+
+    const membersById = new Map<number, FamilyTreeMemberDto>();
+    const adjacency = new Map<number, Set<number>>();
+    const parentSets = new Map<number, Set<number>>();
+    const nodeUidSet = new Set<string>();
+
+    const ensureAdjacency = (id: number) => {
+      if (!adjacency.has(id)) {
+        adjacency.set(id, new Set<number>());
+      }
+      return adjacency.get(id)!;
+    };
+
+    const addUndirectedEdge = (a: number, b: number) => {
+      if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) {
+        return;
+      }
+      ensureAdjacency(a).add(b);
+      ensureAdjacency(b).add(a);
+    };
+
+    const addParent = (childId: number, parentId: number) => {
+      if (!parentSets.has(childId)) {
+        parentSets.set(childId, new Set<number>());
+      }
+      parentSets.get(childId)!.add(parentId);
+    };
+
+    for (const member of members) {
+      const personId = Number(member?.id || 0);
+      if (!Number.isFinite(personId) || personId <= 0) {
+        throw new BadRequestException('Every card in the tree must have a valid id before saving.');
+      }
+      if (membersById.has(personId)) {
+        throw new BadRequestException('The tree contains duplicate cards. Refresh the tree and try saving again.');
+      }
+      membersById.set(personId, member);
+      ensureAdjacency(personId);
+
+      const nodeUid = String((member as any)?.nodeUid || '').trim();
+      if (nodeUid) {
+        if (nodeUidSet.has(nodeUid)) {
+          throw new BadRequestException('Two tree cards share the same internal id. Refresh the tree and try again.');
+        }
+        nodeUidSet.add(nodeUid);
+      }
+    }
+
+    const validateRefs = (
+      member: FamilyTreeMemberDto,
+      refs: number[],
+      relationLabel: 'parent' | 'child' | 'spouse' | 'sibling',
+      onValidRef?: (refId: number) => void,
+    ) => {
+      const personId = Number(member.id);
+      const name = this.getTreeValidationDisplayName(member, personId);
+      for (const refId of refs) {
+        if (refId === personId) {
+          throw new BadRequestException(`${name} cannot be connected to the same card.`);
+        }
+        if (!membersById.has(refId)) {
+          throw new BadRequestException(`${name} has a ${relationLabel} link to a missing card. Refresh the tree and try again.`);
+        }
+        addUndirectedEdge(personId, refId);
+        onValidRef?.(refId);
+      }
+    };
+
+    for (const member of members) {
+      const personId = Number(member.id);
+      const parents = this.normalizeTreeRelationIdsForValidation(member.parents);
+      const children = this.normalizeTreeRelationIdsForValidation(member.children);
+      const spouses = this.normalizeTreeRelationIdsForValidation(member.spouses);
+      const siblings = this.normalizeTreeRelationIdsForValidation(member.siblings);
+      const isStructuralDummy =
+        Boolean((member as any)?.isStructuralDummy) ||
+        String((member as any)?.nodeType || '').trim() === 'structural_dummy';
+
+      if (
+        isStructuralDummy &&
+        (Boolean((member as any)?.isExternalLinked) ||
+          String((member as any)?.canonicalFamilyCode || '').trim() ||
+          String((member as any)?.canonicalNodeUid || '').trim())
+      ) {
+        const name = this.getTreeValidationDisplayName(member, personId);
+        throw new BadRequestException(`${name} is a removed placeholder and cannot also be saved as a linked card.`);
+      }
+
+      validateRefs(member, parents, 'parent', (parentId) => addParent(personId, parentId));
+      validateRefs(member, children, 'child', (childId) => addParent(childId, personId));
+      validateRefs(member, spouses, 'spouse');
+      validateRefs(member, siblings, 'sibling');
+    }
+
+    const relationPairs = [
+      { sourceKey: 'parents', targetKey: 'children', sourceLabel: 'parent', targetLabel: 'child' },
+      { sourceKey: 'children', targetKey: 'parents', sourceLabel: 'child', targetLabel: 'parent' },
+      { sourceKey: 'spouses', targetKey: 'spouses', sourceLabel: 'spouse', targetLabel: 'spouse' },
+      { sourceKey: 'siblings', targetKey: 'siblings', sourceLabel: 'sibling', targetLabel: 'sibling' },
+    ] as const;
+
+    for (const member of members) {
+      const personId = Number(member.id);
+      const name = this.getTreeValidationDisplayName(member, personId);
+
+      for (const pair of relationPairs) {
+        const relatedIds = this.normalizeTreeRelationIdsForValidation((member as any)?.[pair.sourceKey]);
+        for (const relatedId of relatedIds) {
+          const relatedMember = membersById.get(relatedId);
+          if (!relatedMember) {
+            continue;
+          }
+          const relatedName = this.getTreeValidationDisplayName(relatedMember, relatedId);
+          const reciprocalIds = this.normalizeTreeRelationIdsForValidation((relatedMember as any)?.[pair.targetKey]);
+          if (!reciprocalIds.includes(personId)) {
+            throw new BadRequestException(`${name} lists ${relatedName} as a ${pair.sourceLabel}, but ${relatedName} does not list ${name} as a ${pair.targetLabel}. Refresh the tree and try again.`);
+          }
+        }
+      }
+    }
+
+    for (const [childId, parentIds] of parentSets.entries()) {
+      if (parentIds.size <= 2) {
+        continue;
+      }
+      const child = membersById.get(childId);
+      const childName = this.getTreeValidationDisplayName(child, childId);
+      throw new BadRequestException(`${childName} has more than two parents. Keep only the valid father and/or mother cards before saving.`);
+    }
+
+    if (membersById.size > 1) {
+      const startId = Number(members[0]?.id);
+      const queue: number[] = Number.isFinite(startId) ? [startId] : [];
+      const visited = new Set<number>();
+
+      while (queue.length > 0) {
+        const current = queue.shift()!;
+        if (visited.has(current)) {
+          continue;
+        }
+        visited.add(current);
+        const neighbours = adjacency.get(current) || new Set<number>();
+        neighbours.forEach((nextId) => {
+          if (!visited.has(nextId)) {
+            queue.push(nextId);
+          }
+        });
+      }
+
+      if (visited.size !== membersById.size) {
+        const disconnectedId = Array.from(membersById.keys()).find((id) => !visited.has(id));
+        const disconnectedMember = disconnectedId ? membersById.get(disconnectedId) : null;
+        const disconnectedName = this.getTreeValidationDisplayName(
+          disconnectedMember,
+          disconnectedId || undefined,
+        );
+        throw new BadRequestException(`The tree has disconnected cards. ${disconnectedName} is not connected to the main family. Connect every card before saving.`);
+      }
+    }
+  }
+
+  private assertStructuralDummyCanBeDeletedPermanently(params: {
+    treeEntry: any;
+    totalNodes: number;
+  }) {
+    const totalNodes = Number(params?.totalNodes || 0);
+    const treeEntry = params?.treeEntry;
+    const children = this.normalizeTreeRelationIdsForValidation((treeEntry as any)?.children);
+
+    if (totalNodes <= 1) {
+      throw new BadRequestException('This empty slot is the last card in the tree. Replace it with a real member instead of clearing it.');
+    }
+
+    if (children.length > 0) {
+      throw new BadRequestException('This empty slot still protects children or descendants. Replace it with a real member instead of clearing it.');
     }
   }
 
@@ -2544,6 +2776,101 @@ export class FamilyService {
     }
   }
 
+  async getTreeLinkCandidates(familyCode: string, actingUserId: number) {
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+
+    if (!normalizedFamilyCode) {
+      throw new BadRequestException('familyCode is required');
+    }
+    if (!actingUserId) {
+      throw new ForbiddenException('Unauthorized');
+    }
+
+    const actingUser = await this.userModel.findByPk(actingUserId, {
+      attributes: ['id', 'status'],
+    });
+    if (!actingUser || Number((actingUser as any).status) !== 1) {
+      throw new ForbiddenException('Unauthorized');
+    }
+
+    const familyRecord = await this.familyModel.findOne({
+      where: { familyCode: normalizedFamilyCode } as any,
+      attributes: ['familyCode', 'treeVersion'],
+    });
+
+    if (!familyRecord) {
+      return {
+        message: 'Family not found',
+        treeVersion: 0,
+        people: [],
+      };
+    }
+
+    const actingProfile = await this.userProfileModel.findOne({
+      where: { userId: actingUserId },
+      attributes: ['userId', 'familyCode'],
+    });
+    const actingFamilyCode = String((actingProfile as any)?.familyCode || '').trim().toUpperCase();
+    if (actingFamilyCode && actingFamilyCode === normalizedFamilyCode) {
+      return {
+        message: 'Link Tree works only between different families. Choose another family code.',
+        treeVersion: Number((familyRecord as any)?.treeVersion || 0),
+        people: [],
+      };
+    }
+
+    await this.cleanupInvalidUserIdData();
+
+    const aggregate = await this.treeProjectionService.getFamilyAggregate(normalizedFamilyCode, {
+      requestingUserId: actingUserId,
+      includeAdminQueue: false,
+    });
+
+    const seenNodeUids = new Set<string>();
+    const people = (aggregate?.people || [])
+      .filter((node) => {
+        if (!node || node.isStructuralDummy || node.isExternalLinked || !node.isAppUser) {
+          return false;
+        }
+
+        const primaryFamilyCode = String(
+          node?.primaryFamilyCode || node?.sourceFamilyCode || node?.familyCode || '',
+        )
+          .trim()
+          .toUpperCase();
+        const treeFamilyCode = String(node?.treeFamilyCode || node?.familyCode || '')
+          .trim()
+          .toUpperCase();
+        const nodeUid = String(node?.nodeUid || '').trim();
+
+        if (
+          !nodeUid ||
+          primaryFamilyCode !== normalizedFamilyCode ||
+          treeFamilyCode !== normalizedFamilyCode ||
+          seenNodeUids.has(nodeUid)
+        ) {
+          return false;
+        }
+
+        seenNodeUids.add(nodeUid);
+        return true;
+      })
+      .sort((a, b) => {
+        const nameCompare = String(a?.name || '').localeCompare(String(b?.name || ''));
+        if (nameCompare !== 0) {
+          return nameCompare;
+        }
+        return Number(a?.personId || 0) - Number(b?.personId || 0);
+      });
+
+    return {
+      message: people.length
+        ? 'Link candidates fetched successfully'
+        : 'No members are available to link from this family right now.',
+      treeVersion: aggregate.treeVersion,
+      people,
+    };
+  }
   async getFamilyTree(
     familyCode: string,
     userId?: number,
@@ -3896,7 +4223,7 @@ export class FamilyService {
         !Boolean(entryData?.isStructuralDummy) &&
         String(entryData?.nodeType || '').trim() !== 'structural_dummy'
       ) {
-        throw new BadRequestException('Only removed placeholders can be replaced');
+        throw new BadRequestException('Only removed-member slots can be replaced.');
       }
 
       const actorUser = await this.userModel.findOne({
@@ -4029,7 +4356,7 @@ export class FamilyService {
 
       return {
         success: true,
-        message: 'Structural placeholder replaced successfully',
+        message: 'Removed-member slot filled successfully',
         treeVersion: aggregate.treeVersion,
         replacedNode: {
           personId,
@@ -4082,7 +4409,7 @@ export class FamilyService {
         !Boolean(entryData?.isStructuralDummy) &&
         String(entryData?.nodeType || '').trim() !== 'structural_dummy'
       ) {
-        throw new BadRequestException('Only removed placeholders can be deleted permanently');
+        throw new BadRequestException('Only removed-member slots can be cleared.');
       }
 
       const actorUser = await this.userModel.findOne({
@@ -4118,6 +4445,15 @@ export class FamilyService {
       if (!isAdminOfThisFamily) {
         throw new ForbiddenException('Not authorized to delete this placeholder');
       }
+
+      const totalNodes = await this.familyTreeModel.count({
+        where: { familyCode: normalizedFamilyCode } as any,
+        transaction,
+      });
+      this.assertStructuralDummyCanBeDeletedPermanently({
+        treeEntry: entryData,
+        totalNodes,
+      });
 
       const dummyUserId = Number(entryData?.userId || 0) || null;
       const nodeUid = String(entryData?.nodeUid || '').trim();
@@ -4163,7 +4499,7 @@ export class FamilyService {
 
       return {
         success: true,
-        message: 'Structural placeholder deleted permanently',
+        message: 'Empty slot cleared successfully',
         treeVersion: aggregate.treeVersion,
         deletedNode: {
           personId,
@@ -4228,6 +4564,9 @@ export class FamilyService {
     }
   }
 }
+
+
+
 
 
 

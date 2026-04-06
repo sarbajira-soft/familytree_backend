@@ -368,6 +368,36 @@ export class FamilyLinkService {
             throw new BadRequestException('Receiver node must be a local (non-external) card');
         }
 
+        if (String(relationshipType) === 'sibling') {
+            const senderParents = Array.isArray((senderNode as any)?.parents)
+                ? (senderNode as any).parents.filter(Boolean)
+                : [];
+            const receiverParents = Array.isArray((receiverNode as any)?.parents)
+                ? (receiverNode as any).parents.filter(Boolean)
+                : [];
+
+            if (!senderParents.length || !receiverParents.length) {
+                const missingSides: string[] = [];
+                if (!senderParents.length) {
+                    missingSides.push('sender');
+                }
+                if (!receiverParents.length) {
+                    missingSides.push('receiver');
+                }
+
+                if (missingSides.length === 2) {
+                    throw new BadRequestException(
+                        'Sibling relationship needs saved parents on both sender and receiver cards. Please save both family trees first, then try again.',
+                    );
+                }
+
+                throw new BadRequestException(
+                    missingSides[0] === 'sender'
+                        ? 'Sender card has no saved parents yet. Save/add parents first, then try again.'
+                        : 'Receiver card has no saved parents in the target family tree yet. Ask that family to save/add parents first, then try again.',
+                );
+            }
+        }
         const senderNodeUserId = (senderNode as any).userId ? Number((senderNode as any).userId) : null;
         const receiverNodeUserId = (receiverNode as any).userId ? Number((receiverNode as any).userId) : null;
 
@@ -911,4 +941,6 @@ export class FamilyLinkService {
         };
     }
 }
+
+
 

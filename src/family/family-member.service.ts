@@ -185,6 +185,138 @@ export class FamilyMemberService {
       sourceFamilyCode,
     };
   }
+  private async mapApprovedMembershipToMemberResponse(params: {
+    membership: any;
+    familyCode: string;
+    sourceFamilyCode: string;
+    membershipType: 'associated' | 'linked';
+    requestingUserId?: number;
+  }) {
+    const normalizedFamilyCode = String(params?.familyCode || '').trim().toUpperCase();
+    const sourceFamilyCode = String(params?.sourceFamilyCode || '').trim().toUpperCase();
+    const membership = params?.membership;
+    const user = membership?.user || {};
+    const userProfile = user?.userProfile || {};
+    const resolvedUserId = Number(user?.id || membership?.memberId || 0);
+
+    let blockStatus = { isBlockedByMe: false, isBlockedByThem: false };
+    if (
+      params?.requestingUserId &&
+      resolvedUserId &&
+      Number(params.requestingUserId) !== resolvedUserId
+    ) {
+      try {
+        blockStatus = await this.blockingService.getBlockStatus(
+          params.requestingUserId,
+          resolvedUserId,
+        );
+      } catch (_) {
+        // non-blocking
+      }
+    }
+
+    const role = Number(user?.role || 0);
+    const isFamilyAdmin = role >= 2 && sourceFamilyCode === normalizedFamilyCode;
+
+    return {
+      id: membership?.id,
+      memberId: resolvedUserId || null,
+      familyCode: normalizedFamilyCode,
+      creatorId: null,
+      approveStatus: 'approved',
+      isLinkedUsed: Boolean(membership?.isLinkedUsed),
+      createdAt: membership?.createdAt || null,
+      updatedAt: membership?.updatedAt || null,
+      user: this.applyFamilyVisibility({
+        id: resolvedUserId || null,
+        email: user?.email || null,
+        mobile: user?.mobile || null,
+        countryCode: user?.countryCode || null,
+        status: user?.status || 1,
+        role,
+        isAppUser: Boolean(user?.isAppUser),
+        fullName:
+          `${userProfile?.firstName || ''} ${userProfile?.lastName || ''}`.trim() ||
+          'Family Member',
+        profileImage: userProfile?.profile || null,
+        userProfile: {
+          ...(userProfile || {}),
+          familyCode: sourceFamilyCode || null,
+        },
+      }),
+      blockStatus,
+      membershipType: params.membershipType,
+      familyRole: isFamilyAdmin ? (role === 3 ? 'Superadmin' : 'Admin') : 'Member',
+      isFamilyAdmin,
+      sourceFamilyCode,
+    };
+  }
+  private async mapConnectedTreeNodeToMemberResponse(params: {
+    node: TreeProjectionNode;
+    familyCode: string;
+    sourceFamilyCode: string;
+    membershipType: 'associated' | 'linked';
+    requestingUserId?: number;
+  }) {
+    const normalizedFamilyCode = String(params?.familyCode || '').trim().toUpperCase();
+    const sourceFamilyCode = String(params?.sourceFamilyCode || '').trim().toUpperCase();
+    const node = params?.node;
+    const userProfile = node?.userProfile || {};
+    const resolvedUserId = Number(node?.userId || node?.memberId || 0);
+
+    let blockStatus = { isBlockedByMe: false, isBlockedByThem: false };
+    if (
+      params?.requestingUserId &&
+      resolvedUserId &&
+      Number(params.requestingUserId) !== resolvedUserId
+    ) {
+      try {
+        blockStatus = await this.blockingService.getBlockStatus(
+          params.requestingUserId,
+          resolvedUserId,
+        );
+      } catch (_) {
+        // non-blocking
+      }
+    }
+
+    const role = Number(node?.role || 0);
+    const isFamilyAdmin = role >= 2 && sourceFamilyCode === normalizedFamilyCode;
+
+    return {
+      id: node?.id || node?.personId || resolvedUserId || null,
+      memberId: resolvedUserId || null,
+      familyCode: normalizedFamilyCode,
+      creatorId: null,
+      approveStatus: 'approved',
+      isLinkedUsed: false,
+      createdAt: null,
+      updatedAt: null,
+      user: this.applyFamilyVisibility({
+        id: resolvedUserId || null,
+        email: node?.email || null,
+        mobile: node?.mobile || null,
+        countryCode: node?.countryCode || null,
+        status: node?.status || 1,
+        role,
+        isAppUser: Boolean(node?.isAppUser),
+        fullName: node?.name || 'Family Member',
+        profileImage: node?.img || userProfile?.profile || null,
+        userProfile: {
+          ...(userProfile || {}),
+          familyCode: sourceFamilyCode || null,
+          contactNumber: node?.contactNumber || userProfile?.contactNumber || null,
+          gender: node?.gender || userProfile?.gender || null,
+          profile: userProfile?.profile || null,
+        },
+      }),
+      blockStatus,
+      membershipType: params.membershipType,
+      familyRole: isFamilyAdmin ? (role === 3 ? 'Superadmin' : 'Admin') : 'Member',
+      isFamilyAdmin,
+      sourceFamilyCode,
+    };
+  }
   private toRequestState(status: string | null | undefined) {
     const normalized = this.normalizeApprovalStatus(status);
     switch (normalized) {
@@ -1364,7 +1496,17 @@ export class FamilyMemberService {
     await this.requireAdminMembership(actingUserId, familyCode);
 
     const rows = await this.familyTreeModel.findAll({
-      where: { familyCode, isStructuralDummy: false } as any,
+      where: { familyCode } as any,
+      attributes: [
+        'userId',
+        'personId',
+        'nodeUid',
+        'generation',
+        'familyCode',
+        'isStructuralDummy',
+        'nodeType',
+        'dummyReason',
+      ],
       include: [
         {
           model: this.userModel,
@@ -1384,19 +1526,37 @@ export class FamilyMemberService {
       order: [['generation', 'ASC'], ['personId', 'ASC']],
     });
 
-    const unique = new Map<number, any>();
+    const unique = new Map<string, any>();
     for (const row of rows as any[]) {
       const uid = Number(row?.userId);
-      if (!Number.isFinite(uid) || unique.has(uid)) continue;
-      unique.set(uid, {
+      if (!Number.isFinite(uid) || uid <= 0) {
+        continue;
+      }
+
+      const isStructuralDummy =
+        Boolean(row?.isStructuralDummy) ||
+        String(row?.nodeType || '').trim() === 'structural_dummy';
+      const dedupeKey = isStructuralDummy
+        ? `person:${Number(row?.personId || 0)}`
+        : `user:${uid}`;
+      if (unique.has(dedupeKey)) {
+        continue;
+      }
+
+      unique.set(dedupeKey, {
         dummyUserId: uid,
         personId: row.personId,
         nodeUid: row.nodeUid,
         generation: row.generation,
         familyCode: row.familyCode,
-        name: `${row?.user?.userProfile?.firstName || ''} ${row?.user?.userProfile?.lastName || ''}`.trim() || 'Familyss User',
+        name: isStructuralDummy
+          ? 'Removed member'
+          : `${row?.user?.userProfile?.firstName || ''} ${row?.user?.userProfile?.lastName || ''}`.trim() || 'Familyss User',
         gender: row?.user?.userProfile?.gender || null,
         profile: row?.user?.userProfile?.profile || null,
+        isStructuralDummy,
+        nodeType: row?.nodeType || null,
+        dummyReason: row?.dummyReason || null,
       });
     }
 
@@ -1405,7 +1565,6 @@ export class FamilyMemberService {
       data: Array.from(unique.values()),
     };
   }
-
   async replaceDummyWithMember(
     familyCode: string,
     dummyUserId: number,
@@ -1529,7 +1688,7 @@ export class FamilyMemberService {
       )
         .trim()
         .toUpperCase();
-      const dedupeKey = `${Number(node.userId)}:${node.nodeType}:${sourceFamilyCode}`;
+      const dedupeKey = `user:${Number(node.userId)}:${node.nodeType}:${sourceFamilyCode}`;
       if (uniqueMembers.has(dedupeKey)) {
         continue;
       }
@@ -1539,15 +1698,163 @@ export class FamilyMemberService {
       );
     }
 
+    const connectedFamilyTypes = new Map<string, Set<'associated' | 'linked'>>();
+    for (const family of aggregate?.projection?.associatedFamilies || []) {
+      const sourceFamilyCode = String(family?.familyCode || '').trim().toUpperCase();
+      if (!sourceFamilyCode || sourceFamilyCode === normalizedFamilyCode) {
+        continue;
+      }
+      if (!connectedFamilyTypes.has(sourceFamilyCode)) {
+        connectedFamilyTypes.set(sourceFamilyCode, new Set<'associated' | 'linked'>());
+      }
+      connectedFamilyTypes.get(sourceFamilyCode)!.add('associated');
+    }
+    for (const family of aggregate?.projection?.linkedFamilies || []) {
+      const sourceFamilyCode = String(family?.familyCode || '').trim().toUpperCase();
+      if (!sourceFamilyCode || sourceFamilyCode === normalizedFamilyCode) {
+        continue;
+      }
+      if (!connectedFamilyTypes.has(sourceFamilyCode)) {
+        connectedFamilyTypes.set(sourceFamilyCode, new Set<'associated' | 'linked'>());
+      }
+      connectedFamilyTypes.get(sourceFamilyCode)!.add('linked');
+    }
+
+    const connectedFamilyCodes = Array.from(connectedFamilyTypes.keys());
+
+    for (const sourceFamilyCode of connectedFamilyCodes) {
+      const membershipTypes = connectedFamilyTypes.get(sourceFamilyCode);
+      if (!sourceFamilyCode || !membershipTypes?.size) {
+        continue;
+      }
+
+      try {
+        const connectedAggregate = await this.treeProjectionService.getFamilyAggregate(sourceFamilyCode, {
+          requestingUserId,
+          includeAdminQueue: false,
+        });
+        const connectedLocalNodes = (connectedAggregate?.nodes || []).filter((node) => {
+          if (!node || node.isStructuralDummy) {
+            return false;
+          }
+
+          const nodeType = String(node?.nodeType || '').trim().toLowerCase();
+          if (nodeType !== 'birth') {
+            return false;
+          }
+
+          const nodeSourceFamilyCode = String(
+            node?.sourceFamilyCode || node?.primaryFamilyCode || node?.familyCode || '',
+          )
+            .trim()
+            .toUpperCase();
+          const nodeTreeFamilyCode = String(node?.treeFamilyCode || node?.familyCode || '')
+            .trim()
+            .toUpperCase();
+
+          return (
+            nodeSourceFamilyCode === sourceFamilyCode &&
+            nodeTreeFamilyCode === sourceFamilyCode
+          );
+        });
+
+        for (const node of connectedLocalNodes) {
+          const identityKey = Number(node?.userId || node?.memberId || 0) > 0
+            ? `user:${Number(node?.userId || node?.memberId || 0)}`
+            : String(node?.nodeUid || '').trim()
+              ? `node:${String(node?.nodeUid || '').trim()}`
+              : `person:${Number(node?.personId || node?.id || 0)}`;
+          if (!identityKey || identityKey.endsWith(':0')) {
+            continue;
+          }
+
+          for (const membershipType of membershipTypes) {
+            const dedupeKey = `${identityKey}:${membershipType}:${sourceFamilyCode}`;
+            if (uniqueMembers.has(dedupeKey)) {
+              continue;
+            }
+
+            uniqueMembers.set(
+              dedupeKey,
+              await this.mapConnectedTreeNodeToMemberResponse({
+                node,
+                familyCode: normalizedFamilyCode,
+                sourceFamilyCode,
+                membershipType,
+                requestingUserId,
+              }),
+            );
+          }
+        }
+      } catch (_) {
+        // non-blocking: fall back to approved membership rows below
+      }
+    }
+
+    const connectedMembers = connectedFamilyCodes.length
+      ? await this.familyMemberModel.findAll({
+          where: {
+            familyCode: { [Op.in]: connectedFamilyCodes },
+            approveStatus: 'approved',
+          } as any,
+          include: [
+            {
+              model: this.userModel,
+              as: 'user',
+              required: true,
+              where: {
+                isAppUser: true,
+                status: 1,
+              } as any,
+              attributes: ['id', 'email', 'mobile', 'countryCode', 'status', 'role', 'isAppUser'],
+              include: [
+                {
+                  model: this.userProfileModel,
+                  as: 'userProfile',
+                  required: false,
+                },
+              ],
+            },
+          ],
+          order: [['familyCode', 'ASC'], ['updatedAt', 'DESC'], ['id', 'DESC']],
+        })
+      : [];
+
+    for (const member of connectedMembers as any[]) {
+      const sourceFamilyCode = String((member as any)?.familyCode || '').trim().toUpperCase();
+      const memberUserId = Number((member as any)?.memberId || (member as any)?.user?.id || 0);
+      const membershipTypes = connectedFamilyTypes.get(sourceFamilyCode);
+      if (!sourceFamilyCode || !memberUserId || !membershipTypes?.size) {
+        continue;
+      }
+
+      for (const membershipType of membershipTypes) {
+        const dedupeKey = `user:${memberUserId}:${membershipType}:${sourceFamilyCode}`;
+        if (uniqueMembers.has(dedupeKey)) {
+          continue;
+        }
+
+        uniqueMembers.set(
+          dedupeKey,
+          await this.mapApprovedMembershipToMemberResponse({
+            membership: member,
+            familyCode: normalizedFamilyCode,
+            sourceFamilyCode,
+            membershipType,
+            requestingUserId,
+          }),
+        );
+      }
+    }
+
     const data = Array.from(uniqueMembers.values());
     return {
-      message: `${data.length} tree-derived family members found.`,
+      message: `${data.length} family members found.`,
       treeVersion: aggregate.treeVersion,
       projection: aggregate.projection,
       data,
     };
   }
-
   async getMembersNotInTree(familyCode: string, actingUserId: number) {
     await this.requireAdminMembership(actingUserId, familyCode);
 
@@ -1871,5 +2178,6 @@ export class FamilyMemberService {
     }
   }
 }
+
 
 

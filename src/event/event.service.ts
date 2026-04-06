@@ -12,6 +12,7 @@ import { NotificationService } from '../notification/notification.service';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Op } from 'sequelize';
+import { decryptFieldValue } from '../common/security/field-encryption.util';
 import { EventImage } from './model/event-image.model';
 import { FamilyMember } from '../family/model/family-member.model';
 import { UploadService } from '../uploads/upload.service';
@@ -826,10 +827,19 @@ export class EventService {
       if (blockedSet.has(Number(member.memberId))) {
         continue;
       }
-      if (member.dob) {
+      const decryptedDob = decryptFieldValue(member.dob);
+      if (decryptedDob) {
         // Parse date as local date to avoid timezone issues
-        const dobString = typeof member.dob === 'string' ? member.dob.split('T')[0] : member.dob.toISOString().split('T')[0]; // Get YYYY-MM-DD part
+        const dobString = typeof decryptedDob === 'string'
+          ? decryptedDob.split('T')[0]
+          : (decryptedDob as any).toISOString?.().split('T')[0]; // Get YYYY-MM-DD part
+        if (!dobString || typeof dobString !== 'string') {
+          continue;
+        }
         const [year, month, day] = dobString.split('-').map(Number);
+        if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+          continue;
+        }
         
         const nextBirthday = new Date(currentYear, month - 1, day); // month is 0-indexed
         
@@ -1032,10 +1042,19 @@ export class EventService {
 
     // Process birthdays
     for (const member of familyMembers) {
-      if (member.dob) {
+      const decryptedDob = decryptFieldValue(member.dob);
+      if (decryptedDob) {
         // Parse date as local date to avoid timezone issues
-        const dobString = typeof member.dob === 'string' ? member.dob.split('T')[0] : member.dob.toISOString().split('T')[0]; // Get YYYY-MM-DD part
+        const dobString = typeof decryptedDob === 'string'
+          ? decryptedDob.split('T')[0]
+          : (decryptedDob as any).toISOString?.().split('T')[0]; // Get YYYY-MM-DD part
+        if (!dobString || typeof dobString !== 'string') {
+          continue;
+        }
         const [year, month, day] = dobString.split('-').map(Number);
+        if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+          continue;
+        }
         
         const nextBirthday = new Date(currentYear, month - 1, day); // month is 0-indexed
         

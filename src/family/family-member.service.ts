@@ -1474,6 +1474,13 @@ export class FamilyMemberService {
   }
 
   async selfRemoveFromFamily(familyCode: string, actingUserId: number) {
+    const isAdminOfFamily = await this.isAdminOfFamily(actingUserId, familyCode);
+    if (isAdminOfFamily) {
+      throw new BadRequestException(
+        'Family admins cannot leave the family. Transfer or remove admin access first.',
+      );
+    }
+
     return this.removeMemberFromFamilyCore({
       memberId: actingUserId,
       familyCode,

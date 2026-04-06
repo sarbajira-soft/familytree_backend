@@ -94,12 +94,44 @@ export class PostService {
     }
   }
 
+  private normalizeAudienceFamilyCodes(values: Array<string | null | undefined>): string[] {
+    return Array.from(
+      new Set(
+        values
+          .map((value) => String(value || '').trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    );
+  }
+
   private async getAccessibleFamilyCodesForUser(userId: number): Promise<string[]> {
     if (!userId) {
       return [];
     }
 
     return this.treeProjectionService.getReachableFamilyCodesForUser(userId);
+  }
+
+  private async getViewerAudienceFamilyCodes(userId: number): Promise<string[]> {
+    if (!userId) {
+      return [];
+    }
+
+    const [profile, memberships] = await Promise.all([
+      this.userProfileModel.findOne({
+        where: { userId },
+        attributes: ['familyCode'],
+      }),
+      this.familyMemberModel.findAll({
+        where: { memberId: userId, approveStatus: 'approved' } as any,
+        attributes: ['familyCode'],
+      }),
+    ]);
+
+    return this.normalizeAudienceFamilyCodes([
+      (profile as any)?.familyCode,
+      ...((memberships as any[]) || []).map((membership) => (membership as any)?.familyCode),
+    ]);
   }
 
   private async assertUserCanAccessFamilyOrLinked(
@@ -134,7 +166,7 @@ export class PostService {
         where: { userId: creatorUserId },
         attributes: ['contentVisibilitySettings'],
       }),
-      this.getAccessibleFamilyCodesForUser(viewerUserId),
+      this.getViewerAudienceFamilyCodes(viewerUserId),
     ]);
 
     if (!viewerFamilyCodes.length) {
@@ -170,7 +202,7 @@ export class PostService {
       return posts;
     }
 
-    const viewerFamilyCodes = await this.getAccessibleFamilyCodesForUser(viewerUserId);
+    const viewerFamilyCodes = await this.getViewerAudienceFamilyCodes(viewerUserId);
     if (!viewerFamilyCodes.length) {
       return posts.filter(
         (post) =>

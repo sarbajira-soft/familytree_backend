@@ -93,12 +93,44 @@ export class EventService {
     }
   }
 
+  private normalizeAudienceFamilyCodes(values: Array<string | null | undefined>): string[] {
+    return Array.from(
+      new Set(
+        values
+          .map((value) => String(value || '').trim().toUpperCase())
+          .filter(Boolean),
+      ),
+    );
+  }
+
   private async getAccessibleFamilyCodesForUser(userId: number): Promise<string[]> {
     if (!userId) {
       return [];
     }
 
     return this.treeProjectionService.getReachableFamilyCodesForUser(userId);
+  }
+
+  private async getViewerAudienceFamilyCodes(userId: number): Promise<string[]> {
+    if (!userId) {
+      return [];
+    }
+
+    const [profile, memberships] = await Promise.all([
+      this.userProfileModel.findOne({
+        where: { userId },
+        attributes: ['familyCode'],
+      }),
+      this.familyMemberModel.findAll({
+        where: { memberId: userId, approveStatus: 'approved' } as any,
+        attributes: ['familyCode'],
+      }),
+    ]);
+
+    return this.normalizeAudienceFamilyCodes([
+      (profile as any)?.familyCode,
+      ...((memberships as any[]) || []).map((membership) => (membership as any)?.familyCode),
+    ]);
   }
 
   private async assertUserCanAccessFamilyOrLinked(
@@ -132,7 +164,7 @@ export class EventService {
         where: { userId: creatorUserId },
         attributes: ['contentVisibilitySettings'],
       }),
-      this.getAccessibleFamilyCodesForUser(viewerUserId),
+      this.getViewerAudienceFamilyCodes(viewerUserId),
     ]);
 
     if (!viewerFamilyCodes.length) {
@@ -168,7 +200,7 @@ export class EventService {
       return events;
     }
 
-    const viewerFamilyCodes = await this.getAccessibleFamilyCodesForUser(viewerUserId);
+    const viewerFamilyCodes = await this.getViewerAudienceFamilyCodes(viewerUserId);
     if (!viewerFamilyCodes.length) {
       return events.filter(
         (event) => Number(event?.createdBy) === Number(viewerUserId) || !(event?.familyCode && event?.familyCode !== ''),
@@ -952,11 +984,15 @@ export class EventService {
       await this.assertUserCanAccessFamilyOrLinked(requestingUserId, familyCode);
     }
 
-    const [customEvents, birthdays, anniversaries] = await Promise.all([
+    const [familyEvents, birthdays, anniversaries] = await Promise.all([
       this.getByFamilyCode(familyCode),
       this.getUpcomingBirthdaysByFamilyCode(familyCode),
       this.getUpcomingAnniversariesByFamilyCode(familyCode)
     ]);
+
+    const customEvents = requestingUserId
+      ? await this.filterEventsByFamilyVisibility(familyEvents as any[], requestingUserId)
+      : familyEvents;
 
     // Combine all events and sort by date
     const allEvents = [

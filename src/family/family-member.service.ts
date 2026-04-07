@@ -149,7 +149,7 @@ export class FamilyMemberService {
     return {
       id: node?.id,
       memberId: node?.userId,
-      familyCode: normalizedFamilyCode,
+      familyCode,
       creatorId: null,
       approveStatus: node?.nodeType === 'birth' ? 'approved' : node?.nodeType,
       isLinkedUsed: false,
@@ -342,7 +342,7 @@ export class FamilyMemberService {
       message,
       data: {
         ...plainMembership,
-        familyCode: normalizedFamilyCode,
+        familyCode,
         requestState: this.toRequestState(plainMembership?.approveStatus),
       },
     };
@@ -1122,7 +1122,7 @@ export class FamilyMemberService {
         type: 'FAMILY_MEMBER_APPROVED',
         title: 'Welcome to the Family!',
         message: `Your request to join the family (${normalizedFamilyCode}) has been approved. Welcome!`,
-        familyCode: normalizedFamilyCode,
+        familyCode,
         referenceId: memberId,
         userIds: [memberId],
       },
@@ -1221,7 +1221,7 @@ export class FamilyMemberService {
         type: 'FAMILY_JOIN_REJECTED',
         title: 'Family Join Request Rejected',
         message: `Your request to join the family (${normalizedFamilyCode}) has been rejected.`,
-        familyCode: normalizedFamilyCode,
+        familyCode,
         referenceId: memberId,
         userIds: [memberId],
       },
@@ -1242,7 +1242,7 @@ export class FamilyMemberService {
       membership = await this.familyMemberModel.findOne({
         where: {
           memberId: actingUserId,
-          familyCode: normalizedFamilyCode,
+          familyCode,
           approveStatus: 'pending',
         } as any,
         transaction,
@@ -1509,10 +1509,11 @@ export class FamilyMemberService {
   }
 
   async getNonAppUsersByFamily(familyCode: string, actingUserId: number) {
-    await this.requireAdminMembership(actingUserId, familyCode);
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    await this.requireAdminMembership(actingUserId, normalizedFamilyCode);
 
     const rows = await this.familyTreeModel.findAll({
-      where: { familyCode } as any,
+      where: { familyCode: normalizedFamilyCode } as any,
       attributes: [
         'userId',
         'personId',
@@ -1564,7 +1565,7 @@ export class FamilyMemberService {
         personId: row.personId,
         nodeUid: row.nodeUid,
         generation: row.generation,
-        familyCode: row.familyCode,
+        familyCode: normalizedFamilyCode,
         name: isStructuralDummy
           ? 'Removed member'
           : `${row?.user?.userProfile?.firstName || ''} ${row?.user?.userProfile?.lastName || ''}`.trim() || 'Familyss User',
@@ -1587,7 +1588,8 @@ export class FamilyMemberService {
     replacementUserId: number,
     actingUserId: number,
   ) {
-    await this.requireAdminMembership(actingUserId, familyCode);
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    await this.requireAdminMembership(actingUserId, normalizedFamilyCode);
 
     if (Number(dummyUserId) === Number(replacementUserId)) {
       throw new BadRequestException('Replacement user must be different from dummy user');
@@ -1606,7 +1608,7 @@ export class FamilyMemberService {
       const replacementMembership = await this.familyMemberModel.findOne({
         where: {
           memberId: replacementUserId,
-          familyCode,
+          familyCode: normalizedFamilyCode,
           approveStatus: 'approved',
         } as any,
         transaction,
@@ -1624,7 +1626,7 @@ export class FamilyMemberService {
       }
 
       const existingTargetRows = await this.familyTreeModel.count({
-        where: { familyCode, userId: replacementUserId, isStructuralDummy: false } as any,
+        where: { familyCode: normalizedFamilyCode, userId: replacementUserId, isStructuralDummy: false } as any,
         transaction,
       });
       if (existingTargetRows > 0) {
@@ -1634,7 +1636,7 @@ export class FamilyMemberService {
       const [updatedCount] = await this.familyTreeModel.update(
         { userId: replacementUserId } as any,
         {
-          where: { familyCode, userId: dummyUserId, isStructuralDummy: false } as any,
+          where: { familyCode: normalizedFamilyCode, userId: dummyUserId, isStructuralDummy: false } as any,
           transaction,
         },
       );
@@ -1652,7 +1654,7 @@ export class FamilyMemberService {
       }
 
       await repairFamilyTreeIntegrity({
-        familyCode,
+        familyCode: normalizedFamilyCode,
         transaction,
         lock: true,
         fixExternalGenerations: true,
@@ -1661,7 +1663,7 @@ export class FamilyMemberService {
       await transaction.commit();
 
       // NEW: Emit WebSocket event for real-time synchronization
-      this.notificationService.emitFamilyEvent(familyCode, {
+      this.notificationService.emitFamilyEvent(normalizedFamilyCode, {
         type: 'DUMMY_USER_REPLACED',
         dummyUserId,
         replacementUserId,
@@ -1672,7 +1674,7 @@ export class FamilyMemberService {
       return {
         message: 'Dummy user replaced successfully',
         data: {
-          familyCode,
+          familyCode: normalizedFamilyCode,
           dummyUserId,
           replacementUserId,
           updatedNodes: Number(updatedCount),
@@ -1695,6 +1697,7 @@ export class FamilyMemberService {
     });
 
     const uniqueMembers = new Map<string, any>();
+    const birthMemberUserIds = new Set<number>();
     for (const node of aggregate?.projection?.directoryMembers || []) {
       if (!node?.userId || node?.isStructuralDummy) {
         continue;
@@ -1708,10 +1711,18 @@ export class FamilyMemberService {
       if (uniqueMembers.has(dedupeKey)) {
         continue;
       }
-      uniqueMembers.set(
-        dedupeKey,
-        await this.mapTreeNodeToMemberResponse(node, normalizedFamilyCode, requestingUserId),
+      const mappedMember = await this.mapTreeNodeToMemberResponse(
+        node,
+        normalizedFamilyCode,
+        requestingUserId,
       );
+      uniqueMembers.set(dedupeKey, mappedMember);
+      const mappedUserId = Number(
+        mappedMember?.user?.id || mappedMember?.memberId || 0,
+      );
+      if (mappedMember?.membershipType === 'member' && mappedUserId > 0) {
+        birthMemberUserIds.add(mappedUserId);
+      }
     }
 
     const connectedFamilyTypes = new Map<string, Set<'associated' | 'linked'>>();
@@ -1775,6 +1786,10 @@ export class FamilyMemberService {
         });
 
         for (const node of connectedLocalNodes) {
+          const connectedUserId = Number(node?.userId || node?.memberId || 0);
+          if (connectedUserId > 0 && birthMemberUserIds.has(connectedUserId)) {
+            continue;
+          }
           const identityKey = Number(node?.userId || node?.memberId || 0) > 0
             ? `user:${Number(node?.userId || node?.memberId || 0)}`
             : String(node?.nodeUid || '').trim()
@@ -1794,7 +1809,7 @@ export class FamilyMemberService {
               dedupeKey,
               await this.mapConnectedTreeNodeToMemberResponse({
                 node,
-                familyCode: normalizedFamilyCode,
+                familyCode,
                 sourceFamilyCode,
                 membershipType,
                 requestingUserId,
@@ -1843,6 +1858,9 @@ export class FamilyMemberService {
       if (!sourceFamilyCode || !memberUserId || !membershipTypes?.size) {
         continue;
       }
+      if (birthMemberUserIds.has(memberUserId)) {
+        continue;
+      }
 
       for (const membershipType of membershipTypes) {
         const dedupeKey = `user:${memberUserId}:${membershipType}:${sourceFamilyCode}`;
@@ -1854,7 +1872,7 @@ export class FamilyMemberService {
           dedupeKey,
           await this.mapApprovedMembershipToMemberResponse({
             membership: member,
-            familyCode: normalizedFamilyCode,
+            familyCode,
             sourceFamilyCode,
             membershipType,
             requestingUserId,
@@ -2053,12 +2071,12 @@ export class FamilyMemberService {
     }
 
     const membership = await this.familyMemberModel.findOne({
-      where: { familyCode: normalizedFamilyCode, memberId: normalizedMemberId } as any,
+      where: { familyCode, memberId: normalizedMemberId } as any,
       order: [['updatedAt', 'DESC'], ['id', 'DESC']],
     });
     const treeNode = await this.familyTreeModel.findOne({
       where: {
-        familyCode: normalizedFamilyCode,
+        familyCode,
         userId: normalizedMemberId,
         isStructuralDummy: false,
       } as any,
@@ -2082,7 +2100,7 @@ export class FamilyMemberService {
     const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
     const normalizedMemberId = Number(memberId);
     const membership = await this.familyMemberModel.findOne({
-      where: { familyCode: normalizedFamilyCode, memberId: normalizedMemberId } as any,
+      where: { familyCode, memberId: normalizedMemberId } as any,
       order: [['updatedAt', 'DESC'], ['id', 'DESC']],
     });
 
@@ -2097,7 +2115,7 @@ export class FamilyMemberService {
     return {
       message: 'Invitation link marked as used successfully',
       data: {
-        familyCode: normalizedFamilyCode,
+        familyCode,
         memberId: normalizedMemberId,
         isLinkUsed: true,
       },
@@ -2159,7 +2177,7 @@ export class FamilyMemberService {
         membership = await this.familyMemberModel.create(
           {
             memberId: normalizedUserId,
-            familyCode: normalizedFamilyCode,
+            familyCode,
             creatorId: normalizedAddedBy || normalizedUserId,
             approveStatus: 'approved',
           } as any,

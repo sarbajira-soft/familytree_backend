@@ -28,6 +28,18 @@ const normalizeIdList = (list: any): number[] => {
   return out;
 };
 
+const normalizeNodeType = (row: any): string =>
+  String((row as any)?.nodeType || '').trim().toLowerCase();
+
+const isLinkedExternalNode = (row: any): boolean =>
+  Boolean((row as any)?.isExternalLinked) || normalizeNodeType(row) === 'linked';
+
+const pairKey = (a: number, b: number): string => {
+  const low = a < b ? a : b;
+  const high = a < b ? b : a;
+  return `${low}:${high}`;
+};
+
 const arraysEqual = (a: number[], b: number[]) => {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) {
@@ -164,6 +176,29 @@ export async function repairFamilyTreeIntegrity(params: {
   };
 
   const shouldDropSpouseEdge = (a: any, b: any) => {
+    const aId = toNum((a as any)?.personId);
+    const bId = toNum((b as any)?.personId);
+    if (aId !== null && bId !== null) {
+      if (parentEdges.has(`${aId}:${bId}`) || parentEdges.has(`${bId}:${aId}`)) {
+        return true;
+      }
+
+      if (siblingEdges.has(pairKey(aId, bId))) {
+        return true;
+      }
+    }
+
+    const aParents = normalizeIdList((a as any)?.parents);
+    const bParents = normalizeIdList((b as any)?.parents);
+    if (aParents.some((pid) => bParents.includes(pid))) {
+      return true;
+    }
+
+    // Linked cards are only valid for cross-family tree placement, not host-tree spouse edges.
+    if (isLinkedExternalNode(a) || isLinkedExternalNode(b)) {
+      return true;
+    }
+
     const ga = toNum((a as any)?.generation) ?? 0;
     const gb = toNum((b as any)?.generation) ?? 0;
     if (ga === gb) return false;
@@ -358,3 +393,4 @@ export async function repairFamilyTreeIntegrity(params: {
     removedSiblingEdges,
   };
 }
+

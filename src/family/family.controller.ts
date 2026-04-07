@@ -777,6 +777,7 @@ export class FamilyController {
   async deleteTreePerson(
     @Param('familyCode') familyCode: string,
     @Param('personId', ParseIntPipe) personId: number,
+    @Query('nodeUid') nodeUid: string,
     @Req() req,
   ) {
     const actingUserId: number = req.user?.userId;
@@ -791,6 +792,7 @@ export class FamilyController {
       actingUserId,
       familyCode,
       personId,
+      nodeUid,
     });
   }
 

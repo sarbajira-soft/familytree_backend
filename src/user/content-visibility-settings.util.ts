@@ -12,6 +12,11 @@ export type FamilyContentVisibilitySettings = {
   events: FamilyContentVisibilityEntry;
 };
 
+export const FAMILY_CONTENT_MEMBER_APPROVE_STATUSES = [
+  'approved',
+  'associated',
+] as const;
+
 export const DEFAULT_FAMILY_CONTENT_VISIBILITY_ENTRY: FamilyContentVisibilityEntry = {
   visibility: 'all-members',
   familyCodes: [],

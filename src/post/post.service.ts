@@ -24,7 +24,11 @@ import { NotificationGateway } from 'src/notification/notification.gateway';
 import { BlockingService } from '../blocking/blocking.service';
 import { FamilyMember } from '../family/model/family-member.model';
 import { FamilyLink } from '../family/model/family-link.model';
-import { canViewerAccessFamilyContentForType, isFamilyContentVisibleForType } from '../user/content-visibility-settings.util';
+import {
+  FAMILY_CONTENT_MEMBER_APPROVE_STATUSES,
+  canViewerAccessFamilyContentForType,
+  isFamilyContentVisibleForType,
+} from '../user/content-visibility-settings.util';
 import { TreeProjectionService } from '../family/tree-projection.service';
 
 type PostWithProfile = Post & { userProfile?: UserProfile };
@@ -104,12 +108,50 @@ export class PostService {
     );
   }
 
+  private async getDirectAudienceFamilyCodes(userId: number): Promise<string[]> {
+    if (!userId) {
+      return [];
+    }
+
+    const [profile, memberships] = await Promise.all([
+      this.userProfileModel.findOne({
+        where: { userId },
+        attributes: ['familyCode', 'associatedFamilyCodes'],
+      }),
+      this.familyMemberModel.findAll({
+        where: {
+          memberId: userId,
+          approveStatus: { [Op.in]: FAMILY_CONTENT_MEMBER_APPROVE_STATUSES },
+        } as any,
+        attributes: ['familyCode'],
+      }),
+    ]);
+
+    const associatedCodes = Array.isArray((profile as any)?.associatedFamilyCodes)
+      ? ((profile as any)?.associatedFamilyCodes as any[])
+      : [];
+
+    return this.normalizeAudienceFamilyCodes([
+      (profile as any)?.familyCode,
+      ...associatedCodes,
+      ...((memberships as any[]) || []).map((membership) => (membership as any)?.familyCode),
+    ]);
+  }
+
   private async getAccessibleFamilyCodesForUser(userId: number): Promise<string[]> {
     if (!userId) {
       return [];
     }
 
-    return this.treeProjectionService.getReachableFamilyCodesForUser(userId);
+    const [reachableFamilyCodes, directFamilyCodes] = await Promise.all([
+      this.treeProjectionService.getReachableFamilyCodesForUser(userId),
+      this.getDirectAudienceFamilyCodes(userId),
+    ]);
+
+    return this.normalizeAudienceFamilyCodes([
+      ...reachableFamilyCodes,
+      ...directFamilyCodes,
+    ]);
   }
 
   private async getViewerAudienceFamilyCodes(userId: number): Promise<string[]> {
@@ -123,7 +165,10 @@ export class PostService {
         attributes: ['familyCode'],
       }),
       this.familyMemberModel.findAll({
-        where: { memberId: userId, approveStatus: 'approved' } as any,
+        where: {
+          memberId: userId,
+          approveStatus: { [Op.in]: FAMILY_CONTENT_MEMBER_APPROVE_STATUSES },
+        } as any,
         attributes: ['familyCode'],
       }),
     ]);
@@ -518,7 +563,7 @@ export class PostService {
     const privacy = (dto.privacy ?? 'public') as 'public' | 'private' | 'family';
     let familyCode = this.normalizeFamilyCodeInput((dto as any).familyCode);
 
-    // For family/private posts, derive familyCode from the creator’s profile if not provided.
+    // For family/private posts, derive familyCode from the creator's profile if not provided.
     if (privacy === 'private' || privacy === 'family') {
       if (!familyCode) {
         const profile = await this.userProfileModel.findOne({
@@ -544,6 +589,7 @@ export class PostService {
       privacy === 'private' || privacy === 'family'
         ? await this.getFamilyPostsVisibilityEnabled(createdBy)
         : true;
+    const isVisibleToPublic = privacy === 'public';
 
     const dtoForBroadcast = { ...(dto as any), familyCode: familyCode || undefined } as CreatePostDto;
 
@@ -557,6 +603,7 @@ export class PostService {
       postVideo: hasVideo ? postVideo : null,
       privacy,
       isVisibleToFamily: isFamilyVisible,
+      isVisibleToPublic,
       hiddenReason:
         privacy === 'private' || privacy === 'family'
           ? (isFamilyVisible ? null : 'content_privacy_disabled')
@@ -645,12 +692,23 @@ export class PostService {
       familyCodeFinal = null;
     }
 
+    const isFamilyVisible =
+      privacy === 'private' || privacy === 'family'
+        ? await this.getFamilyPostsVisibilityEnabled(userId)
+        : true;
+
     // Prepare update data using the normalized values
     const updateData: any = {
       caption: finalCaption,
       privacy,
       familyCode: familyCodeFinal,
       status: dto.status ?? post.status,
+      isVisibleToFamily: isFamilyVisible,
+      isVisibleToPublic: privacy === 'public',
+      hiddenReason:
+        privacy === 'private' || privacy === 'family'
+          ? (isFamilyVisible ? null : 'content_privacy_disabled')
+          : null,
     };
 
     if (newImageFilename !== null) {
@@ -724,7 +782,6 @@ export class PostService {
           await this.assertUserCanAccessFamilyOrLinked(userId, familyCode);
           whereClause.familyCode = familyCode;
         }
-        whereClause.isVisibleToFamily = true;
       }
 
       whereClause.privacy = privacy;
@@ -1560,6 +1617,14 @@ export class PostService {
     return formattedComment;
   }
 }
+
+
+
+
+
+
+
+
 
 
 

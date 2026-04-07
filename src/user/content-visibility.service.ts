@@ -1,11 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
+import { Op } from 'sequelize';
 import { Gallery } from '../gallery/model/gallery.model';
 import { Post } from '../post/model/post.model';
 import { Event } from '../event/model/event.model';
 import { UserProfile } from './model/user-profile.model';
 import {
   FamilyContentVisibilitySettings,
+  FamilyContentVisibilityType,
+  isFamilyContentVisibleForType,
   normalizeFamilyContentVisibilitySettings,
 } from './content-visibility-settings.util';
 
@@ -23,6 +26,93 @@ export class ContentVisibilityService {
     @InjectModel(UserProfile)
     private readonly userProfileModel: typeof UserProfile,
   ) {}
+
+  private canToggleFamilyContentVisibility() {
+    return {
+      [Op.or]: [{ hiddenReason: null }, { hiddenReason: 'content_privacy_disabled' }],
+    } as any;
+  }
+
+  private getFamilyContentVisible(
+    settings: FamilyContentVisibilitySettings,
+    type: FamilyContentVisibilityType,
+  ): boolean {
+    return isFamilyContentVisibleForType(settings, type);
+  }
+
+  private async syncPostFamilyVisibility(
+    userId: number,
+    settings: FamilyContentVisibilitySettings,
+    transaction?: Tx,
+  ) {
+    const isVisibleToFamily = this.getFamilyContentVisible(settings, 'posts');
+
+    await this.postModel.update(
+      {
+        isVisibleToFamily,
+        isVisibleToPublic: false,
+        hiddenReason: isVisibleToFamily ? null : 'content_privacy_disabled',
+      } as any,
+      {
+        where: {
+          createdBy: userId,
+          deletedAt: null,
+          privacy: { [Op.in]: ['private', 'family'] },
+          ...this.canToggleFamilyContentVisibility(),
+        } as any,
+        transaction,
+      },
+    );
+  }
+
+  private async syncGalleryFamilyVisibility(
+    userId: number,
+    settings: FamilyContentVisibilitySettings,
+    transaction?: Tx,
+  ) {
+    const isVisibleToFamily = this.getFamilyContentVisible(settings, 'albums');
+
+    await this.galleryModel.update(
+      {
+        isVisibleToFamily,
+        isVisibleToPublic: false,
+        hiddenReason: isVisibleToFamily ? null : 'content_privacy_disabled',
+      } as any,
+      {
+        where: {
+          createdBy: userId,
+          deletedAt: null,
+          privacy: { [Op.in]: ['private', 'family'] },
+          ...this.canToggleFamilyContentVisibility(),
+        } as any,
+        transaction,
+      },
+    );
+  }
+
+  private async syncEventFamilyVisibility(
+    userId: number,
+    settings: FamilyContentVisibilitySettings,
+    transaction?: Tx,
+  ) {
+    const isVisibleToFamily = this.getFamilyContentVisible(settings, 'events');
+
+    await this.eventModel.update(
+      {
+        isVisibleToFamily,
+        hiddenReason: isVisibleToFamily ? null : 'content_privacy_disabled',
+      } as any,
+      {
+        where: {
+          createdBy: userId,
+          deletedAt: null,
+          familyCode: { [Op.ne]: null },
+          ...this.canToggleFamilyContentVisibility(),
+        } as any,
+        transaction,
+      },
+    );
+  }
 
   async getFamilyContentVisibilitySettingsForUser(
     userId: number,
@@ -44,53 +134,11 @@ export class ContentVisibilityService {
     settings: unknown,
     transaction?: Tx,
   ) {
-    normalizeFamilyContentVisibilitySettings(settings);
-    const toggleReason = 'content_privacy_disabled';
+    const normalizedSettings = normalizeFamilyContentVisibilitySettings(settings);
 
-    await this.galleryModel.update(
-      {
-        isVisibleToFamily: true,
-        hiddenReason: null,
-      } as any,
-      {
-        where: {
-          createdBy: userId,
-          deletedAt: null,
-          hiddenReason: toggleReason,
-        } as any,
-        transaction,
-      },
-    );
-
-    await this.postModel.update(
-      {
-        isVisibleToFamily: true,
-        hiddenReason: null,
-      } as any,
-      {
-        where: {
-          createdBy: userId,
-          deletedAt: null,
-          hiddenReason: toggleReason,
-        } as any,
-        transaction,
-      },
-    );
-
-    await this.eventModel.update(
-      {
-        isVisibleToFamily: true,
-        hiddenReason: null,
-      } as any,
-      {
-        where: {
-          createdBy: userId,
-          deletedAt: null,
-          hiddenReason: toggleReason,
-        } as any,
-        transaction,
-      },
-    );
+    await this.syncGalleryFamilyVisibility(userId, normalizedSettings, transaction);
+    await this.syncPostFamilyVisibility(userId, normalizedSettings, transaction);
+    await this.syncEventFamilyVisibility(userId, normalizedSettings, transaction);
   }
 
   async hideContentForDeletedAccount(userId: number, transaction?: Tx) {

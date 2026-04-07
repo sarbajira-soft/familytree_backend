@@ -1544,33 +1544,53 @@ export class UserService {
       }
 
       if (dto.profile && dto.profile !== '') {
-        let newFilename = dto.profile;
+        let newFilename = String(dto.profile || '').trim();
 
-        // If it's a full URL, extract the key. Otherwise keep full key if provided.
-        if (dto.profile.startsWith('http://') || dto.profile.startsWith('https://')) {
+        if (newFilename.startsWith('http://') || newFilename.startsWith('https://')) {
           try {
-            const url = new URL(dto.profile);
-            newFilename = url.pathname.replace(/^\/+/, '') || dto.profile;
+            const url = new URL(newFilename);
+            newFilename = url.pathname.replace(/^\/+/, '') || newFilename;
           } catch (_) {
-            newFilename = dto.profile;
+            newFilename = String(dto.profile || '').trim();
           }
         }
 
-        // Delete old S3 file
-        if (
-          originalProfileImage &&
-          originalProfileImage !== '' &&
-          originalProfileImage !== newFilename
-        ) {
-          try {
-            await this.uploadService.deleteFile(originalProfileImage, 'profile');
-          } catch (e) {
-            console.warn('Failed to delete old profile image:', e);
+        const cleanedProfileKey = String(newFilename || '')
+          .trim()
+          .replace(/^\/+/, '')
+          .split('?')[0]
+          .split('#')[0];
+
+        let shouldUpdateProfileImage = true;
+
+        if (cleanedProfileKey.startsWith('profile/')) {
+          const parts = cleanedProfileKey.split('/').filter(Boolean);
+          const isLegacyUserPath =
+            parts.length === 3 &&
+            parts[0] === 'profile' &&
+            String(parts[1]) === String(userId);
+
+          if (isLegacyUserPath) {
+            shouldUpdateProfileImage = false;
           }
         }
 
-        targetProfile.profile = newFilename;
-        await targetProfile.save();
+        if (shouldUpdateProfileImage) {
+          if (
+            originalProfileImage &&
+            originalProfileImage !== '' &&
+            originalProfileImage !== cleanedProfileKey
+          ) {
+            try {
+              await this.uploadService.deleteFile(originalProfileImage, 'profile');
+            } catch (e) {
+              console.warn('Failed to delete old profile image:', e);
+            }
+          }
+
+          targetProfile.profile = cleanedProfileKey;
+          await targetProfile.save();
+        }
       }
 
       // -----------------------------

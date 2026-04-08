@@ -613,19 +613,19 @@ export class PostService {
     await this.notifyFamilyPostCreation(dtoForBroadcast, post, createdBy);
     this.broadcastNewPost(dtoForBroadcast, post, createdBy);
 
-    // Return post details
+    // Return full post details in the same shape as the feed API.
+    const formatted = await this.getPostByOptions(
+      undefined,
+      undefined,
+      undefined,
+      post.id,
+      undefined,
+      createdBy,
+    );
+
     return {
       message: 'Post created successfully',
-      data: {
-        id: post.id,
-        caption: post.caption,
-        postImage: post.postImage,
-        postVideo: post.postVideo,
-
-        privacy: post.privacy,
-        familyCode: post.familyCode,
-        status: post.status,
-      },
+      data: Array.isArray(formatted) && formatted.length ? formatted[0] : null,
     };
   }
 

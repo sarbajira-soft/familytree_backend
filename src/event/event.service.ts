@@ -591,16 +591,50 @@ export class EventService {
       // Extract existing image filenames from dto.eventImages (if they are URLs)
       const existingImageUrls: string[] = [];
       eventImagesInput.forEach((img: any) => {
-        if (typeof img === 'string' && (img.startsWith('http://') || img.startsWith('https://'))) {
-          const urlParts = img.split('/');
+        if (typeof img !== 'string') return;
+
+        const raw = String(img || '').trim();
+        if (!raw) return;
+
+        // Accept full URLs, S3 keys, or plain filenames
+        if (raw.startsWith('http://') || raw.startsWith('https://')) {
+          const urlParts = raw.split('/');
           const filename = urlParts[urlParts.length - 1];
-          existingImageUrls.push(filename);
+          if (filename) existingImageUrls.push(filename);
+          return;
         }
+
+        // Could be an S3 key ("events/.../file.jpg") or just "file.jpg"
+        existingImageUrls.push(raw);
+        const filenameOnly = raw.split('/').filter(Boolean).pop();
+        if (filenameOnly) existingImageUrls.push(filenameOnly);
       });
+
+      // Remove images that are not in the existingImageUrls list (unless they are in imagesToRemove)
+      // Compare by both full stored key and basename to support URL/S3-key/filename inputs
+      const imagesToKeep = oldImages.filter((img) => {
+        const stored = String(img.imageUrl || '').trim();
+        const storedBasename = stored.split('/').filter(Boolean).pop();
+        const shouldKeep =
+          (stored && existingImageUrls.includes(stored)) ||
+          (storedBasename && existingImageUrls.includes(storedBasename));
+        const shouldRemove = imagesToRemove && imagesToRemove.includes(img.id);
+        return shouldKeep && !shouldRemove;
+      });
+
+      const existingImageUrlsUnique = Array.from(new Set(existingImageUrls));
+      const isKept = (storedValue: string) => {
+        const stored = String(storedValue || '').trim();
+        const storedBasename = stored.split('/').filter(Boolean).pop();
+        return (
+          (stored && existingImageUrlsUnique.includes(stored)) ||
+          (storedBasename && existingImageUrlsUnique.includes(storedBasename))
+        );
+      };
 
       // Remove images that are not being kept
       const imagesToDelete = oldImages.filter(img => {
-        const shouldKeep = existingImageUrls.includes(img.imageUrl);
+        const shouldKeep = isKept(img.imageUrl);
         const shouldRemove = imagesToRemove && imagesToRemove.includes(img.id);
         return !shouldKeep || shouldRemove || shouldClearImages;
       });
@@ -682,9 +716,18 @@ export class EventService {
       this.eventGateway.broadcastEventUpdate(id, event, event.familyCode);
     }
 
+    const refreshed = await this.eventModel.findByPk(id, { include: [EventImage] });
+    const refreshedJson = refreshed ? (refreshed as any).toJSON() : (event as any).toJSON();
+    const refreshedEventImages =
+      refreshedJson.images?.map((img) => this.constructEventImageUrl(img.imageUrl)) || [];
+    delete refreshedJson.user;
+
     return {
       message: 'Event updated successfully',
-      data: event,
+      data: {
+        ...refreshedJson,
+        eventImages: refreshedEventImages,
+      },
     };
   }
 

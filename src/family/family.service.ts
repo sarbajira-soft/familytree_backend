@@ -64,6 +64,30 @@ export class FamilyService {
     }
   }
 
+  private async familyHasInvalidLinkedSpouseEdges(familyCode: string): Promise<boolean> {
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    if (!normalizedFamilyCode) return false;
+
+    const linkedRows = await this.familyTreeModel.findAll({
+      where: {
+        familyCode: normalizedFamilyCode,
+        isExternalLinked: true,
+        isStructuralDummy: false,
+      } as any,
+      attributes: ['spouses', 'nodeType', 'isExternalLinked'],
+    });
+
+    return linkedRows.some((row: any) => {
+      const nodeType = String(row?.nodeType || '').trim().toLowerCase();
+      const spouses = Array.isArray(row?.spouses)
+        ? row.spouses
+            .map((id: any) => Number(id))
+            .filter((id: number) => Number.isFinite(id))
+        : [];
+      return spouses.length > 0 && (Boolean(row?.isExternalLinked) || nodeType === 'linked');
+    });
+  }
+
   private async requireAdminActorForFamilyAction(params: {
     actingUserId: number;
     familyCode: string;
@@ -2531,9 +2555,11 @@ export class FamilyService {
         children: Array.isArray(member.children)
           ? member.children
           : Array.from(member.children || []).map(Number),
-        spouses: Array.isArray(member.spouses)
-          ? member.spouses
-          : Array.from(member.spouses || []).map(Number),
+        spouses: isExternalLinked
+          ? []
+          : Array.isArray(member.spouses)
+            ? member.spouses
+            : Array.from(member.spouses || []).map(Number),
         siblings: Array.isArray(member.siblings)
           ? member.siblings
           : Array.from(member.siblings || []).map(Number),
@@ -2821,6 +2847,13 @@ export class FamilyService {
 
     await this.cleanupInvalidUserIdData();
 
+    if (await this.familyHasInvalidLinkedSpouseEdges(normalizedFamilyCode)) {
+      await this.repairFamilyTreeAfterMutation({
+        familyCode: normalizedFamilyCode,
+        fixExternalGenerations: true,
+      });
+    }
+
     const aggregate = await this.treeProjectionService.getFamilyAggregate(normalizedFamilyCode, {
       requestingUserId: actingUserId,
       includeAdminQueue: false,
@@ -2886,6 +2919,13 @@ export class FamilyService {
     }
 
     await this.cleanupInvalidUserIdData();
+
+    if (await this.familyHasInvalidLinkedSpouseEdges(normalizedFamilyCode)) {
+      await this.repairFamilyTreeAfterMutation({
+        familyCode: normalizedFamilyCode,
+        fixExternalGenerations: true,
+      });
+    }
 
     const aggregate = await this.treeProjectionService.getFamilyAggregate(normalizedFamilyCode, {
       requestingUserId: userId,
@@ -4032,9 +4072,11 @@ export class FamilyService {
     actingUserId: number;
     familyCode: string;
     personId: number;
+    nodeUid?: string;
   }) {
-    const { actingUserId, familyCode, personId } = params;
+    const { actingUserId, familyCode, personId, nodeUid } = params;
     const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    const normalizedNodeUid = String(nodeUid || '').trim();
 
     if (!actingUserId || !normalizedFamilyCode || !personId) {
       throw new BadRequestException('Missing required parameters');
@@ -4051,18 +4093,18 @@ export class FamilyService {
       const treeEntry = await this.familyTreeModel.findOne({
         where: {
           familyCode: normalizedFamilyCode,
-          personId,
+          ...(normalizedNodeUid ? { nodeUid: normalizedNodeUid } : { personId }),
         } as any,
         transaction,
         lock: (transaction as any).LOCK.UPDATE,
       });
 
       if (!treeEntry) {
-        await transaction.rollback();
         throw new NotFoundException('Person not found in family tree');
       }
 
       const entryData = treeEntry as any;
+      const resolvedPersonId = Number(entryData.personId || 0) || Number(personId);
       const userId = Number(entryData.userId || 0) || null;
       const actorUser = await this.userModel.findOne({
         where: { id: actingUserId },
@@ -4108,14 +4150,16 @@ export class FamilyService {
       const targetIsCurrentFamilyAdmin =
         targetSourceFamilyCode === normalizedFamilyCode &&
         (Number(entryData.role || 0) >= 2 || targetIsFamilyOwner);
+      const shouldCascadeMembershipRemoval =
+        Number(userId || 0) > 0 &&
+        !Boolean(entryData?.isExternalLinked) &&
+        targetSourceFamilyCode === normalizedFamilyCode;
 
       if (targetIsCurrentFamilyAdmin) {
-        await transaction.rollback();
         throw new BadRequestException('Family owner/admin cannot be removed from the tree');
       }
 
       if (!isSelfDeletion && !isAdminOfThisFamily) {
-        await transaction.rollback();
         throw new ForbiddenException('Not authorized to delete this person');
       }
 
@@ -4129,7 +4173,7 @@ export class FamilyService {
           message: 'Person is already a structural dummy',
           treeVersion: aggregate.treeVersion,
           deletedNode: {
-            personId,
+            personId: resolvedPersonId,
             userId,
             nodeUid: entryData.nodeUid,
             nodeType: 'structural_dummy',
@@ -4156,6 +4200,53 @@ export class FamilyService {
         );
       }
 
+      if (shouldCascadeMembershipRemoval && converted.originalUserId) {
+        await this.familyMemberModel.update(
+          {
+            approveStatus: 'removed',
+            removedAt: new Date(),
+            removedBy: actingUserId,
+          } as any,
+          {
+            where: {
+              memberId: Number(converted.originalUserId),
+              familyCode: normalizedFamilyCode,
+              approveStatus: { [Op.ne]: 'removed' },
+            } as any,
+            transaction,
+          },
+        );
+
+        const removedProfile = await this.userProfileModel.findOne({
+          where: { userId: Number(converted.originalUserId) } as any,
+          transaction,
+          lock: (transaction as any).LOCK.UPDATE,
+        });
+
+        if (removedProfile) {
+          const associated = Array.isArray((removedProfile as any).associatedFamilyCodes)
+            ? (removedProfile as any).associatedFamilyCodes.filter(Boolean)
+            : [];
+          const nextAssociated = associated.filter(
+            (code: any) =>
+              String(code || '').trim().toUpperCase() !== normalizedFamilyCode,
+          );
+          const shouldClearPrimary =
+            String((removedProfile as any).familyCode || '').trim().toUpperCase() ===
+            normalizedFamilyCode;
+
+          if (shouldClearPrimary || nextAssociated.length !== associated.length) {
+            await removedProfile.update(
+              {
+                ...(shouldClearPrimary ? { familyCode: null } : {}),
+                associatedFamilyCodes: nextAssociated,
+              } as any,
+              { transaction },
+            );
+          }
+        }
+      }
+
       await repairFamilyTreeIntegrity({
         familyCode: normalizedFamilyCode,
         transaction,
@@ -4176,7 +4267,7 @@ export class FamilyService {
       this.notificationService.emitFamilyEvent(normalizedFamilyCode, {
         type: 'TREE_CHANGED',
         treeVersion: aggregate.treeVersion,
-        deletedPersonId: personId,
+        deletedPersonId: resolvedPersonId,
         deletedUserId: converted.originalUserId,
         deletedBy: actingUserId,
         deletedNodeType: converted.originalNodeType,
@@ -4188,7 +4279,7 @@ export class FamilyService {
         message: 'Person converted to structural dummy successfully',
         treeVersion: aggregate.treeVersion,
         deletedNode: {
-          personId,
+          personId: resolvedPersonId,
           userId: converted.originalUserId,
           nodeUid: entryData.nodeUid,
           nodeType: 'structural_dummy',
@@ -4198,7 +4289,9 @@ export class FamilyService {
         prunedPrivacyFamilies: converted.revokedFamilies,
       };
     } catch (error) {
-      await transaction.rollback();
+      if (!(transaction as any)?.finished) {
+        await transaction.rollback();
+      }
       throw error;
     }
   }
@@ -4581,6 +4674,13 @@ export class FamilyService {
     }
   }
 }
+
+
+
+
+
+
+
 
 
 

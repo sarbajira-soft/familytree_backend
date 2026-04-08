@@ -40,6 +40,7 @@ import {
 } from '../common/security/field-encryption.util';
 import { resolvePhoneNumber } from './privacy.util';
 import {
+  FAMILY_CONTENT_MEMBER_APPROVE_STATUSES,
   filterFamilyContentVisibilitySettings,
   mergeFamilyContentVisibilitySettings,
   normalizeFamilyContentVisibilitySettings,
@@ -772,9 +773,43 @@ export class UserService {
 
 
   private async getAllowedContentVisibilityFamilyCodes(userId: number): Promise<string[]> {
-    return this.treeProjectionService.getReachableFamilyCodesForUser(userId);
-  }
+    const normalizedUserId = Number(userId);
+    if (!normalizedUserId) {
+      return [];
+    }
 
+    const [reachableFamilyCodes, profile, memberships] = await Promise.all([
+      this.treeProjectionService.getReachableFamilyCodesForUser(normalizedUserId),
+      this.userProfileModel.findOne({
+        where: { userId: normalizedUserId },
+        attributes: ['familyCode', 'associatedFamilyCodes'],
+      }),
+      this.familyMemberModel.findAll({
+        where: {
+          memberId: normalizedUserId,
+          approveStatus: { [Op.in]: FAMILY_CONTENT_MEMBER_APPROVE_STATUSES },
+        } as any,
+        attributes: ['familyCode'],
+      }),
+    ]);
+
+    const associatedCodes = Array.isArray((profile as any)?.associatedFamilyCodes)
+      ? ((profile as any)?.associatedFamilyCodes as any[])
+      : [];
+
+    return Array.from(
+      new Set(
+        [
+          ...((reachableFamilyCodes || []).map((code) => String(code || '').trim().toUpperCase())),
+          String((profile as any)?.familyCode || '').trim().toUpperCase(),
+          ...associatedCodes.map((code) => String(code || '').trim().toUpperCase()),
+          ...((memberships as any[]) || []).map((membership) =>
+            String((membership as any)?.familyCode || '').trim().toUpperCase(),
+          ),
+        ].filter(Boolean),
+      ),
+    );
+  }
   async getContentVisibilitySettings(userId: number) {
     const profile = await this.userProfileModel.findOne({ where: { userId } });
     if (!profile) {
@@ -2011,6 +2046,7 @@ export class UserService {
     };
   }
 }
+
 
 
 

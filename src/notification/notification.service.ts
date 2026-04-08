@@ -133,6 +133,112 @@ export class NotificationService {
   //   createSiblingCards, createGeneralAssociationCards,
   //   updateExistingSpouseRelationships, mergeUnique, removeUnique → TreeMutationService
 
+  async repairAcceptedAssociationCardsForFamily(familyCode: string): Promise<void> {
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+    if (!normalizedFamilyCode) {
+      return;
+    }
+
+    const acceptedAssociationNotifications = await this.notificationModel.findAll({
+      where: {
+        type: 'FAMILY_ASSOCIATION_REQUEST',
+        status: 'accepted',
+      },
+      attributes: ['id', 'data', 'updatedAt'],
+      order: [['updatedAt', 'DESC']],
+    });
+
+    const repairedPairs = new Set<string>();
+
+    for (const notification of acceptedAssociationNotifications) {
+      const rawData = (notification as any)?.data;
+      let data: any = {};
+      if (rawData && typeof rawData === 'object') {
+        data = rawData;
+      } else if (rawData) {
+        try {
+          data = JSON.parse(String(rawData));
+        } catch {
+          data = {};
+        }
+      }
+
+      const senderFamilyCode = String(data?.senderFamilyCode || '').trim().toUpperCase();
+      const targetFamilyCode = String(data?.targetFamilyCode || '').trim().toUpperCase();
+      if (
+        !senderFamilyCode ||
+        !targetFamilyCode ||
+        (senderFamilyCode !== normalizedFamilyCode &&
+          targetFamilyCode !== normalizedFamilyCode)
+      ) {
+        continue;
+      }
+
+      const senderId = Number(data?.senderId);
+      const targetUserId = Number(data?.targetUserId);
+      if (!senderId || !targetUserId) {
+        continue;
+      }
+
+      const repairKey = [
+        senderFamilyCode,
+        targetFamilyCode,
+        senderId,
+        targetUserId,
+      ].join(':');
+      if (repairedPairs.has(repairKey)) {
+        continue;
+      }
+      repairedPairs.add(repairKey);
+
+      const [senderUser, targetUser] = await Promise.all([
+        this.userModel.findOne({
+          where: { id: senderId },
+          include: [
+            {
+              model: this.UserProfileModel,
+              as: 'userProfile',
+            },
+          ],
+        }),
+        this.userModel.findOne({
+          where: { id: targetUserId },
+          include: [
+            {
+              model: this.UserProfileModel,
+              as: 'userProfile',
+            },
+          ],
+        }),
+      ]);
+
+      if (!senderUser || !targetUser) {
+        continue;
+      }
+
+      const transaction = await this.sequelize.transaction();
+      try {
+        await this.treeMutationService.createDynamicFamilyCards(
+          senderId,
+          targetUserId,
+          senderFamilyCode,
+          targetFamilyCode,
+          senderUser,
+          targetUser,
+          transaction,
+        );
+        await transaction.commit();
+      } catch (error) {
+        await transaction.rollback();
+        this.logger.warn(
+          'Failed to repair accepted association ' +
+            String((notification as any)?.id || '') +
+            ': ' +
+            String((error as any)?.message || error),
+        );
+      }
+    }
+  }
   async getUserName(userId: number): Promise<string> {
     if (!userId) {
       return 'A user';
@@ -739,8 +845,7 @@ export class NotificationService {
             } catch (error) {
               console.error('❌ ERROR: Card creation failed:', error);
               console.error('❌ ERROR: Stack trace:', error.stack);
-              cardsError = error.message;
-              // Continue with the rest of the process even if card creation fails
+              throw error;
             }
 
             // Update associated family codes bidirectionally using family service
@@ -1959,4 +2064,6 @@ export class NotificationService {
 
   // [EXTRACTED] Card creation methods moved to TreeMutationService
 }
+
+
 

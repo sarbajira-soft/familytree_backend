@@ -24,7 +24,11 @@ import { BaseCommentService } from '../common/services/base-comment.service';
 import { FamilyMember } from '../family/model/family-member.model';
 import { BlockingService } from '../blocking/blocking.service';
 import { FamilyLink } from '../family/model/family-link.model';
-import { canViewerAccessFamilyContentForType, isFamilyContentVisibleForType } from '../user/content-visibility-settings.util';
+import {
+  FAMILY_CONTENT_MEMBER_APPROVE_STATUSES,
+  canViewerAccessFamilyContentForType,
+  isFamilyContentVisibleForType,
+} from '../user/content-visibility-settings.util';
 import { TreeProjectionService } from '../family/tree-projection.service';
 
 @Injectable()
@@ -92,12 +96,50 @@ export class GalleryService {
     );
   }
 
+  private async getDirectAudienceFamilyCodes(userId: number): Promise<string[]> {
+    if (!userId) {
+      return [];
+    }
+
+    const [profile, memberships] = await Promise.all([
+      this.userProfileModel.findOne({
+        where: { userId },
+        attributes: ['familyCode', 'associatedFamilyCodes'],
+      }),
+      this.familyMemberModel.findAll({
+        where: {
+          memberId: userId,
+          approveStatus: { [Op.in]: FAMILY_CONTENT_MEMBER_APPROVE_STATUSES },
+        } as any,
+        attributes: ['familyCode'],
+      }),
+    ]);
+
+    const associatedCodes = Array.isArray((profile as any)?.associatedFamilyCodes)
+      ? ((profile as any)?.associatedFamilyCodes as any[])
+      : [];
+
+    return this.normalizeAudienceFamilyCodes([
+      (profile as any)?.familyCode,
+      ...associatedCodes,
+      ...((memberships as any[]) || []).map((membership) => (membership as any)?.familyCode),
+    ]);
+  }
+
   private async getAccessibleFamilyCodesForUser(userId: number): Promise<string[]> {
     if (!userId) {
       return [];
     }
 
-    return this.treeProjectionService.getReachableFamilyCodesForUser(userId);
+    const [reachableFamilyCodes, directFamilyCodes] = await Promise.all([
+      this.treeProjectionService.getReachableFamilyCodesForUser(userId),
+      this.getDirectAudienceFamilyCodes(userId),
+    ]);
+
+    return this.normalizeAudienceFamilyCodes([
+      ...reachableFamilyCodes,
+      ...directFamilyCodes,
+    ]);
   }
 
   private async getViewerAudienceFamilyCodes(userId: number): Promise<string[]> {
@@ -111,7 +153,10 @@ export class GalleryService {
         attributes: ['familyCode'],
       }),
       this.familyMemberModel.findAll({
-        where: { memberId: userId, approveStatus: 'approved' } as any,
+        where: {
+          memberId: userId,
+          approveStatus: { [Op.in]: FAMILY_CONTENT_MEMBER_APPROVE_STATUSES },
+        } as any,
         attributes: ['familyCode'],
       }),
     ]);
@@ -397,7 +442,7 @@ export class GalleryService {
     }
 
     // Validate familyCode requirement based on privacy
-    const privacy = dto.privacy ?? 'public';
+    const privacy = dto.privacy === 'private' || dto.privacy === 'family' ? 'private' : 'public';
     if (privacy === 'private' && !dto.familyCode) {
       throw new BadRequestException('familyCode is required for private privacy');
     }
@@ -422,6 +467,7 @@ export class GalleryService {
         status: dto.status ?? 1,
         createdBy,
         isVisibleToFamily: isFamilyVisible,
+        isVisibleToPublic: privacy === 'public',
         hiddenReason: privacy === 'private' ? (isFamilyVisible ? null : 'content_privacy_disabled') : null,
       };
 
@@ -581,7 +627,6 @@ export class GalleryService {
             await this.assertUserCanAccessFamilyOrLinked(userId, familyCode);
             whereClause.familyCode = familyCode;
           }
-          whereClause.isVisibleToFamily = true;
         } else if (familyCode) {
           whereClause.familyCode = familyCode;
         }
@@ -819,7 +864,12 @@ export class GalleryService {
       }
 
       // Step 2: Prepare gallery update data
-      const resolvedPrivacy = dto.privacy ?? existingGallery.privacy;
+      const currentPrivacy = existingGallery.privacy === 'family' ? 'private' : existingGallery.privacy;
+      const requestedPrivacy =
+        dto.privacy !== undefined
+          ? (dto.privacy === 'private' || dto.privacy === 'family' ? 'private' : 'public')
+          : undefined;
+      const resolvedPrivacy = requestedPrivacy ?? currentPrivacy;
       const updateData: Partial<Gallery> = {};
 
       // Normalize empty strings coming from multipart/form-data.
@@ -848,6 +898,7 @@ export class GalleryService {
         if (!resolvedFamilyCode) {
           throw new BadRequestException('familyCode is required for private privacy');
         }
+        await this.assertUserCanAccessFamilyContent(userId, resolvedFamilyCode);
         if (dto.privacy !== undefined || dto.familyCode !== undefined) {
           updateData.familyCode = resolvedFamilyCode;
         }
@@ -861,6 +912,17 @@ export class GalleryService {
           updateData.familyCode = normalizedFamilyCode ? normalizedFamilyCode : null;
         }
       }
+
+      const isFamilyVisible =
+        resolvedPrivacy === 'private'
+          ? await this.getFamilyAlbumsVisibilityEnabled(userId)
+          : true;
+      updateData.isVisibleToFamily = isFamilyVisible;
+      updateData.isVisibleToPublic = resolvedPrivacy === 'public';
+      updateData.hiddenReason =
+        resolvedPrivacy === 'private'
+          ? (isFamilyVisible ? null : 'content_privacy_disabled')
+          : null;
 
       // Handle cover photo update if provided or being removed
       if (dto.coverPhoto !== undefined) {
@@ -1473,6 +1535,13 @@ export class GalleryService {
   }
 
 }
+
+
+
+
+
+
+
 
 
 

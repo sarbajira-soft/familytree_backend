@@ -360,6 +360,11 @@ export class TreeMutationService {
         ]);
         if (!p1 || !p2) return;
 
+        const isLinkedNode = (node: any) =>
+            Boolean((node as any)?.isExternalLinked) ||
+            String((node as any)?.nodeType || '').trim().toLowerCase() === 'linked';
+        if (isLinkedNode(p1) || isLinkedNode(p2)) return;
+
         const p1Spouses = Array.isArray((p1 as any).spouses)
             ? (p1 as any).spouses.map((x: any) => Number(x)).filter((x: any) => Number.isFinite(x))
             : [];
@@ -658,7 +663,67 @@ export class TreeMutationService {
             ),
         ]);
 
-        const finalGeneration = Math.max(senderGeneration, targetGeneration);
+        // Each cross-family spouse card must match the spouse generation in the
+        // family where it is inserted. Reusing one shared max generation lets
+        // repairFamilyTreeIntegrity drop the spouse edge in one side as a
+        // cross-generation mismatch, which makes the accepted association look
+        // collapsed.
+        let targetOriginalCard = await this.familyTreeModel.findOne({
+            where: { familyCode: targetFamilyCode, userId: targetUserId },
+            transaction,
+        });
+
+        if (!targetOriginalCard) {
+            const targetOriginalPersonId = await this.getNextPersonId(
+                targetFamilyCode,
+                transaction,
+            );
+            targetOriginalCard = await this.familyTreeModel.create(
+                {
+                    familyCode: targetFamilyCode,
+                    userId: targetUserId,
+                    personId: targetOriginalPersonId,
+                    generation: targetGeneration,
+                    parents: [],
+                    children: [],
+                    spouses: [],
+                    siblings: [],
+                    nodeType: 'birth',
+                },
+                { transaction },
+            );
+        }
+
+        let senderOriginalCard = await this.familyTreeModel.findOne({
+            where: { familyCode: senderFamilyCode, userId: senderId },
+            transaction,
+        });
+
+        if (!senderOriginalCard) {
+            const senderOriginalPersonId = await this.getNextPersonId(
+                senderFamilyCode,
+                transaction,
+            );
+            senderOriginalCard = await this.familyTreeModel.create(
+                {
+                    familyCode: senderFamilyCode,
+                    userId: senderId,
+                    personId: senderOriginalPersonId,
+                    generation: senderGeneration,
+                    parents: [],
+                    children: [],
+                    spouses: [],
+                    siblings: [],
+                    nodeType: 'birth',
+                },
+                { transaction },
+            );
+        }
+
+        const generationInTargetFamily =
+            Number((targetOriginalCard as any)?.generation) || Number(targetGeneration) || 0;
+        const generationInSenderFamily =
+            Number((senderOriginalCard as any)?.generation) || Number(senderGeneration) || 0;
 
         // Step 1: Create sender's card in target's family tree
         let senderCardInTargetFamily = await this.familyTreeModel.findOne({
@@ -673,11 +738,24 @@ export class TreeMutationService {
                     familyCode: targetFamilyCode,
                     userId: senderId,
                     personId: targetPersonId,
-                    generation: finalGeneration,
+                    generation: generationInTargetFamily,
                     parents: [],
                     children: [],
                     spouses: [],
                     siblings: [],
+                    nodeType: 'associated',
+                },
+                { transaction },
+            );
+        } else if (
+            Number((senderCardInTargetFamily as any).generation) !== generationInTargetFamily ||
+            String((senderCardInTargetFamily as any).nodeType || '').trim().toLowerCase() !==
+                'associated'
+        ) {
+            await senderCardInTargetFamily.update(
+                {
+                    generation: generationInTargetFamily,
+                    nodeType: 'associated',
                 },
                 { transaction },
             );
@@ -696,63 +774,24 @@ export class TreeMutationService {
                     familyCode: senderFamilyCode,
                     userId: targetUserId,
                     personId: senderPersonId,
-                    generation: finalGeneration,
+                    generation: generationInSenderFamily,
                     parents: [],
                     children: [],
                     spouses: [],
                     siblings: [],
+                    nodeType: 'associated',
                 },
                 { transaction },
             );
-        }
-
-        // Step 3: Find or create the target's original card in their own family
-        let targetOriginalCard = await this.familyTreeModel.findOne({
-            where: { familyCode: targetFamilyCode, userId: targetUserId },
-            transaction,
-        });
-
-        if (!targetOriginalCard) {
-            const targetOriginalPersonId = await this.getNextPersonId(
-                targetFamilyCode,
-                transaction,
-            );
-            targetOriginalCard = await this.familyTreeModel.create(
+        } else if (
+            Number((targetCardInSenderFamily as any).generation) !== generationInSenderFamily ||
+            String((targetCardInSenderFamily as any).nodeType || '').trim().toLowerCase() !==
+                'associated'
+        ) {
+            await targetCardInSenderFamily.update(
                 {
-                    familyCode: targetFamilyCode,
-                    userId: targetUserId,
-                    personId: targetOriginalPersonId,
-                    generation: 1,
-                    parents: [],
-                    children: [],
-                    spouses: [],
-                    siblings: [],
-                },
-                { transaction },
-            );
-        }
-
-        // Step 4: Find or create the sender's original card in their own family
-        let senderOriginalCard = await this.familyTreeModel.findOne({
-            where: { familyCode: senderFamilyCode, userId: senderId },
-            transaction,
-        });
-
-        if (!senderOriginalCard) {
-            const senderOriginalPersonId = await this.getNextPersonId(
-                senderFamilyCode,
-                transaction,
-            );
-            senderOriginalCard = await this.familyTreeModel.create(
-                {
-                    familyCode: senderFamilyCode,
-                    userId: senderId,
-                    personId: senderOriginalPersonId,
-                    generation: 1,
-                    parents: [],
-                    children: [],
-                    spouses: [],
-                    siblings: [],
+                    generation: generationInSenderFamily,
+                    nodeType: 'associated',
                 },
                 { transaction },
             );
@@ -1266,3 +1305,4 @@ export class TreeMutationService {
         this.logger.log(`Existing spouse relationships updated`);
     }
 }
+

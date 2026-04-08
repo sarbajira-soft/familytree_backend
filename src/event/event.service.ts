@@ -19,7 +19,11 @@ import { UploadService } from '../uploads/upload.service';
 import { EventGateway } from './event.gateway';
 import { BlockingService } from '../blocking/blocking.service';
 import { FamilyLink } from '../family/model/family-link.model';
-import { canViewerAccessFamilyContentForType, isFamilyContentVisibleForType } from '../user/content-visibility-settings.util';
+import {
+  FAMILY_CONTENT_MEMBER_APPROVE_STATUSES,
+  canViewerAccessFamilyContentForType,
+  isFamilyContentVisibleForType,
+} from '../user/content-visibility-settings.util';
 import { TreeProjectionService } from '../family/tree-projection.service';
  
 @Injectable()
@@ -104,12 +108,50 @@ export class EventService {
     );
   }
 
+  private async getDirectAudienceFamilyCodes(userId: number): Promise<string[]> {
+    if (!userId) {
+      return [];
+    }
+
+    const [profile, memberships] = await Promise.all([
+      this.userProfileModel.findOne({
+        where: { userId },
+        attributes: ['familyCode', 'associatedFamilyCodes'],
+      }),
+      this.familyMemberModel.findAll({
+        where: {
+          memberId: userId,
+          approveStatus: { [Op.in]: FAMILY_CONTENT_MEMBER_APPROVE_STATUSES },
+        } as any,
+        attributes: ['familyCode'],
+      }),
+    ]);
+
+    const associatedCodes = Array.isArray((profile as any)?.associatedFamilyCodes)
+      ? ((profile as any)?.associatedFamilyCodes as any[])
+      : [];
+
+    return this.normalizeAudienceFamilyCodes([
+      (profile as any)?.familyCode,
+      ...associatedCodes,
+      ...((memberships as any[]) || []).map((membership) => (membership as any)?.familyCode),
+    ]);
+  }
+
   private async getAccessibleFamilyCodesForUser(userId: number): Promise<string[]> {
     if (!userId) {
       return [];
     }
 
-    return this.treeProjectionService.getReachableFamilyCodesForUser(userId);
+    const [reachableFamilyCodes, directFamilyCodes] = await Promise.all([
+      this.treeProjectionService.getReachableFamilyCodesForUser(userId),
+      this.getDirectAudienceFamilyCodes(userId),
+    ]);
+
+    return this.normalizeAudienceFamilyCodes([
+      ...reachableFamilyCodes,
+      ...directFamilyCodes,
+    ]);
   }
 
   private async getViewerAudienceFamilyCodes(userId: number): Promise<string[]> {
@@ -123,7 +165,10 @@ export class EventService {
         attributes: ['familyCode'],
       }),
       this.familyMemberModel.findAll({
-        where: { memberId: userId, approveStatus: 'approved' } as any,
+        where: {
+          memberId: userId,
+          approveStatus: { [Op.in]: FAMILY_CONTENT_MEMBER_APPROVE_STATUSES },
+        } as any,
         attributes: ['familyCode'],
       }),
     ]);
@@ -429,13 +474,18 @@ export class EventService {
     });
   }
 
-  async getByFamilyCode(familyCode: string) {
+  async getByFamilyCode(familyCode: string, requestingUserId?: number) {
+    const whereClause: any = {
+      familyCode,
+      status: 1,
+    };
+
+    if (!requestingUserId) {
+      whereClause.isVisibleToFamily = true;
+    }
+
     return this.eventModel.findAll({
-      where: {
-        familyCode,
-        status: 1,
-        isVisibleToFamily: true,
-      },
+      where: whereClause,
     });
   }
 
@@ -497,8 +547,11 @@ export class EventService {
     const event = await this.eventModel.findByPk(id, { include: [EventImage] });
     if (!event) throw new NotFoundException('Event not found');
 
-    if (loggedId && event.familyCode) {
-      await this.assertUserCanAccessFamilyContent(loggedId, event.familyCode);
+    const resolvedFamilyCode =
+      dto.familyCode !== undefined ? this.normalizeOptionalString(dto.familyCode) : event.familyCode;
+
+    if (loggedId && resolvedFamilyCode) {
+      await this.assertUserCanAccessFamilyContent(loggedId, resolvedFamilyCode);
     }
 
     // Check authorization: only creator or admin/superadmin can update
@@ -642,10 +695,20 @@ export class EventService {
       }
     }
 
+    const visibilityOwnerUserId = Number(event.createdBy ?? loggedId ?? dto.createdBy ?? dto.userId);
+    const isFamilyVisible = resolvedFamilyCode
+      ? await this.getFamilyEventsVisibilityEnabled(visibilityOwnerUserId)
+      : true;
+
     // Remove eventImages from dto as it's handled separately
     delete dto.eventImages;
     delete dto.clearImages;
-    dto.createdBy = loggedId;
+    dto.familyCode = resolvedFamilyCode;
+    dto.createdBy = event.createdBy ?? loggedId;
+    dto.isVisibleToFamily = isFamilyVisible;
+    dto.hiddenReason = resolvedFamilyCode
+      ? (isFamilyVisible ? null : 'content_privacy_disabled')
+      : null;
     await event.update(dto);
 
     // Broadcast event update via WebSocket only when family visibility is enabled
@@ -666,78 +729,6 @@ export class EventService {
         eventImages: refreshedEventImages,
       },
     };
-  }
-
-  async delete(id: number, loggedId?: number) {
-    const event = await this.eventModel.findByPk(id, { include: [EventImage] });
-    if (!event) throw new NotFoundException('Event not found');
-
-    if (loggedId && event.familyCode) {
-      await this.assertUserCanAccessFamilyContent(loggedId, event.familyCode);
-    }
-
-    // Check authorization: only creator or admin/superadmin can delete
-    if (loggedId) {
-      const user = await this.userModel.findByPk(loggedId);
-      if (!user) {
-        throw new NotFoundException('User not found');
-      }
-
-      // Check if user is admin (role 2) or superadmin (role 3) or is the creator
-      const isAdmin = user.role === 2 || user.role === 3;
-      const isCreator = event.createdBy === loggedId;
-
-      if (!isAdmin && !isCreator) {
-        throw new ForbiddenException('You can only delete events that you created or you need admin privileges');
-      }
-    }
-
-    // Delete event images from S3 or local storage
-    const uploadService = new UploadService();
-    const uploadDir = process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
-    
-    for (const img of event.images || []) {
-      try {
-        const imageUrl = this.constructEventImageUrl(img.imageUrl);
-        if (imageUrl.includes('amazonaws.com')) {
-          // Delete from S3
-          await uploadService.deleteFile(imageUrl);
-        } else {
-          // Local file deletion
-          const imagePath = path.join(uploadDir, img.imageUrl);
-          if (fs.existsSync(imagePath)) {
-            fs.unlinkSync(imagePath);
-          }
-        }
-        await img.destroy();
-      } catch (error) {
-        console.error('Error deleting event image:', error);
-        // Continue with other deletions even if one fails
-      }
-    }
-
-    // Create cancellation notification before deleting
-    try {
-      // await this.notificationService.createEventNotificationForFamily(
-      //   event.familyCode,
-      //   event.eventTitle,
-      //   event.eventDate,
-      //   `Event Cancelled: ${event.eventDescription || 'This event has been cancelled'}`,
-      //   loggedId,
-      // );
-    } catch (error) {
-      console.error(
-        'Failed to create event cancellation notifications:',
-        error,
-      );
-    }
-
-    // Broadcast event deletion via WebSocket before destroying
-    const familyCode = event.familyCode;
-    this.eventGateway.broadcastEventDeleted(id, familyCode);
-
-    await event.destroy();
-    return { message: 'Event deleted successfully' };
   }
 
   // Optional validations (use if needed):
@@ -822,6 +813,55 @@ export class EventService {
     });
   }
 
+  async delete(id: number, loggedId?: number) {
+    const event = await this.eventModel.findByPk(id, { include: [EventImage] });
+    if (!event) throw new NotFoundException('Event not found');
+
+    if (loggedId && event.familyCode) {
+      await this.assertUserCanAccessFamilyContent(loggedId, event.familyCode);
+    }
+
+    // Check authorization: only creator or admin/superadmin can delete
+    if (loggedId) {
+      const user = await this.userModel.findByPk(loggedId);
+      if (!user) {
+        throw new NotFoundException('User not found');
+      }
+
+      const isAdmin = user.role === 2 || user.role === 3;
+      const isCreator = event.createdBy === loggedId;
+
+      if (!isAdmin && !isCreator) {
+        throw new ForbiddenException('You can only delete events that you created or you need admin privileges');
+      }
+    }
+
+    const uploadService = new UploadService();
+    const uploadDir = process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
+
+    for (const img of event.images || []) {
+      try {
+        const imageUrl = this.constructEventImageUrl(img.imageUrl);
+        if (imageUrl.includes('amazonaws.com')) {
+          await uploadService.deleteFile(imageUrl);
+        } else {
+          const imagePath = path.join(uploadDir, img.imageUrl);
+          if (fs.existsSync(imagePath)) {
+            fs.unlinkSync(imagePath);
+          }
+        }
+        await img.destroy();
+      } catch (error) {
+        console.error('Error deleting event image:', error);
+      }
+    }
+
+    const familyCode = event.familyCode;
+    this.eventGateway.broadcastEventDeleted(id, familyCode);
+
+    await event.destroy();
+    return { message: 'Event deleted successfully' };
+  }
   async getUpcomingBirthdays(userId?: number) {
     const today = new Date();
     const currentYear = today.getFullYear();
@@ -832,7 +872,7 @@ export class EventService {
       return [];
     }
 
-    // Get family members with their profiles using direct query - only approved members
+    // Get family members with their profiles using direct query - approved and associated members
     const { QueryTypes } = require('sequelize');
     const familyMembers: any[] = await this.familyMemberModel.sequelize.query(`
       SELECT 
@@ -845,7 +885,7 @@ export class EventService {
       FROM ft_family_members fm
       INNER JOIN ft_user_profile up ON fm."memberId" = up."userId"
       WHERE fm."familyCode" IN (:familyCodes)
-      AND fm."approveStatus" = 'approved'
+      AND fm."approveStatus" IN ('approved', 'associated')
     `, {
       replacements: { familyCodes },
       type: QueryTypes.SELECT
@@ -928,7 +968,7 @@ export class EventService {
       return [];
     }
 
-    // Get family members with their profiles using direct query - only approved members
+    // Get family members with their profiles using direct query - approved and associated members
     const { QueryTypes } = require('sequelize');
     const familyMembers: any[] = await this.familyMemberModel.sequelize.query(`
       SELECT 
@@ -942,7 +982,7 @@ export class EventService {
       FROM ft_family_members fm
       INNER JOIN ft_user_profile up ON fm."memberId" = up."userId"
       WHERE fm."familyCode" IN (:familyCodes)
-      AND fm."approveStatus" = 'approved'
+      AND fm."approveStatus" IN ('approved', 'associated')
     `, {
       replacements: { familyCodes },
       type: QueryTypes.SELECT
@@ -1031,7 +1071,7 @@ export class EventService {
     }
 
     const [familyEvents, birthdays, anniversaries] = await Promise.all([
-      this.getByFamilyCode(familyCode),
+      this.getByFamilyCode(familyCode, requestingUserId),
       this.getUpcomingBirthdaysByFamilyCode(familyCode),
       this.getUpcomingAnniversariesByFamilyCode(familyCode)
     ]);
@@ -1055,7 +1095,7 @@ export class EventService {
     const currentYear = today.getFullYear();
     const nextYear = currentYear + 1;
 
-    // Get family members with their profiles using direct query - only approved members
+    // Get family members with their profiles using direct query - approved and associated members
     const { QueryTypes } = require('sequelize');
     const familyMembers: any[] = await this.familyMemberModel.sequelize.query(`
       SELECT 
@@ -1068,7 +1108,7 @@ export class EventService {
       FROM ft_family_members fm
       INNER JOIN ft_user_profile up ON fm."memberId" = up."userId"
       WHERE fm."familyCode" = :familyCode
-      AND fm."approveStatus" = 'approved'
+      AND fm."approveStatus" IN ('approved', 'associated')
     `, {
       replacements: { familyCode },
       type: QueryTypes.SELECT
@@ -1137,7 +1177,7 @@ export class EventService {
     const currentYear = today.getFullYear();
     const nextYear = currentYear + 1;
 
-    // Get family members with their profiles using direct query - only approved members
+    // Get family members with their profiles using direct query - approved and associated members
     const { QueryTypes } = require('sequelize');
     const familyMembers: any[] = await this.familyMemberModel.sequelize.query(`
       SELECT 
@@ -1151,7 +1191,7 @@ export class EventService {
       FROM ft_family_members fm
       INNER JOIN ft_user_profile up ON fm.memberId = up.userId
       WHERE fm.familyCode = :familyCode
-      AND fm.approveStatus = 'approved'
+      AND fm.approveStatus IN ('approved', 'associated')
     `, {
       replacements: { familyCode },
       type: QueryTypes.SELECT
@@ -1232,7 +1272,6 @@ export class EventService {
         throw new NotFoundException('User not found');
       }
 
-      // Check if user is admin (role 2) or superadmin (role 3) or is the creator
       const isAdmin = user.role === 2 || user.role === 3;
       const isCreator = event.createdBy === loggedId;
 
@@ -1242,13 +1281,17 @@ export class EventService {
     }
 
     const createdImages = await Promise.all(
-      imageFiles.map(imageUrl =>
-        this.eventImageModel.create({ eventId, imageUrl })
-      )
+      (imageFiles || []).map((imageUrl) =>
+        this.eventImageModel.create({
+          eventId,
+          imageUrl,
+        }),
+      ),
     );
+
     return {
       message: 'Images added successfully',
-      images: createdImages.map(img => ({ id: img.id, imageUrl: this.constructEventImageUrl(img.imageUrl) })),
+      data: createdImages,
     };
   }
 
@@ -1256,8 +1299,8 @@ export class EventService {
     const image = await this.eventImageModel.findByPk(imageId, { include: [Event] });
     if (!image) throw new NotFoundException('Image not found');
 
-    if (loggedId && (image as any).event?.familyCode) {
-      await this.assertUserCanAccessFamilyContent(loggedId, (image as any).event.familyCode);
+    if (loggedId && image.event?.familyCode) {
+      await this.assertUserCanAccessFamilyContent(loggedId, image.event.familyCode);
     }
 
     // Check authorization: only creator or admin/superadmin can delete images
@@ -1267,7 +1310,6 @@ export class EventService {
         throw new NotFoundException('User not found');
       }
 
-      // Check if user is admin (role 2) or superadmin (role 3) or is the creator
       const isAdmin = user.role === 2 || user.role === 3;
       const isCreator = image.event?.createdBy === loggedId;
 
@@ -1276,11 +1318,23 @@ export class EventService {
       }
     }
 
+    const uploadService = new UploadService();
     const uploadDir = process.env.EVENT_IMAGE_UPLOAD_PATH || 'uploads/events';
-    const imagePath = path.join(uploadDir, image.imageUrl);
-    if (fs.existsSync(imagePath)) {
-      fs.unlinkSync(imagePath);
+
+    try {
+      const imageUrl = this.constructEventImageUrl(image.imageUrl);
+      if (imageUrl.includes('amazonaws.com')) {
+        await uploadService.deleteFile(imageUrl);
+      } else {
+        const imagePath = path.join(uploadDir, image.imageUrl);
+        if (fs.existsSync(imagePath)) {
+          fs.unlinkSync(imagePath);
+        }
+      }
+    } catch (error) {
+      console.error('Error deleting event image:', error);
     }
+
     await image.destroy();
     return { message: 'Image deleted successfully' };
   }
@@ -1293,6 +1347,16 @@ export class EventService {
   }
 
 }
+
+
+
+
+
+
+
+
+
+
 
 
 

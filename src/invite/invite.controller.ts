@@ -1,10 +1,11 @@
-import { Body, Controller, Post } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { InviteService } from './invite.service';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 class CreateInviteDto {
   phone: string;
-  inviterId: number;
+  inviterId?: number;
   spouseMemberId?: number;
 }
 
@@ -13,13 +14,15 @@ class CreateInviteDto {
 export class InviteController {
   constructor(private readonly inviteService: InviteService) {}
 
+  @UseGuards(JwtAuthGuard)
   @Post()
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Create an invite token for mobile-flow' })
   @ApiResponse({ status: 201, description: 'Invite created' })
-  async create(@Body() dto: CreateInviteDto) {
+  async create(@Req() req, @Body() dto: CreateInviteDto) {
     const invite = await this.inviteService.createInvite(
       dto.phone,
-      dto.inviterId,
+      Number(req.user?.userId || 0),
       dto.spouseMemberId,
     );
     return {

@@ -25,6 +25,8 @@ import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiResponse, ApiTags } from '
 import { InjectModel } from '@nestjs/sequelize';
 import { memoryStorage } from 'multer';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
 import { BlockingService } from '../blocking/blocking.service';
 import { FamilyLinkService } from '../notification/family-link.service';
 import { NotificationService } from '../notification/notification.service';
@@ -524,7 +526,8 @@ export class FamilyController {
     return { message: 'Association request sent', ...result };
   }
 
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(3)
   @Post('cleanup-userid-data')
   @ApiOperation({ summary: 'Clean up invalid userId data in database' })
   @ApiResponse({ status: 200, description: 'Data cleanup completed' })

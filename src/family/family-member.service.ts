@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException, NotFoundException, Inject, forwardRef, Logger } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, Inject, forwardRef, Logger, ForbiddenException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/sequelize';
 import { Sequelize } from 'sequelize-typescript';
 import { Op, QueryTypes } from 'sequelize';
@@ -2071,7 +2071,7 @@ export class FamilyMemberService {
     }
 
     const membership = await this.familyMemberModel.findOne({
-      where: { familyCode, memberId: normalizedMemberId } as any,
+      where: { familyCode: normalizedFamilyCode, memberId: normalizedMemberId } as any,
       order: [['updatedAt', 'DESC'], ['id', 'DESC']],
     });
     const treeNode = await this.familyTreeModel.findOne({
@@ -2096,16 +2096,28 @@ export class FamilyMemberService {
     };
   }
 
-  async markLinkAsUsed(familyCode: string, memberId: number) {
+  async markLinkAsUsed(familyCode: string, memberId: number, actingUserId?: number) {
     const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
     const normalizedMemberId = Number(memberId);
+    const normalizedActingUserId = Number(actingUserId || 0);
     const membership = await this.familyMemberModel.findOne({
-      where: { familyCode, memberId: normalizedMemberId } as any,
+      where: { familyCode: normalizedFamilyCode, memberId: normalizedMemberId } as any,
       order: [['updatedAt', 'DESC'], ['id', 'DESC']],
     });
 
     if (!membership) {
       throw new NotFoundException('Family member link not found');
+    }
+
+    if (!normalizedActingUserId) {
+      throw new ForbiddenException('Unauthorized');
+    }
+
+    if (normalizedActingUserId !== normalizedMemberId) {
+      const isAdmin = await this.isAdminOfFamily(normalizedActingUserId, normalizedFamilyCode);
+      if (!isAdmin) {
+        throw new ForbiddenException('You do not have permission to mark this link as used');
+      }
     }
 
     if (!(membership as any).isLinkedUsed) {

@@ -14,6 +14,8 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
 import { NotificationService } from './notification.service';
 import { NotificationScheduler } from './notification.scheduler';
 import { ApiBearerAuth, ApiTags, ApiOperation } from '@nestjs/swagger';
@@ -108,6 +110,8 @@ export class NotificationController {
     );
   }
 
+  @UseGuards(RolesGuard)
+  @Roles(3)
   @Post('expire-old-requests')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Manually trigger expiry of old association requests (for testing)' })

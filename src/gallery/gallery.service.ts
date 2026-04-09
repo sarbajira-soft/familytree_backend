@@ -1101,7 +1101,7 @@ export class GalleryService {
     }
   }
 
-  async deleteGallery(galleryId: number) {
+  async deleteGallery(galleryId: number, userId: number) {
     const transaction = await this.galleryModel.sequelize.transaction();
     
     try {
@@ -1118,6 +1118,10 @@ export class GalleryService {
 
       if (!gallery) {
         throw new NotFoundException('Gallery not found');
+      }
+
+      if (Number((gallery as any).createdBy) !== Number(userId)) {
+        throw new ForbiddenException('You do not have permission to delete this gallery');
       }
 
       // 2. Delete cover photo from S3 if it exists

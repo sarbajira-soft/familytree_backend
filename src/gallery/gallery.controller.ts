@@ -210,8 +210,8 @@ export class GalleryController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Delete a gallery and its images' })
   @ApiResponse({ status: 200, description: 'Gallery deleted successfully' })
-  async deleteGallery(@Param('id') id: number) {
-    return this.galleryService.deleteGallery(+id);
+  async deleteGallery(@Req() req, @Param('id') id: number) {
+    return this.galleryService.deleteGallery(+id, req.user.userId);
   }
 
   @UseGuards(JwtAuthGuard)

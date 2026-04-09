@@ -4,7 +4,6 @@ import { RelationshipCustomLabel } from './model/relationship-custom-label.model
 import { Relationship } from './entities/relationship.model';
 import { Family } from '../family/model/family.model';
 import { BadRequestException } from '@nestjs/common';
-import { RelationshipsService } from './relationships.service';
 
 @Injectable()
 export class RelationshipCustomLabelsService {
@@ -15,7 +14,6 @@ export class RelationshipCustomLabelsService {
     private relationshipModel: typeof Relationship,
     @InjectModel(Family)
     private familyModel: typeof Family,
-    private relationshipsService: RelationshipsService,
   ) {}
 
   // Helper to map UI language to DB enum
@@ -132,17 +130,6 @@ export class RelationshipCustomLabelsService {
       await label.save();
     }
 
-    // Also update the main relationship label and set is_auto_generated to false
-    let labelField = `description_${language}_f`; // default to female
-    if (gender?.toLowerCase() === 'male') {
-      labelField = `description_${language}_m`;
-    }
-    await this.relationshipsService.updateRelationshipLabel(
-      relationshipKey,
-      undefined, // don't update main description
-      { [labelField]: custom_label }
-    );
-    console.log('Called updateRelationshipLabel for', relationshipKey, labelField, custom_label);
 
     return label;
   }

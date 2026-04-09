@@ -1,7 +1,9 @@
-import { Body, Controller, Post, BadRequestException } from '@nestjs/common';
-import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Post, BadRequestException, Req, UseGuards } from '@nestjs/common';
+import { ApiBearerAuth, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { InjectModel } from '@nestjs/sequelize';
 import { UserProfile } from '../user/model/user-profile.model';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { FamilyService } from './family.service';
 
 interface AssociateDto {
   sourceCode: string;
@@ -11,18 +13,36 @@ interface AssociateDto {
 @ApiTags('Family Module')
 @Controller('family')
 export class FamilyAssociateController {
-  constructor(@InjectModel(UserProfile) private readonly profileModel: typeof UserProfile) {}
+  constructor(
+    @InjectModel(UserProfile) private readonly profileModel: typeof UserProfile,
+    private readonly familyService: FamilyService,
+  ) {}
 
+  @UseGuards(JwtAuthGuard)
   @Post('associate')
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Associate two family codes mutually' })
   @ApiResponse({ status: 200, description: 'Association updated' })
-  async associateFamilies(@Body() body: AssociateDto) {
-    const { sourceCode, targetCode } = body;
+  async associateFamilies(@Req() req, @Body() body: AssociateDto) {
+    const sourceCode = String(body?.sourceCode || '').trim().toUpperCase();
+    const targetCode = String(body?.targetCode || '').trim().toUpperCase();
+    const actingUserId = Number(req.user?.userId || 0);
+
     if (!sourceCode || !targetCode || sourceCode === targetCode) {
       throw new BadRequestException('Invalid source/target family codes');
     }
 
-    // helper to merge codes in profile table
+    await this.familyService.assertFamilyAdminAccess(
+      actingUserId,
+      sourceCode,
+      'associate this source family',
+    );
+    await this.familyService.assertFamilyAdminAccess(
+      actingUserId,
+      targetCode,
+      'associate this target family',
+    );
+
     const mergeCodes = async (familyCode: string, codeToAdd: string) => {
       const profiles = await this.profileModel.findAll({ where: { familyCode } });
       for (const profile of profiles) {

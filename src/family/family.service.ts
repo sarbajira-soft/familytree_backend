@@ -1169,6 +1169,84 @@ export class FamilyService {
     void familyCode;
   }
 
+  async assertFamilyAdminAccess(
+    actingUserId: number,
+    familyCode: string,
+    action = 'manage this family',
+  ) {
+    const normalizedUserId = Number(actingUserId || 0);
+    const normalizedFamilyCode = String(familyCode || '').trim().toUpperCase();
+
+    if (!normalizedUserId) {
+      throw new ForbiddenException('Unauthorized');
+    }
+    if (!normalizedFamilyCode) {
+      throw new BadRequestException('familyCode is required');
+    }
+
+    const [family, actorUser, actorProfile, membership] = await Promise.all([
+      this.familyModel.findOne({
+        where: { familyCode: normalizedFamilyCode } as any,
+      }),
+      this.userModel.findByPk(normalizedUserId),
+      this.userProfileModel.findOne({
+        where: { userId: normalizedUserId } as any,
+        attributes: ['familyCode'],
+      }),
+      this.familyMemberModel.findOne({
+        where: {
+          memberId: normalizedUserId,
+          familyCode: normalizedFamilyCode,
+          approveStatus: 'approved',
+        } as any,
+        order: [['id', 'DESC']],
+      }),
+    ]);
+
+    if (!family) {
+      throw new NotFoundException('Family not found');
+    }
+    if (!actorUser) {
+      throw new ForbiddenException('Unauthorized');
+    }
+
+    if (Number((family as any).createdBy || 0) === normalizedUserId) {
+      return { family, actorUser, actorProfile, membership, familyCode: normalizedFamilyCode };
+    }
+
+    const actorRole = Number((actorUser as any).role || 0);
+    const actorIsAdmin = actorRole === 2 || actorRole === 3;
+    const actorPrimaryFamilyCode = String((actorProfile as any)?.familyCode || '')
+      .trim()
+      .toUpperCase();
+    const belongsToFamily = Boolean(membership) || actorPrimaryFamilyCode === normalizedFamilyCode;
+
+    if (!actorIsAdmin || !belongsToFamily) {
+      throw new ForbiddenException(`Only family admins can ${action}`);
+    }
+
+    return { family, actorUser, actorProfile, membership, familyCode: normalizedFamilyCode };
+  }
+
+  private async assertActorCanAdminTargetUserFamily(
+    actingUserId: number,
+    targetUserId: number,
+    action: string,
+  ) {
+    const normalizedTargetUserId = Number(targetUserId || 0);
+    if (!normalizedTargetUserId) {
+      throw new BadRequestException('target user is required');
+    }
+
+    const targetFamily = await this.getFamilyByUserId(normalizedTargetUserId);
+    const targetFamilyCode = String(targetFamily?.familyCode || '').trim().toUpperCase();
+    if (!targetFamilyCode) {
+      throw new ForbiddenException('Target user does not belong to a family');
+    }
+
+    return this.assertFamilyAdminAccess(actingUserId, targetFamilyCode, action);
+  }
+
   // Authorization helper: ensure a user can VIEW a given family's tree
   // - Normal flow (/family/tree/:familyCode): user must be an APPROVED member of that family
   // - Admin merge/preview flows may pass allowAdminPreview=true to allow cross-family preview for admins
@@ -1699,11 +1777,11 @@ export class FamilyService {
       throw new NotFoundException('Family not found');
     }
 
-    // Blocked users must not be allowed to edit family details.
-    // This is Bug 65: enforce write-authorization at the backend.
-    if (loggedId) {
-      await this.assertUserNotBlockedInFamily(Number(loggedId), String(family.familyCode));
-    }
+    await this.assertFamilyAdminAccess(
+      Number(loggedId || 0),
+      String(family.familyCode),
+      'update family details',
+    );
 
     // Delete old file from S3 if a new file is uploaded
     if (
@@ -1718,8 +1796,16 @@ export class FamilyService {
         // Continue with the update even if deletion fails
       }
     }
-    dto.createdBy = loggedId;
-    await family.update(dto);
+    const updateDto = { ...dto };
+    const incomingFamilyCode = String(updateDto.familyCode || '').trim().toUpperCase();
+    const existingFamilyCode = String(family.familyCode || '').trim().toUpperCase();
+    if (incomingFamilyCode && incomingFamilyCode !== existingFamilyCode) {
+      throw new BadRequestException('Family code cannot be changed');
+    }
+    updateDto.familyCode = family.familyCode;
+    delete updateDto.createdBy;
+
+    await family.update(updateDto);
     return { message: 'Family updated successfully', data: family };
   }
 
@@ -1820,6 +1906,11 @@ export class FamilyService {
       familyCode,
     );
     await this.assertFamilyExistsForTreeSave(familyCode);
+    await this.assertFamilyAdminAccess(
+      loggedInUserId,
+      familyCode,
+      'save this family tree',
+    );
     this.validateFamilyTreeSaveOrThrow(familyCode, members);
 
     await this.deleteStaleFamilyTreeEntriesAndCleanup({
@@ -3440,7 +3531,14 @@ export class FamilyService {
   /**
    * Sync person data across all family trees they appear in
    */
-  async syncPersonAcrossAllTrees(userId: number, updates: any) {
+  async syncPersonAcrossAllTrees(userId: number, updates: any, actingUserId?: number) {
+    if (actingUserId) {
+      await this.assertActorCanAdminTargetUserFamily(
+        Number(actingUserId),
+        Number(userId),
+        'sync this person across family trees',
+      );
+    }
     const transaction = await this.familyTreeModel.sequelize.transaction();
 
     try {
@@ -3506,7 +3604,17 @@ export class FamilyService {
     userId: number,
     familyCode: string,
     basicInfo: any,
+    actingUserId?: number,
   ) {
+    const normalizedActingUserId = Number(actingUserId || 0);
+    const normalizedUserId = Number(userId || 0);
+    if (normalizedActingUserId && normalizedActingUserId !== normalizedUserId) {
+      await this.assertActorCanAdminTargetUserFamily(
+        normalizedActingUserId,
+        normalizedUserId,
+        'create a manual associated tree for this member',
+      );
+    }
     const transaction = await this.familyTreeModel.sequelize.transaction();
 
     try {
@@ -3564,7 +3672,15 @@ export class FamilyService {
   async replaceManualTreeWithComplete(
     oldFamilyCode: string,
     newCompleteTreeData: any,
+    actingUserId?: number,
   ) {
+    if (actingUserId) {
+      await this.assertFamilyAdminAccess(
+        Number(actingUserId),
+        oldFamilyCode,
+        'replace this manual family tree',
+      );
+    }
     const transaction = await this.familyTreeModel.sequelize.transaction();
 
     try {
@@ -3618,7 +3734,16 @@ export class FamilyService {
     }
   }
 
-  async addSpouseRelationship(yourUserId: number, spouseUserId: number) {
+  async addSpouseRelationship(yourUserId: number, spouseUserId: number, actingUserId?: number) {
+    const normalizedYourUserId = Number(yourUserId || 0);
+    const normalizedActingUserId = Number(actingUserId || 0);
+    if (normalizedActingUserId && normalizedActingUserId !== normalizedYourUserId) {
+      await this.assertActorCanAdminTargetUserFamily(
+        normalizedActingUserId,
+        normalizedYourUserId,
+        'add spouse for this member',
+      );
+    }
     // Fetch spouse profile
     const spouseProfile = await this.userProfileModel.findOne({
       where: { userId: spouseUserId },

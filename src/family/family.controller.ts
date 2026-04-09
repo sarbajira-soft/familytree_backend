@@ -328,33 +328,45 @@ export class FamilyController {
     return this.familyService.getAssociatedFamilyTreeByUserId(userId);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Post('sync-person/:userId')
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Sync person data across all family trees they appear in' })
   @ApiResponse({ status: 200, description: 'Person data synced successfully' })
   async syncPersonAcrossAllTrees(
+    @Req() req,
     @Param('userId', ParseIntPipe) userId: number,
     @Body() updates: any
   ) {
-    return this.familyService.syncPersonAcrossAllTrees(userId, updates);
+    const actingUserId: number = req.user?.userId;
+    return this.familyService.syncPersonAcrossAllTrees(userId, updates, actingUserId);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Post('create-manual-tree/:userId')
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Create manual associated tree for a user' })
   @ApiResponse({ status: 201, description: 'Manual associated tree created successfully' })
   async createManualAssociatedTree(
+    @Req() req,
     @Param('userId', ParseIntPipe) userId: number,
     @Body() data: { familyCode: string; basicInfo: any }
   ) {
-    return this.familyService.createManualAssociatedTree(userId, data.familyCode, data.basicInfo);
+    const actingUserId: number = req.user?.userId;
+    return this.familyService.createManualAssociatedTree(userId, data.familyCode, data.basicInfo, actingUserId);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Post('replace-manual-tree')
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Replace manual tree with auto-generated complete tree' })
   @ApiResponse({ status: 200, description: 'Manual tree replaced successfully' })
   async replaceManualTreeWithComplete(
+    @Req() req,
     @Body() data: { oldFamilyCode: string; newCompleteTreeData: any }
   ) {
-    return this.familyService.replaceManualTreeWithComplete(data.oldFamilyCode, data.newCompleteTreeData);
+    const actingUserId: number = req.user?.userId;
+    return this.familyService.replaceManualTreeWithComplete(data.oldFamilyCode, data.newCompleteTreeData, actingUserId);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -363,9 +375,14 @@ export class FamilyController {
   @ApiOperation({ summary: 'Add spouse relationship and update associated family codes' })
   @ApiResponse({ status: 201, description: 'Spouse relationship created and associated codes updated' })
   async addSpouseRelationship(
+    @Req() req,
     @Param('userId') userId: number,
     @Body('spouseUserId') spouseUserId: number
   ) {
+    const actingUserId: number = req.user?.userId;
+    if (!actingUserId) {
+      throw new ForbiddenException('Unauthorized: missing user context');
+    }
     const blockedEitherWay = await this.blockingService.isUserBlockedEitherWay(
       Number(userId),
       Number(spouseUserId),
@@ -374,7 +391,7 @@ export class FamilyController {
       throw new ForbiddenException('Not allowed');
     }
 
-    return this.familyService.addSpouseRelationship(userId, spouseUserId);
+    return this.familyService.addSpouseRelationship(userId, spouseUserId, actingUserId);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -427,6 +444,14 @@ export class FamilyController {
       if (requesterTreeEntry) {
         activeTreeFamilyCode = requestedFamilyCode;
       }
+    }
+
+    if (Number(requesterId) !== Number(loggedInUserId)) {
+      await this.familyService.assertFamilyAdminAccess(
+        loggedInUserId,
+        activeTreeFamilyCode,
+        'send association requests for this member',
+      );
     }
 
     const targetAlreadyInTree = await this.familyTreeModel.findOne({

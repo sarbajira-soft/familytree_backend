@@ -25,6 +25,8 @@ export class CountryController {
     return this.countryService.listCountries();
   }
 
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(3)
   @Post()
   @ApiOperation({ summary: 'Create a new country' })
   @ApiResponse({ status: 201, description: 'Country created successfully' })

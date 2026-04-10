@@ -1,7 +1,8 @@
-import { BadRequestException, Controller, Get, Post, Body, Query } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Post, Body, Query, Req, UseGuards } from '@nestjs/common';
 import { RelationshipCustomLabelsService } from './relationship-custom-labels.service';
-import { ApiTags, ApiOperation, ApiResponse, ApiBody, ApiProperty } from '@nestjs/swagger';
+import { ApiBearerAuth, ApiTags, ApiOperation, ApiResponse, ApiBody, ApiProperty } from '@nestjs/swagger';
 import { IsString, IsNumber, IsOptional } from 'class-validator';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 
 class UpsertCustomLabelDto {
   @ApiProperty()
@@ -71,14 +72,19 @@ export class RelationshipCustomLabelsController {
     return this.service.getAllLabels({ language, creatorId, familyCode, gender });
   }
 
+  @UseGuards(JwtAuthGuard)
   @Post()
+  @ApiBearerAuth()
   @ApiOperation({ summary: 'Create or update a custom label' })
   @ApiResponse({ status: 201, description: 'Custom label upserted' })
   @ApiBody({ type: UpsertCustomLabelDto })
-  async upsertCustomLabel(@Body() body: any) {
-    if (!body || !body.relationshipKey || !body.language || !body.custom_label || !body.creatorId || !body.scope) {
+  async upsertCustomLabel(@Req() req, @Body() body: any) {
+    if (!body || !body.relationshipKey || !body.language || !body.custom_label || !body.scope) {
       throw new BadRequestException('Missing required fields in request body');
     }
-    return this.service.upsertCustomLabel(body);
+    return this.service.upsertCustomLabel({
+      ...body,
+      creatorId: Number(req.user?.userId || 0),
+    });
   }
-} 
+}

@@ -7,18 +7,24 @@ import {
   Param,
   Body,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiParam, ApiBody } from '@nestjs/swagger';
 import { RelationshipsService } from './relationships.service';
 import { Relationship } from './entities/relationship.model';
 import { CreateRelationshipDto } from './dto/create-relationship.dto';
 import { UpdateRelationshipDto } from './dto/update-relationship.dto';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
 
 @ApiTags('Relationships')
 @Controller('relationships')
 export class RelationshipsController {
   constructor(private readonly relationshipsService: RelationshipsService) {}
 
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(3)
   @Post()
   @ApiOperation({ summary: 'Create a new relationship' })
   @ApiResponse({
@@ -69,6 +75,8 @@ export class RelationshipsController {
     return this.relationshipsService.findByKey(key);
   }
 
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(3)
   @Put(':id')
   @ApiOperation({ summary: 'Update a relationship' })
   @ApiParam({ name: 'id', description: 'Relationship ID' })
@@ -80,6 +88,8 @@ export class RelationshipsController {
     return this.relationshipsService.updateRelationship(id, updateDto);
   }
 
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(3)
   @Put('edit/:code')
   @ApiOperation({ summary: 'Edit a relationship label and mark as curated' })
   @ApiBody({
@@ -114,6 +124,8 @@ export class RelationshipsController {
     return this.relationshipsService.updateRelationshipLabel(code, body.description, body.labels);
   }
 
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(3)
   @Delete(':id')
   @ApiOperation({ summary: 'Delete a relationship' })
   @ApiParam({ name: 'id', description: 'Relationship ID' })

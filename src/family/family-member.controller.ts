@@ -234,7 +234,7 @@ export class FamilyMemberController {
     return { message: 'Family stats fetched successfully', data: stats };
   }
 
-// Public endpoints for link validation (no authentication required)
+// Public endpoint for link validation (no authentication required)
   @Get('public/:familyCode/member/:memberId/exists')
   @ApiOperation({ summary: 'Check if member exists and link is valid (public endpoint)' })
   @ApiResponse({ status: 200, description: 'Member validation result' })
@@ -246,17 +246,19 @@ export class FamilyMemberController {
     return this.familyMemberService.checkMemberExists(familyCode, memberId);
   }
 
+  @UseGuards(JwtAuthGuard)
   @Post('public/:familyCode/member/:memberId/mark-used')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Mark invitation link as used (public endpoint)' })
+  @ApiOperation({ summary: 'Mark invitation link as used' })
   @ApiResponse({ status: 200, description: 'Link marked as used successfully' })
   @ApiResponse({ status: 404, description: 'Member not found' })
   @ApiResponse({ status: 400, description: 'Link already used' })
   async markLinkAsUsedPublic(
     @Param('familyCode') familyCode: string,
-    @Param('memberId', ParseIntPipe) memberId: number
+    @Param('memberId', ParseIntPipe) memberId: number,
+    @Req() req,
   ) {
-    return this.familyMemberService.markLinkAsUsed(familyCode, memberId);
+    return this.familyMemberService.markLinkAsUsed(familyCode, memberId, req.user?.userId);
   }
 
   @Post('add-user-to-family')
